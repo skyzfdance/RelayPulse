@@ -1,0 +1,9 @@
+.agents/
+.local-agent/
+dist/
+docs/
+node_modules/
+src-tauri/gen/
+src-tauri/target/
+pnpm-lock.yaml
+**/*.md

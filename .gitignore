@@ -6,6 +6,12 @@
 /node_modules/
 /dist/
 /src-tauri/target/
+/artifacts/
+/test-results/
+/playwright-report/
+
+# Local planning, design, and implementation documentation
+/docs/
 
 # Local development files
 *.local

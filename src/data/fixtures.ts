@@ -1,7 +1,9 @@
 import type {
   AppSnapshot,
   Model,
+  ProbeExchange,
   ProbeRecord,
+  ProbeResponseMode,
   ProbeSettings,
   Site,
   TokenUsage,
@@ -60,6 +62,7 @@ const sites: Site[] = [
     summary: '6 个模型 · 全部正常',
     modelsEndpoint: '/models',
     probeEndpoint: '/chat/completions',
+    probeIntervalMinutes: 10,
     firstTokenTimeoutSeconds: 8,
     totalTimeoutSeconds: 30,
     headers: [{ key: 'X-Workspace', value: 'relaypulse-prod' }],
@@ -100,6 +103,7 @@ const sites: Site[] = [
     summary: '4 个模型 · 1 个异常',
     modelsEndpoint: '/models',
     probeEndpoint: '/chat/completions',
+    probeIntervalMinutes: 20,
     firstTokenTimeoutSeconds: 8,
     totalTimeoutSeconds: 30,
     headers: [],
@@ -120,6 +124,7 @@ const sites: Site[] = [
     summary: '3 个模型 · 响应偏慢',
     modelsEndpoint: '/models',
     probeEndpoint: '/chat/completions',
+    probeIntervalMinutes: 10,
     firstTokenTimeoutSeconds: 8,
     totalTimeoutSeconds: 30,
     headers: [],
@@ -140,6 +145,7 @@ const sites: Site[] = [
     summary: '0 个模型启用 · 不参与探测',
     modelsEndpoint: '/models',
     probeEndpoint: '/chat/completions',
+    probeIntervalMinutes: 30,
     firstTokenTimeoutSeconds: 8,
     totalTimeoutSeconds: 30,
     headers: [],
@@ -158,6 +164,7 @@ const sites: Site[] = [
     summary: '站点已停用',
     modelsEndpoint: '/models',
     probeEndpoint: '/chat/completions',
+    probeIntervalMinutes: 60,
     firstTokenTimeoutSeconds: 8,
     totalTimeoutSeconds: 30,
     headers: [],
@@ -182,18 +189,163 @@ function reportedTokenUsage(inputTokens: number, outputTokens: number): TokenUsa
   };
 }
 
-function probeRecord(
-  input: Omit<ProbeRecord, 'method' | 'probeMode' | 'httpStatus' | 'requestId' | 'errorDetail'> &
-    Partial<Pick<ProbeRecord, 'probeMode' | 'httpStatus' | 'requestId' | 'errorDetail'>>,
-): ProbeRecord {
+function capturedBytes(value: string) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function probeExchange(
+  record: Pick<
+    ProbeRecord,
+    'id' | 'modelName' | 'firstTokenMs' | 'totalTimeMs' | 'httpStatus' | 'tokenUsage'
+  >,
+  mode: ProbeResponseMode,
+): ProbeExchange {
+  const requestBody = JSON.stringify(
+    {
+      model: record.modelName,
+      messages: [{ role: 'user', content: '只回复 OK' }],
+      stream: mode === 'stream',
+      max_tokens: 8,
+    },
+    null,
+    2,
+  );
+  const request = {
+    headers: [
+      { key: 'Content-Type', value: 'application/json' },
+      {
+        key: 'Accept',
+        value: mode === 'stream' ? 'text/event-stream' : 'application/json',
+      },
+      { key: 'Authorization', value: 'Bearer ••••••••••••••••' },
+    ],
+    rawBody: requestBody,
+    capturedBytes: capturedBytes(requestBody),
+    captureLimitBytes: 32 * 1024,
+    truncated: false,
+  };
+
+  if (record.httpStatus === null) {
+    return {
+      request,
+      response: {
+        mode,
+        contentType: null,
+        headers: [],
+        rawBody: '',
+        chunks: [],
+        capturedBytes: 0,
+        captureLimitBytes: 64 * 1024,
+        truncated: false,
+      },
+    };
+  }
+
+  if (mode === 'stream') {
+    const streamId = `chatcmpl_${record.id}`;
+    const chunks = [
+      {
+        sequence: 1,
+        receivedAfterMs: record.firstTokenMs ?? record.totalTimeMs,
+        raw: `data: ${JSON.stringify({
+          id: streamId,
+          choices: [{ index: 0, delta: { content: 'OK' } }],
+        })}\n\n`,
+      },
+      {
+        sequence: 2,
+        receivedAfterMs: record.totalTimeMs,
+        raw: `data: ${JSON.stringify({
+          id: streamId,
+          choices: [],
+          usage:
+            record.tokenUsage.source === 'reported'
+              ? {
+                  prompt_tokens: record.tokenUsage.inputTokens,
+                  completion_tokens: record.tokenUsage.outputTokens,
+                  total_tokens: record.tokenUsage.totalTokens,
+                }
+              : null,
+        })}\n\ndata: [DONE]\n\n`,
+      },
+    ].map((chunk) => ({ ...chunk, capturedBytes: capturedBytes(chunk.raw) }));
+    const rawBody = chunks.map((chunk) => chunk.raw).join('');
+    return {
+      request,
+      response: {
+        mode,
+        contentType: 'text/event-stream',
+        headers: [
+          { key: 'Content-Type', value: 'text/event-stream; charset=utf-8' },
+          { key: 'Cache-Control', value: 'no-cache' },
+        ],
+        rawBody,
+        chunks,
+        capturedBytes: capturedBytes(rawBody),
+        captureLimitBytes: 64 * 1024,
+        truncated: false,
+      },
+    };
+  }
+
+  const rawBody = JSON.stringify(
+    record.httpStatus >= 400
+      ? {
+          error: {
+            type: 'rate_limit_exceeded',
+            message: 'Request rate limit exceeded.',
+          },
+        }
+      : {
+          id: `response_${record.id}`,
+          model: record.modelName,
+          choices: [{ index: 0, message: { role: 'assistant', content: 'OK' } }],
+          usage:
+            record.tokenUsage.source === 'reported'
+              ? {
+                  prompt_tokens: record.tokenUsage.inputTokens,
+                  completion_tokens: record.tokenUsage.outputTokens,
+                  total_tokens: record.tokenUsage.totalTokens,
+                }
+              : null,
+        },
+    null,
+    2,
+  );
   return {
+    request,
+    response: {
+      mode,
+      contentType: 'application/json',
+      headers: [{ key: 'Content-Type', value: 'application/json; charset=utf-8' }],
+      rawBody,
+      chunks: [],
+      capturedBytes: capturedBytes(rawBody),
+      captureLimitBytes: 64 * 1024,
+      truncated: false,
+    },
+  };
+}
+
+function probeRecord(
+  input: Omit<
+    ProbeRecord,
+    'method' | 'probeMode' | 'httpStatus' | 'requestId' | 'errorDetail' | 'exchange'
+  > &
+    Partial<Pick<ProbeRecord, 'probeMode' | 'httpStatus' | 'requestId' | 'errorDetail'>> & {
+      responseMode?: ProbeResponseMode;
+    },
+): ProbeRecord {
+  const { responseMode = 'stream', ...recordInput } = input;
+  const record = {
     method: 'POST',
     probeMode: '站点默认 · 关闭思考',
     httpStatus: 200,
     requestId: `rp_${input.id}`,
     errorDetail: null,
-    ...input,
-  };
+    ...recordInput,
+  } satisfies Omit<ProbeRecord, 'exchange'>;
+  return { ...record, exchange: probeExchange(record, responseMode) };
 }
 
 const probeRecords: ProbeRecord[] = [
@@ -262,6 +414,7 @@ const probeRecords: ProbeRecord[] = [
     totalTimeLabel: '6.41 s',
     result: '响应偏慢',
     endpoint: 'https://gemini-gateway.example/v1/chat/completions',
+    responseMode: 'synchronous',
     tokenUsage: reportedTokenUsage(14, 2),
   }),
   probeRecord({
@@ -328,6 +481,7 @@ const probeRecords: ProbeRecord[] = [
     result: 'HTTP 429 · 请求受限',
     endpoint: 'https://gemini-gateway.example/v1/chat/completions',
     httpStatus: 429,
+    responseMode: 'synchronous',
     errorDetail: '站点返回 rate_limit_exceeded，本次探测不会立即重试。',
     tokenUsage: noTokenUsage,
   }),
@@ -426,6 +580,7 @@ const probeRecords: ProbeRecord[] = [
     totalTimeLabel: '3.84 s',
     result: '响应正常',
     endpoint: 'https://gemini-gateway.example/v1/chat/completions',
+    responseMode: 'synchronous',
     tokenUsage: reportedTokenUsage(14, 2),
   }),
 ];

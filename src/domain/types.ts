@@ -67,6 +67,7 @@ export interface Site {
   summary: string;
   modelsEndpoint: string;
   probeEndpoint: string;
+  probeIntervalMinutes: number;
   firstTokenTimeoutSeconds: number;
   totalTimeoutSeconds: number;
   headers: RequestHeader[];
@@ -109,6 +110,32 @@ export interface TokenUsage {
   source: 'reported' | 'unavailable';
 }
 
+export type ProbeResponseMode = 'stream' | 'synchronous';
+
+export interface ProbeCapture {
+  headers: RequestHeader[];
+  rawBody: string;
+  capturedBytes: number;
+  captureLimitBytes: number;
+  truncated: boolean;
+}
+
+export interface ProbeResponseChunk {
+  sequence: number;
+  receivedAfterMs: number;
+  capturedBytes: number;
+  raw: string;
+}
+
+export interface ProbeExchange {
+  request: ProbeCapture;
+  response: ProbeCapture & {
+    mode: ProbeResponseMode;
+    contentType: string | null;
+    chunks: ProbeResponseChunk[];
+  };
+}
+
 export interface ProbeRecord {
   id: string;
   startedAt: string;
@@ -129,6 +156,7 @@ export interface ProbeRecord {
   requestId: string | null;
   errorDetail: string | null;
   tokenUsage: TokenUsage;
+  exchange: ProbeExchange;
 }
 
 export interface AppSnapshot {
@@ -165,6 +193,7 @@ export interface UpdateSiteInput {
 export interface SiteAdvancedInput {
   modelsEndpoint: string;
   probeEndpoint: string;
+  probeIntervalMinutes: number;
   firstTokenTimeoutSeconds: number;
   totalTimeoutSeconds: number;
   headers: RequestHeader[];

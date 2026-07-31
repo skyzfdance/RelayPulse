@@ -15,7 +15,6 @@ import { DeleteSiteModal } from './features/sites/DeleteSiteModal';
 import { EmptyPage } from './features/sites/EmptyPage';
 import { SitesPage } from './features/sites/SitesPage';
 import { TrayPage } from './features/tray/TrayPage';
-import styles from './styles/App.module.css';
 
 function useActiveView() {
   const [view, setView] = useState<ViewName>(() => parseView(window.location.search));
@@ -71,8 +70,12 @@ function ThemeSurface({ children, dark }: PropsWithChildren<{ dark: boolean }>) 
   };
 
   return (
-    <div className={styles.themeSurface} data-theme={dark ? 'dark' : 'light'} style={variables}>
-      <AntdApp className={styles.antdRoot}>{children}</AntdApp>
+    <div
+      className={`h-full w-full bg-rp-canvas text-rp ${dark ? 'scheme-dark' : 'scheme-light'}`}
+      data-theme={dark ? 'dark' : 'light'}
+      style={variables}
+    >
+      <AntdApp className="h-full w-full">{children}</AntdApp>
     </div>
   );
 }
@@ -143,11 +146,11 @@ function RelayPulseApplication() {
     >
       <ThemeSurface dark={isDark}>
         {loading ? (
-          <div className={styles.fullState}>
+          <div className="grid h-full w-full place-items-center bg-rp-canvas">
             <Spin size="large" description="正在加载 Mock 数据" />
           </div>
         ) : error || !snapshot ? (
-          <div className={styles.fullState}>
+          <div className="grid h-full w-full place-items-center bg-rp-canvas">
             <Result
               status="warning"
               title="Mock 数据加载失败"

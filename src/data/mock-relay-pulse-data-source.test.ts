@@ -68,6 +68,18 @@ describe('MockRelayPulseDataSource', () => {
     expect(longText.sites[0].models[0].totalTime).toBe('9999.99 s');
   });
 
+  it('rejects backend actions without mutating the visible snapshot', async () => {
+    const failingDataSource = new MockRelayPulseDataSource('action-error');
+    const before = await failingDataSource.getSnapshot();
+
+    expect(() => failingDataSource.setSiteEnabled(before.sites[0].id, false)).toThrow(
+      'Mock 后端操作失败，请重试。',
+    );
+
+    const after = await failingDataSource.getSnapshot();
+    expect(after.sites[0].enabled).toBe(before.sites[0].enabled);
+  });
+
   it('supports deterministic theme previews', async () => {
     const dark = await new MockRelayPulseDataSource('default', 'dark').getSnapshot();
     const light = await new MockRelayPulseDataSource('default', 'light').getSnapshot();
@@ -81,6 +93,25 @@ describe('MockRelayPulseDataSource', () => {
     expect(
       before.probeRecords.filter((record) => record.tokenUsage.source === 'reported'),
     ).toHaveLength(11);
+
+    const streamRecord = before.probeRecords.find((record) => record.id === 'probe-001')!;
+    expect(streamRecord.exchange.request.headers).toContainEqual({
+      key: 'Authorization',
+      value: 'Bearer ••••••••••••••••',
+    });
+    expect(streamRecord.exchange.response.mode).toBe('stream');
+    expect(streamRecord.exchange.response.chunks).toHaveLength(2);
+    expect(streamRecord.exchange.response.rawBody).toContain('data:');
+    expect(streamRecord.exchange.response.truncated).toBe(false);
+
+    const synchronousRecord = before.probeRecords.find((record) => record.id === 'probe-004')!;
+    expect(synchronousRecord.exchange.response.mode).toBe('synchronous');
+    expect(synchronousRecord.exchange.response.chunks).toHaveLength(0);
+    expect(synchronousRecord.exchange.response.rawBody).toContain('"choices"');
+
+    const timeoutRecord = before.probeRecords.find((record) => record.id === 'probe-003')!;
+    expect(timeoutRecord.exchange.response.headers).toHaveLength(0);
+    expect(timeoutRecord.exchange.response.rawBody).toBe('');
 
     const refreshed = await dataSource.refreshProbeRecords();
     expect(refreshed.probeRecords).toEqual(before.probeRecords);
@@ -159,5 +190,20 @@ describe('MockRelayPulseDataSource', () => {
         endpoint: '/v1/images/generations',
       },
     });
+  });
+
+  it('stores a per-site probe interval with the advanced settings', async () => {
+    const before = await dataSource.getSnapshot();
+    const site = before.sites[0];
+    const after = await dataSource.updateSiteAdvanced(site.id, {
+      modelsEndpoint: site.modelsEndpoint,
+      probeEndpoint: site.probeEndpoint,
+      probeIntervalMinutes: 15,
+      firstTokenTimeoutSeconds: site.firstTokenTimeoutSeconds,
+      totalTimeoutSeconds: site.totalTimeoutSeconds,
+      headers: site.headers,
+    });
+
+    expect(after.sites[0].probeIntervalMinutes).toBe(15);
   });
 });

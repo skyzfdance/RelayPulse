@@ -2,6 +2,7 @@ import { ApiOutlined, DeleteOutlined, PlusOutlined, SyncOutlined } from '@ant-de
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Tag } from 'antd';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
+import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
 import { navigateToView } from '../../app/view';
 import { StatusDot } from '../../components/StatusDot';
 import type {
@@ -14,9 +15,20 @@ import type {
 import { AddModelModal } from '../models/AddModelModal';
 import { ModelTable } from '../models/ModelTable';
 import { SiteList } from './SiteList';
-import styles from '../../styles/App.module.css';
+import {
+  monoInputClass,
+  pageHeaderClass,
+  scopedOverlayClass,
+  scrollbarNoneClass,
+} from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
+const formGridClass =
+  'grid grid-cols-2 gap-x-5 [&_.ant-form-item]:mb-2.5 [&_.ant-form-item-label]:pb-1';
+const detailSectionClass =
+  'border-b border-rp-line pb-3 [&+section]:pt-3 [&_h3]:m-0 [&_h3]:text-sm [&_h3]:leading-5.5 [&_h3]:font-semibold';
+const sectionHeaderClass =
+  'mb-2.5 flex items-center justify-between gap-4 [&_p]:m-0 [&_p]:text-xs [&_p]:leading-5 [&_p]:text-rp-tertiary';
 
 type SiteFormValues = UpdateSiteInput & SiteAdvancedInput;
 
@@ -33,6 +45,7 @@ function siteFormValues(site: Site): SiteFormValues {
     apiKeyMasked: site.apiKeyMasked,
     modelsEndpoint: site.modelsEndpoint,
     probeEndpoint: site.probeEndpoint,
+    probeIntervalMinutes: site.probeIntervalMinutes,
     firstTokenTimeoutSeconds: site.firstTokenTimeoutSeconds,
     totalTimeoutSeconds: site.totalTimeoutSeconds,
     headers: site.headers,
@@ -51,6 +64,8 @@ function hasFormChanges(values: Partial<SiteFormValues>, baseline: SiteFormValue
     valueOrBaseline(values.apiKeyMasked, baseline.apiKeyMasked) !== baseline.apiKeyMasked ||
     valueOrBaseline(values.modelsEndpoint, baseline.modelsEndpoint) !== baseline.modelsEndpoint ||
     valueOrBaseline(values.probeEndpoint, baseline.probeEndpoint) !== baseline.probeEndpoint ||
+    valueOrBaseline(values.probeIntervalMinutes, baseline.probeIntervalMinutes) !==
+      baseline.probeIntervalMinutes ||
     valueOrBaseline(values.firstTokenTimeoutSeconds, baseline.firstTokenTimeoutSeconds) !==
       baseline.firstTokenTimeoutSeconds ||
     valueOrBaseline(values.totalTimeoutSeconds, baseline.totalTimeoutSeconds) !==
@@ -62,7 +77,7 @@ function hasFormChanges(values: Partial<SiteFormValues>, baseline: SiteFormValue
 
 function PageHeader() {
   return (
-    <header className={styles.pageHeader}>
+    <header className={pageHeaderClass}>
       <div>
         <h1>站点管理</h1>
         <p>配置多个模型站点，并通过拖动顺序决定故障时的优先级</p>
@@ -73,7 +88,7 @@ function PageHeader() {
 
 function BasicFields() {
   return (
-    <div className={styles.formGrid}>
+    <div className={formGridClass}>
       <Form.Item
         label="站点名称"
         name="name"
@@ -89,10 +104,10 @@ function BasicFields() {
         name="baseUrl"
         rules={[{ required: true, type: 'url', message: '请输入有效的 Base URL' }]}
       >
-        <Input className={styles.mono} />
+        <Input className={monoInputClass} />
       </Form.Item>
       <Form.Item label="API Key" name="apiKeyMasked" rules={[{ required: true }]}>
-        <Input.Password className={styles.mono} visibilityToggle />
+        <Input.Password className={monoInputClass} visibilityToggle />
       </Form.Item>
     </div>
   );
@@ -114,41 +129,57 @@ function AdvancedFields({
 
   return (
     <>
-      <section className={styles.detailSection}>
-        <div className={styles.sectionHeader}>
+      <section className={detailSectionClass}>
+        <div className={sectionHeaderClass}>
           <div>
             <h3>高级连接</h3>
             <p>端点、超时和自定义请求头</p>
           </div>
         </div>
-        <div className={styles.formGrid}>
+        <div className={formGridClass}>
           <Form.Item label="模型列表端点" name="modelsEndpoint" rules={[{ required: true }]}>
-            <Input className={styles.mono} />
+            <Input className={monoInputClass} />
           </Form.Item>
           <Form.Item label="探测端点" name="probeEndpoint" rules={[{ required: true }]}>
-            <Input className={styles.mono} />
+            <Input className={monoInputClass} />
+          </Form.Item>
+        </div>
+        <div className="grid grid-cols-3 gap-x-5 [&_.ant-form-item]:mb-2.5 [&_.ant-form-item-label]:pb-1">
+          <Form.Item
+            label="探测频率"
+            name="probeIntervalMinutes"
+            tooltip="每个已启用模型自动探测的间隔"
+            rules={[
+              { required: true, message: '请输入探测频率' },
+              { type: 'number', min: 1, max: 1440, message: '请输入 1 至 1440 分钟' },
+            ]}
+          >
+            <InputNumber min={1} max={1440} precision={0} suffix="分钟" className="w-full" />
           </Form.Item>
           <Form.Item label="首 Token 超时" name="firstTokenTimeoutSeconds">
-            <InputNumber min={1} max={120} suffix="秒" className={styles.fullWidth} />
+            <InputNumber min={1} max={120} suffix="秒" className="w-full" />
           </Form.Item>
           <Form.Item label="请求总超时" name="totalTimeoutSeconds">
-            <InputNumber min={1} max={300} suffix="秒" className={styles.fullWidth} />
+            <InputNumber min={1} max={300} suffix="秒" className="w-full" />
           </Form.Item>
         </div>
         <Form.Item name="headers" hidden>
           <Input />
         </Form.Item>
-        <div className={styles.keyValueTable}>
-          <div className={styles.keyValueHeader}>
+        <div className="overflow-hidden rounded-md border border-rp-line [&>.ant-btn-link]:h-10">
+          <div className="grid min-h-10 grid-cols-[1fr_1.5fr_40px] items-center border-b border-rp-line bg-rp-subtle px-3 text-xs text-rp-secondary">
             <span>请求头</span>
             <span>值</span>
             <span />
           </div>
           {headers.map((header, index) => (
-            <div className={styles.keyValueRow} key={`${header.key}-${index}`}>
+            <div
+              className="grid min-h-10 grid-cols-[1fr_1.5fr_40px] items-center border-b border-rp-line last-of-type:border-b"
+              key={`${header.key}-${index}`}
+            >
               <Input
                 variant="borderless"
-                className={styles.mono}
+                className={monoInputClass}
                 value={header.key}
                 onChange={(event) => {
                   const next = [...headers];
@@ -158,7 +189,7 @@ function AdvancedFields({
               />
               <Input
                 variant="borderless"
-                className={styles.mono}
+                className={monoInputClass}
                 value={header.value}
                 onChange={(event) => {
                   const next = [...headers];
@@ -199,11 +230,14 @@ const SiteDetail = forwardRef<
   { site: Site; advanced: boolean; onDirtyChange(dirty: boolean): void }
 >(function SiteDetail({ site, advanced, onDirtyChange }, ref) {
   const { updateSite, updateSiteAdvanced, setModelEnabled, refreshModels } = useRelayPulse();
+  const runBackendAction = useBackendActionFeedback();
   const [form] = Form.useForm<SiteFormValues>();
   const [advancedDraftVersion, setAdvancedDraftVersion] = useState(0);
   const [addModelOpen, setAddModelOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [syncingModels, setSyncingModels] = useState(false);
+  const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
 
   const initialValues = useMemo(() => siteFormValues(site), [site]);
   const [baseline, setBaseline] = useState(initialValues);
@@ -238,16 +272,31 @@ const SiteDetail = forwardRef<
 
     setSaving(true);
     try {
-      await updateSite(site.id, values);
-      if (advanced) {
-        await updateSiteAdvanced(site.id, {
-          modelsEndpoint: values.modelsEndpoint,
-          probeEndpoint: values.probeEndpoint,
-          firstTokenTimeoutSeconds: values.firstTokenTimeoutSeconds,
-          totalTimeoutSeconds: values.totalTimeoutSeconds,
-          headers: values.headers,
-        });
-      }
+      const saved = await runBackendAction(
+        async () => {
+          await updateSite(site.id, values);
+          if (advanced) {
+            await updateSiteAdvanced(site.id, {
+              modelsEndpoint: values.modelsEndpoint,
+              probeEndpoint: values.probeEndpoint,
+              probeIntervalMinutes: values.probeIntervalMinutes,
+              firstTokenTimeoutSeconds: values.firstTokenTimeoutSeconds,
+              totalTimeoutSeconds: values.totalTimeoutSeconds,
+              headers: values.headers,
+            });
+          }
+        },
+        {
+          key: `save-site-${site.id}`,
+          successTitle: advanced ? '站点高级设置已保存' : '站点配置已保存',
+          successDescription: advanced
+            ? `“${values.name}”的端点、探测频率、超时和请求头已更新。`
+            : `“${values.name}”的基本信息已更新。`,
+          errorTitle: advanced ? '站点高级设置保存失败' : '站点配置保存失败',
+          errorDescription: '更改没有保存，当前编辑内容已保留，请检查后重试。',
+        },
+      );
+      if (!saved) return false;
       setBaseline(values);
       updateDirty(false);
       return true;
@@ -256,23 +305,61 @@ const SiteDetail = forwardRef<
     }
   }
 
+  async function syncModels() {
+    setSyncingModels(true);
+    try {
+      await runBackendAction(() => refreshModels(site.id), {
+        key: `sync-models-${site.id}`,
+        presentation: 'message',
+        successTitle: '模型列表已同步',
+        successDescription: `已从“${site.name}”获取最新模型列表。`,
+        errorTitle: '模型列表同步失败',
+        errorDescription: '仍显示上一次模型列表，请稍后重试。',
+      });
+    } finally {
+      setSyncingModels(false);
+    }
+  }
+
+  async function changeModelEnabled(modelId: string, enabled: boolean) {
+    const modelName = site.models.find((model) => model.id === modelId)?.name ?? '当前模型';
+    setLoadingModelId(modelId);
+    try {
+      await runBackendAction(() => setModelEnabled(site.id, modelId, enabled), {
+        key: `toggle-model-${modelId}`,
+        presentation: 'message',
+        successTitle: enabled ? `已启用 ${modelName}` : `已停用 ${modelName}`,
+        successDescription: enabled ? '模型将参与后续探测。' : '模型将不再参与探测。',
+        errorTitle: enabled ? `${modelName} 启用失败` : `${modelName} 停用失败`,
+        errorDescription: '模型状态没有更改，请重试。',
+      });
+    } finally {
+      setLoadingModelId(null);
+    }
+  }
+
   useImperativeHandle(ref, () => ({ discard, save }));
 
   return (
-    <section className={styles.siteDetail}>
+    <section
+      className="relative min-w-0 flex-1 overflow-hidden bg-rp-surface"
+      data-testid="site-detail"
+    >
       <Form
         form={form}
         layout="vertical"
         initialValues={initialValues}
         requiredMark={false}
-        className={styles.detailForm}
+        className="flex h-full flex-col"
         onValuesChange={() => {
           updateDirty(hasFormChanges(form.getFieldsValue(true), baseline));
         }}
       >
-        <div className={styles.detailScroll}>
-          <div className={styles.detailTitle}>
-            <div className={styles.detailTitleGroup}>
+        <div
+          className={`min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-20 max-[1180px]:px-4.5 ${scrollbarNoneClass}`}
+        >
+          <div className="mb-4 flex min-h-8 items-center justify-between">
+            <div className="flex min-w-0 items-center gap-2 [&_h2]:m-0 [&_h2]:truncate [&_h2]:text-lg [&_h2]:leading-6.5">
               <StatusDot status={site.status} />
               <h2>{site.name}</h2>
               <Tag color="blue">优先级 {site.priority}</Tag>
@@ -285,15 +372,15 @@ const SiteDetail = forwardRef<
 
           {advanced ? (
             <Alert
-              className={styles.advancedAlert}
+              className="mb-4 py-1.75!"
               type="warning"
               showIcon
               title="高级设置仅在代理协议或网关字段不兼容时修改；常规 OpenAI 兼容站点保持默认即可。"
             />
           ) : null}
 
-          <section className={styles.detailSection}>
-            <div className={styles.sectionHeader}>
+          <section className={detailSectionClass}>
+            <div className={sectionHeaderClass}>
               <div>
                 <h3>基本信息</h3>
                 <p>站点名称、协议和访问凭据</p>
@@ -316,8 +403,8 @@ const SiteDetail = forwardRef<
             />
           ) : (
             <>
-              <section className={styles.detailSection}>
-                <div className={styles.sectionHeader}>
+              <section className={detailSectionClass}>
+                <div className={sectionHeaderClass}>
                   <div>
                     <h3>默认探针策略</h3>
                     <p>新启用模型默认继承；单个模型可覆盖</p>
@@ -334,11 +421,11 @@ const SiteDetail = forwardRef<
                     编辑默认值
                   </Button>
                 </div>
-                <div className={styles.strategyCard}>
-                  <span className={styles.strategyIcon}>
+                <div className="flex min-h-16.5 items-center gap-3 rounded-md border border-rp-line bg-rp-subtle px-3.5 py-3">
+                  <span className="grid size-8.5 flex-none place-items-center rounded-md bg-rp-active text-rp-primary">
                     <ApiOutlined />
                   </span>
-                  <div className={styles.strategyCopy}>
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5 [&>span]:truncate [&>span]:text-xs [&>span]:text-rp-tertiary">
                     <strong>{defaultStrategyIsEconomical ? '极省模式' : '自定义策略'}</strong>
                     <span>{defaultStrategySummary}</span>
                   </div>
@@ -346,8 +433,8 @@ const SiteDetail = forwardRef<
                 </div>
               </section>
 
-              <section className={styles.detailSection}>
-                <div className={styles.sectionHeader}>
+              <section className={detailSectionClass}>
+                <div className={sectionHeaderClass}>
                   <div>
                     <h3>模型探针</h3>
                     <p>
@@ -355,8 +442,12 @@ const SiteDetail = forwardRef<
                       个模型已启用
                     </p>
                   </div>
-                  <div className={styles.sectionActions}>
-                    <Button icon={<SyncOutlined />} onClick={() => void refreshModels(site.id)}>
+                  <div className="flex gap-2">
+                    <Button
+                      icon={<SyncOutlined />}
+                      loading={syncingModels}
+                      onClick={() => void syncModels()}
+                    >
                       同步模型
                     </Button>
                     <Button
@@ -370,18 +461,20 @@ const SiteDetail = forwardRef<
                 </div>
                 <ModelTable
                   site={site}
-                  onEnabledChange={(modelId, enabled) =>
-                    void setModelEnabled(site.id, modelId, enabled)
-                  }
+                  loadingModelId={loadingModelId}
+                  onEnabledChange={(modelId, enabled) => void changeModelEnabled(modelId, enabled)}
                 />
               </section>
             </>
           )}
         </div>
         {dirty ? (
-          <footer className={`${styles.pageFooter} ${styles.dirtyActionBar}`}>
-            <span className={styles.dirtyMessage} role="status">
-              <span className={styles.dirtyDot} aria-hidden="true" />
+          <footer className="absolute inset-x-0 bottom-0 z-3 flex min-h-14.5 flex-none items-center justify-end gap-2 border-t border-rp-line bg-rp-surface px-6 py-3 shadow-[0_-4px_12px_rgb(0_0_0/6%)]">
+            <span
+              className="mr-auto inline-flex items-center gap-2 text-rp-secondary"
+              role="status"
+            >
+              <span className="size-1.75 flex-none rounded-full bg-rp-warning" aria-hidden="true" />
               有未保存的更改
             </span>
             <Button onClick={discard}>取消</Button>
@@ -398,13 +491,17 @@ const SiteDetail = forwardRef<
 
 export function SitesPage({ view }: { view: ViewName }) {
   const { snapshot, selectSite, reorderSites, setSiteEnabled } = useRelayPulse();
+  const runBackendAction = useBackendActionFeedback();
   const detailRef = useRef<SiteDetailHandle>(null);
   const [siteDirty, setSiteDirty] = useState(false);
   const [pendingSiteId, setPendingSiteId] = useState<string | null>(null);
   const [switchSaving, setSwitchSaving] = useState(false);
+  const [loadingSiteId, setLoadingSiteId] = useState<string | null>(null);
   if (!snapshot) return null;
+  const currentSnapshot = snapshot;
   const selectedSite =
-    snapshot.sites.find((site) => site.id === snapshot.selectedSiteId) ?? snapshot.sites[0];
+    currentSnapshot.sites.find((site) => site.id === currentSnapshot.selectedSiteId) ??
+    currentSnapshot.sites[0];
 
   function requestSiteSelection(id: string) {
     if (id === selectedSite?.id) return;
@@ -437,16 +534,45 @@ export function SitesPage({ view }: { view: ViewName }) {
     }
   }
 
+  async function changeSiteEnabled(id: string, enabled: boolean) {
+    const siteName = currentSnapshot.sites.find((site) => site.id === id)?.name ?? '当前站点';
+    setLoadingSiteId(id);
+    try {
+      await runBackendAction(() => setSiteEnabled(id, enabled), {
+        key: `toggle-site-${id}`,
+        presentation: 'message',
+        successTitle: enabled ? `已启用 ${siteName}` : `已停用 ${siteName}`,
+        successDescription: enabled ? '站点将在存在启用模型时参与探测。' : '站点将不再参与探测。',
+        errorTitle: enabled ? `${siteName} 启用失败` : `${siteName} 停用失败`,
+        errorDescription: '站点状态没有更改，请重试。',
+      });
+    } finally {
+      setLoadingSiteId(null);
+    }
+  }
+
+  async function saveSiteOrder(ids: string[]) {
+    await runBackendAction(() => reorderSites(ids), {
+      key: 'reorder-sites',
+      presentation: 'message',
+      successTitle: '站点优先级已更新',
+      successDescription: '新的探测优先级顺序已保存。',
+      errorTitle: '站点排序保存失败',
+      errorDescription: '优先级顺序没有更改，请重试。',
+    });
+  }
+
   return (
     <>
       <PageHeader />
-      <div className={styles.siteWorkspace}>
+      <div className="flex min-h-0 flex-1">
         <SiteList
-          sites={snapshot.sites}
+          sites={currentSnapshot.sites}
           selectedSiteId={selectedSite?.id ?? null}
+          loadingSiteId={loadingSiteId}
           onSelect={requestSiteSelection}
-          onEnabledChange={(id, enabled) => void setSiteEnabled(id, enabled)}
-          onReorder={(ids) => void reorderSites(ids)}
+          onEnabledChange={(id, enabled) => void changeSiteEnabled(id, enabled)}
+          onReorder={(ids) => void saveSiteOrder(ids)}
         />
         {selectedSite ? (
           <SiteDetail
@@ -465,7 +591,7 @@ export function SitesPage({ view }: { view: ViewName }) {
           width={440}
           centered
           getContainer={overlayContainer}
-          rootClassName={styles.scopedOverlay}
+          rootClassName={scopedOverlayClass}
           rootStyle={{ position: 'absolute' }}
           mask={{ closable: false }}
           closable={false}
@@ -486,7 +612,7 @@ export function SitesPage({ view }: { view: ViewName }) {
             </Button>,
           ]}
         >
-          <p className={styles.modalLead}>
+          <p className="m-0 leading-5.5 text-rp-secondary">
             “{selectedSite?.name}”有未保存的更改。切换站点前，请选择保存或放弃这些更改。
           </p>
         </Modal>

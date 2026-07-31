@@ -25,12 +25,11 @@ for (const [view, width, height] of cases) {
 
     const customSurfaces = await page.evaluate(() => {
       const selectors = [
-        '[class*="desktopFrame"]',
-        '[class*="titlebar"]',
-        '[class*="sidebar"]',
-        '[class*="content"]',
-        '[class*="siteDetail"]',
-        '[class*="trayPanel"]',
+        '[data-testid="desktop-frame"]',
+        '[data-testid="sidebar"]',
+        '[data-testid="content"]',
+        '[data-testid="site-detail"]',
+        '[data-testid="tray-panel"]',
       ];
       return selectors.flatMap((selector) => {
         const element = document.querySelector(selector);

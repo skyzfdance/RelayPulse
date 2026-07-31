@@ -11,7 +11,7 @@ import type { RelayPulseContextValue } from './relay-pulse-context';
 function createDefaultDataSource() {
   const search = new URLSearchParams(window.location.search);
   const requested = search.get('scenario');
-  const scenarios: MockScenario[] = ['loading', 'empty', 'error', 'long-text'];
+  const scenarios: MockScenario[] = ['loading', 'empty', 'error', 'action-error', 'long-text'];
   const scenario = scenarios.includes(requested as MockScenario)
     ? (requested as MockScenario)
     : 'default';
@@ -34,13 +34,7 @@ export function RelayPulseProvider({
   const [error, setError] = useState<string | null>(null);
 
   const run = useCallback(async (operation: () => Promise<AppSnapshot>) => {
-    setError(null);
-    try {
-      setSnapshot(await operation());
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '发生未知错误');
-      throw cause;
-    }
+    setSnapshot(await operation());
   }, []);
 
   useEffect(() => {
@@ -76,7 +70,16 @@ export function RelayPulseProvider({
         run(() => dataSource.updateModelProbeSettings(siteId, modelId, settings)),
       updateModelCustomProbeSettings: (siteId, modelId, settings) =>
         run(() => dataSource.updateModelCustomProbeSettings(siteId, modelId, settings)),
-      updateGeneralSettings: (settings) => run(() => dataSource.updateGeneralSettings(settings)),
+      async updateGeneralSettings(settings) {
+        const previous = snapshot;
+        setSnapshot((current) => (current ? { ...current, generalSettings: settings } : current));
+        try {
+          setSnapshot(await dataSource.updateGeneralSettings(settings));
+        } catch (cause) {
+          setSnapshot(previous);
+          throw cause;
+        }
+      },
       refreshModels: (siteId) => run(() => dataSource.refreshModels(siteId)),
       refreshProbeRecords: () => run(() => dataSource.refreshProbeRecords()),
       clearProbeRecords: () => run(() => dataSource.clearProbeRecords()),

@@ -13,7 +13,7 @@ import type {
 } from '../domain/types';
 
 const clone = <T>(value: T): T => structuredClone(value);
-export type MockScenario = 'default' | 'loading' | 'empty' | 'error' | 'long-text';
+export type MockScenario = 'default' | 'loading' | 'empty' | 'error' | 'action-error' | 'long-text';
 
 export class MockRelayPulseDataSource implements RelayPulseDataSource {
   private snapshot = createFixtureSnapshot();
@@ -56,6 +56,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   createSite(input: CreateSiteInput): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     const nextIndex = this.snapshot.sites.length + 1;
     const id = `mock-site-${nextIndex}`;
     this.snapshot.sites.push({
@@ -70,6 +71,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
       summary: '0 个模型启用 · 不参与探测',
       modelsEndpoint: '/models',
       probeEndpoint: '/chat/completions',
+      probeIntervalMinutes: 10,
       firstTokenTimeoutSeconds: 8,
       totalTimeoutSeconds: 30,
       headers: [],
@@ -86,6 +88,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   createModel(siteId: string, input: CreateModelInput): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     const site = this.requireSite(siteId);
     let suffix = site.models.length + 1;
     while (site.models.some((model) => model.id === `${siteId}-manual-${suffix}`)) suffix += 1;
@@ -114,12 +117,14 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   updateSite(id: string, input: UpdateSiteInput): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     const site = this.requireSite(id);
     Object.assign(site, input);
     return this.result();
   }
 
   deleteSite(id: string): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     this.snapshot.sites = this.snapshot.sites.filter((site) => site.id !== id);
     this.snapshot.probeRecords = this.snapshot.probeRecords.filter(
       (record) => record.siteId !== id,
@@ -132,6 +137,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   reorderSites(siteIds: string[]): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     const byId = new Map(this.snapshot.sites.map((site) => [site.id, site]));
     this.snapshot.sites = siteIds.flatMap((id) => {
       const site = byId.get(id);
@@ -144,6 +150,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   setSiteEnabled(id: string, enabled: boolean): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     const site = this.requireSite(id);
     site.enabled = enabled;
     this.updateParticipationSummary(site);
@@ -151,6 +158,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   setModelEnabled(siteId: string, modelId: string, enabled: boolean): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     const site = this.requireSite(siteId);
     const target = site.models.find((item) => item.id === modelId);
     if (!target) throw new Error(`Unknown model: ${modelId}`);
@@ -160,11 +168,13 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   updateSiteAdvanced(id: string, input: SiteAdvancedInput): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     Object.assign(this.requireSite(id), input);
     return this.result();
   }
 
   updateSiteProbeSettings(siteId: string, settings: ProbeSettings): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     this.requireSite(siteId).defaultProbeSettings = clone(settings);
     return this.result();
   }
@@ -174,6 +184,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
     modelId: string,
     settings: ProbeSettings,
   ): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     const site = this.requireSite(siteId);
     const target = site.models.find((item) => item.id === modelId);
     if (!target) throw new Error(`Unknown model: ${modelId}`);
@@ -192,6 +203,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
     modelId: string,
     settings: CustomProbeSettings,
   ): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     const site = this.requireSite(siteId);
     const target = site.models.find((item) => item.id === modelId);
     if (!target) throw new Error(`Unknown model: ${modelId}`);
@@ -211,20 +223,24 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   updateGeneralSettings(settings: GeneralSettings): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     this.snapshot.generalSettings = clone(settings);
     return this.result();
   }
 
   refreshModels(siteId: string): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     this.requireSite(siteId);
     return this.result();
   }
 
   refreshProbeRecords(): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     return this.result();
   }
 
   clearProbeRecords(): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     this.snapshot.probeRecords = [];
     return this.result();
   }
@@ -234,6 +250,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   reset(): Promise<AppSnapshot> {
+    this.assertActionAvailable();
     this.snapshot = createFixtureSnapshot();
     return this.result();
   }
@@ -242,6 +259,12 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
     const site = this.snapshot.sites.find((item) => item.id === id);
     if (!site) throw new Error(`Unknown site: ${id}`);
     return site;
+  }
+
+  private assertActionAvailable() {
+    if (this.scenario === 'action-error') {
+      throw new Error('Mock 后端操作失败，请重试。');
+    }
   }
 
   private updateParticipationSummary(site: AppSnapshot['sites'][number]) {

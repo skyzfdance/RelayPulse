@@ -1,23 +1,36 @@
 import { Checkbox, Form, Input, Modal, Select } from 'antd';
 import { useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
+import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
 import { navigateToView } from '../../app/view';
 import type { CreateSiteInput } from '../../domain/types';
-import styles from '../../styles/App.module.css';
+import { monoInputClass, scopedOverlayClass } from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
 
 export function AddSiteModal() {
   const { createSite } = useRelayPulse();
+  const runBackendAction = useBackendActionFeedback();
   const [form] = Form.useForm<CreateSiteInput>();
   const [submitting, setSubmitting] = useState(false);
 
   async function submit() {
-    const values = await form.validateFields();
+    let values: CreateSiteInput;
+    try {
+      values = await form.validateFields();
+    } catch {
+      return;
+    }
     setSubmitting(true);
     try {
-      await createSite(values);
-      navigateToView('sites');
+      const created = await runBackendAction(() => createSite(values), {
+        key: 'create-site',
+        successTitle: '站点已添加',
+        successDescription: `“${values.name}”已保存，可以继续添加或同步模型。`,
+        errorTitle: '站点添加失败',
+        errorDescription: '站点没有创建，当前填写内容已保留，请检查后重试。',
+      });
+      if (created) navigateToView('sites');
     } finally {
       setSubmitting(false);
     }
@@ -30,7 +43,7 @@ export function AddSiteModal() {
       width={560}
       centered
       getContainer={overlayContainer}
-      rootClassName={styles.scopedOverlay}
+      rootClassName={scopedOverlayClass}
       rootStyle={{ position: 'absolute' }}
       mask={{ closable: false }}
       confirmLoading={submitting}
@@ -46,7 +59,7 @@ export function AddSiteModal() {
         layout="vertical"
         requiredMark={false}
         initialValues={{ protocol: 'OpenAI 兼容', enabled: true }}
-        className={styles.addSiteForm}
+        className="pt-2 [&_.ant-form-item]:mb-3"
       >
         <Form.Item
           label="站点名称"
@@ -69,16 +82,16 @@ export function AddSiteModal() {
           name="baseUrl"
           rules={[{ required: true, type: 'url', message: '请输入有效的 Base URL' }]}
         >
-          <Input className={styles.mono} placeholder="https://api.example.com/v1" />
+          <Input className={monoInputClass} placeholder="https://api.example.com/v1" />
         </Form.Item>
         <Form.Item
           label="API Key"
           name="apiKey"
           rules={[{ required: true, message: '请输入访问凭据' }]}
         >
-          <Input.Password className={styles.mono} placeholder="输入访问凭据" />
+          <Input.Password className={monoInputClass} placeholder="输入访问凭据" />
         </Form.Item>
-        <Form.Item name="enabled" valuePropName="checked" className={styles.inlineSwitchItem}>
+        <Form.Item name="enabled" valuePropName="checked" className="mb-0!">
           <Checkbox>创建后立即启用站点</Checkbox>
         </Form.Item>
       </Form>

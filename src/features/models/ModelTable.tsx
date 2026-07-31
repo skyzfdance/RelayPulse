@@ -3,13 +3,14 @@ import { Button, Switch, Table, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { Model, Site } from '../../domain/types';
 import { navigateToView } from '../../app/view';
-import styles from '../../styles/App.module.css';
 
 export function ModelTable({
   site,
+  loadingModelId,
   onEnabledChange,
 }: {
   site: Site;
+  loadingModelId?: string | null;
   onEnabledChange(modelId: string, enabled: boolean): void;
 }) {
   const columns: ColumnsType<Model> = [
@@ -22,6 +23,8 @@ export function ModelTable({
         <Switch
           size="small"
           checked={model.enabled}
+          loading={loadingModelId === model.id}
+          disabled={Boolean(loadingModelId && loadingModelId !== model.id)}
           aria-label={`${model.enabled ? '停用' : '启用'}模型 ${model.name}`}
           onChange={(enabled) => onEnabledChange(model.id, enabled)}
         />
@@ -33,7 +36,7 @@ export function ModelTable({
       width: 230,
       ellipsis: true,
       render: (name: string) => (
-        <span className={styles.modelName} title={name}>
+        <span className="block truncate font-semibold" title={name}>
           {name}
         </span>
       ),
@@ -43,7 +46,7 @@ export function ModelTable({
       dataIndex: 'inferenceSummary',
       width: 190,
       ellipsis: true,
-      className: styles.secondaryCell,
+      className: 'text-rp-secondary',
     },
     { title: '首 Token', dataIndex: 'firstToken', width: 125 },
     { title: '总耗时', dataIndex: 'totalTime', width: 110 },
@@ -59,7 +62,7 @@ export function ModelTable({
             shape="circle"
             icon={<SettingOutlined />}
             aria-label={`设置模型 ${model.name}`}
-            className={styles.tableAction}
+            className="size-8! text-rp-primary!"
             onClick={() => {
               const url = new URL(window.location.href);
               url.searchParams.set('model', model.id);
@@ -75,7 +78,7 @@ export function ModelTable({
 
   return (
     <Table<Model>
-      className={styles.modelTable}
+      className="[&_.ant-table]:overflow-hidden [&_.ant-table]:rounded-md [&_.ant-table]:border [&_.ant-table]:border-rp-line [&_.ant-table-thead>tr>th]:text-xs [&_.ant-table-thead>tr>th]:font-normal [&_.ant-table-thead>tr>th]:text-rp-secondary"
       rowKey="id"
       columns={columns}
       dataSource={site.models}

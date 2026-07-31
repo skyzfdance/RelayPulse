@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons';
 import {
   Button,
+  Collapse,
   Drawer,
   Dropdown,
   Input,
@@ -20,11 +21,28 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { useMemo, useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
+import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
 import { StatusDot } from '../../components/StatusDot';
-import type { ProbeRecord, ProbeRecordStatus } from '../../domain/types';
-import styles from '../../styles/App.module.css';
+import type {
+  ProbeCapture,
+  ProbeRecord,
+  ProbeRecordStatus,
+  RequestHeader,
+} from '../../domain/types';
+import { pageHeaderClass, scopedOverlayClass } from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
+
+const drawerSectionClass =
+  'border-b border-rp-line py-4 last:border-b-0 [&>h3]:m-0 [&>h3]:text-sm [&>h3]:leading-6 [&>h3]:font-semibold';
+
+const recordDrawerClass = `${scopedOverlayClass} [&_.ant-drawer-body]:scrollbar-none [&_.ant-drawer-body]:[-ms-overflow-style:none] [&_.ant-drawer-body::-webkit-scrollbar]:hidden`;
+
+const tableStructureClass =
+  'relative flex h-full min-h-0 flex-col overflow-hidden text-rp [&>.ant-spin]:absolute [&>.ant-spin]:inset-0 [&>.ant-spin]:overflow-hidden [&_.ant-spin-nested-loading]:h-full [&_.ant-spin-nested-loading]:min-h-0 [&_.ant-spin-container]:flex [&_.ant-spin-container]:h-full [&_.ant-spin-container]:min-h-0 [&_.ant-spin-container]:flex-1 [&_.ant-spin-container]:flex-col [&_.ant-spin-container]:overflow-hidden [&_.ant-table]:flex [&_.ant-table]:min-h-0 [&_.ant-table]:flex-1 [&_.ant-table]:flex-col [&_.ant-table]:overflow-hidden [&_.ant-table]:text-rp [&_.ant-table-container]:flex [&_.ant-table-container]:min-h-0 [&_.ant-table-container]:flex-1 [&_.ant-table-container]:flex-col [&_.ant-table-container]:overflow-hidden [&_.ant-table-header]:flex-none [&_.ant-table-body]:min-h-0 [&_.ant-table-body]:max-h-full! [&_.ant-table-body]:flex-1 [&_.ant-table-body]:overflow-y-auto! [&_.ant-table-body]:scrollbar-none [&_.ant-table-body]:[-ms-overflow-style:none] [&_.ant-table-body::-webkit-scrollbar]:hidden [&_.ant-table-thead>tr>th]:bg-rp-subtle [&_.ant-table-thead>tr>th]:text-xs [&_.ant-table-thead>tr>th]:font-normal [&_.ant-table-thead>tr>th]:text-rp-secondary [&_.ant-table-cell]:[font-variant-numeric:tabular-nums]';
+
+const recordsTableClass = `${tableStructureClass} absolute inset-0 [&_.ant-pagination]:my-3! [&_.ant-pagination]:flex-none`;
+const usageTableClass = `${tableStructureClass} flex-1`;
 
 type RecordsMode = 'records' | 'usage';
 type PeriodFilter = '24h' | '7d' | '30d';
@@ -50,9 +68,51 @@ function formatTokens(value: number | null) {
   return value === null ? '—' : new Intl.NumberFormat('zh-CN').format(value);
 }
 
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  const kilobytes = value / 1024;
+  return `${kilobytes.toFixed(kilobytes >= 10 ? 0 : 1)} KB`;
+}
+
+function CaptureHeaders({ headers }: { headers: RequestHeader[] }) {
+  if (headers.length === 0) {
+    return <p className="m-0 text-xs leading-5 text-rp-tertiary">未收到响应头</p>;
+  }
+
+  return (
+    <dl className="m-0 [&>div]:grid [&>div]:min-w-0 [&>div]:grid-cols-[118px_minmax(0,1fr)] [&>div]:gap-2 [&>div]:border-b [&>div]:border-rp-line [&>div]:py-1.25 [&>div]:text-[11px] [&>div]:leading-4.5 [&>div:last-child]:border-b-0 [&_dd]:m-0 [&_dd]:min-w-0 [&_dd]:wrap-anywhere [&_dt]:text-rp-tertiary">
+      {headers.map((header, index) => (
+        <div key={`${header.key}-${index}`}>
+          <dt>{header.key}</dt>
+          <dd className="font-mono text-[13px]">{header.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function CaptureBody({ capture, emptyText }: { capture: ProbeCapture; emptyText: string }) {
+  return (
+    <>
+      {capture.rawBody ? (
+        <pre className="m-0 max-h-55 overflow-auto rounded-md bg-[#141414] px-3 py-2.5 font-mono text-[11px] leading-4.5 whitespace-pre-wrap text-white wrap-anywhere scrollbar-none [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          {capture.rawBody}
+        </pre>
+      ) : (
+        <p className="m-0 text-xs leading-5 text-rp-tertiary">{emptyText}</p>
+      )}
+      {capture.truncated ? (
+        <p className="m-0 text-xs leading-5 text-rp-warning-text">
+          内容超过保存上限，仅记录前 {formatBytes(capture.captureLimitBytes)}。
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 function RecordStatus({ status }: { status: ProbeRecordStatus }) {
   return (
-    <span className={styles.recordStatus}>
+    <span className="inline-flex items-center gap-1.75 whitespace-nowrap">
       <StatusDot status={status} />
       {statusMeta[status].label}
     </span>
@@ -63,7 +123,7 @@ function TokenValue({ record }: { record: ProbeRecord }) {
   if (record.tokenUsage.source === 'unavailable') {
     return (
       <Tooltip title="供应商未返回 usage">
-        <span className={styles.unavailableValue}>—</span>
+        <span className="text-rp-secondary">—</span>
       </Tooltip>
     );
   }
@@ -121,36 +181,41 @@ function buildUsageSummary(records: ProbeRecord[]): SiteUsageSummary[] {
 
 function RecordDetailDrawer({ record, onClose }: { record: ProbeRecord; onClose(): void }) {
   const usageReported = record.tokenUsage.source === 'reported';
+  const { request, response } = record.exchange;
+  const [open, setOpen] = useState(true);
   return (
     <Drawer
-      open
+      open={open}
       size={520}
       closable={{ placement: 'end' }}
       title={
         <div>
           <strong>探测详情</strong>
-          <div className={styles.drawerSubtitle}>
+          <div className="mt-0.5 text-xs font-normal text-rp-tertiary">
             {record.modelName} · {record.siteName}
           </div>
         </div>
       }
       getContainer={overlayContainer}
-      rootClassName={styles.scopedOverlay}
+      rootClassName={recordDrawerClass}
       rootStyle={{ position: 'absolute' }}
       mask={{ closable: true }}
-      onClose={onClose}
+      onClose={() => setOpen(false)}
+      afterOpenChange={(nextOpen) => {
+        if (!nextOpen) onClose();
+      }}
     >
-      <div className={styles.recordDetailLead}>
-        <div>
+      <div className="border-b border-rp-line pb-3.5">
+        <div className="mb-2 flex items-center justify-between gap-4 text-xs text-rp-tertiary">
           <RecordStatus status={record.status} />
           <span>{formatTimestamp(record.startedAt)}</span>
         </div>
-        <strong>{record.result}</strong>
+        <strong className="text-base leading-6">{record.result}</strong>
       </div>
 
-      <section className={styles.drawerSection}>
+      <section className={`${drawerSectionClass} pt-3.5`}>
         <h3>性能与用量</h3>
-        <dl className={styles.recordDetailGrid}>
+        <dl className="mt-2.5 grid grid-cols-3 gap-x-3 gap-y-4 [&>div]:min-w-0 [&_dd]:m-0 [&_dd]:text-rp [&_dd]:[font-variant-numeric:tabular-nums] [&_dt]:mb-1 [&_dt]:text-xs [&_dt]:text-rp-tertiary">
           <div>
             <dt>首 Token</dt>
             <dd>{record.firstTokenLabel}</dd>
@@ -182,12 +247,12 @@ function RecordDetailDrawer({ record, onClose }: { record: ProbeRecord; onClose(
         </dl>
       </section>
 
-      <section className={styles.drawerSection}>
+      <section className={drawerSectionClass}>
         <h3>请求信息</h3>
-        <dl className={styles.recordRequestList}>
+        <dl className="mt-2 flex flex-col [&>div]:grid [&>div]:min-h-12 [&>div]:grid-cols-[100px_minmax(0,1fr)] [&>div]:border-b [&>div]:border-rp-line [&>div]:py-2 [&>div:last-child]:border-b-0 [&_dd]:m-0 [&_dd]:min-w-0 [&_dd]:wrap-anywhere [&_dt]:text-rp-tertiary">
           <div>
             <dt>请求端点</dt>
-            <dd className={styles.mono}>{record.endpoint}</dd>
+            <dd className="font-mono text-[13px]">{record.endpoint}</dd>
           </div>
           <div>
             <dt>探针策略</dt>
@@ -199,15 +264,95 @@ function RecordDetailDrawer({ record, onClose }: { record: ProbeRecord; onClose(
           </div>
           <div>
             <dt>请求 ID</dt>
-            <dd className={styles.mono}>{record.requestId ?? '—'}</dd>
+            <dd className="font-mono text-[13px]">{record.requestId ?? '—'}</dd>
           </div>
         </dl>
       </section>
 
+      <section className={drawerSectionClass}>
+        <h3>请求与响应</h3>
+        <Collapse
+          size="small"
+          className="mt-2 bg-rp-surface [&_.ant-collapse-content-box]:px-3 [&_.ant-collapse-content-box]:pt-1 [&_.ant-collapse-content-box]:pb-3 [&_.ant-collapse-header]:items-center! [&_.ant-collapse-header-text]:font-semibold"
+          expandIconPlacement="end"
+          items={[
+            {
+              key: 'request',
+              label: '请求详情',
+              extra: (
+                <span className="inline-flex items-center gap-1.5 text-xs font-normal text-rp-tertiary [font-variant-numeric:tabular-nums]">
+                  {record.method} · {formatBytes(request.capturedBytes)}
+                </span>
+              ),
+              children: (
+                <div className="flex flex-col gap-3">
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <span className="text-xs font-medium text-rp-secondary">
+                      请求头（敏感字段已脱敏）
+                    </span>
+                    <CaptureHeaders headers={request.headers} />
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <span className="text-xs font-medium text-rp-secondary">原始请求体</span>
+                    <CaptureBody capture={request} emptyText="没有请求正文" />
+                  </div>
+                </div>
+              ),
+            },
+            {
+              key: 'response',
+              label: '原始返回',
+              extra: (
+                <span className="inline-flex items-center gap-1.5 text-xs font-normal text-rp-tertiary [font-variant-numeric:tabular-nums] [&_.ant-tag]:m-0">
+                  <Tag color={response.mode === 'stream' ? 'blue' : undefined}>
+                    {response.mode === 'stream' ? '流式' : '同步'}
+                  </Tag>
+                  {formatBytes(response.capturedBytes)}
+                </span>
+              ),
+              children: (
+                <div className="flex flex-col gap-3">
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <span className="text-xs font-medium text-rp-secondary">响应头</span>
+                    <CaptureHeaders headers={response.headers} />
+                  </div>
+                  {response.mode === 'stream' && response.chunks.length > 0 ? (
+                    <div className="flex min-w-0 flex-col gap-1.5">
+                      <span className="text-xs font-medium text-rp-secondary">流式分片</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {response.chunks.map((chunk) => (
+                          <span
+                            className="inline-flex items-baseline gap-1.5 rounded border border-rp-line bg-rp-subtle px-2 py-1.25 text-[11px] [font-variant-numeric:tabular-nums] [&_small]:text-[10px] [&_small]:text-rp-tertiary"
+                            key={chunk.sequence}
+                          >
+                            分片 {chunk.sequence}
+                            <small>
+                              +{chunk.receivedAfterMs} ms · {formatBytes(chunk.capturedBytes)}
+                            </small>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <span className="text-xs font-medium text-rp-secondary">
+                      {response.mode === 'stream' ? '合并后的原始流' : '原始响应体'}
+                    </span>
+                    <CaptureBody capture={response} emptyText="未收到响应正文" />
+                  </div>
+                </div>
+              ),
+            },
+          ]}
+        />
+      </section>
+
       {record.errorDetail ? (
-        <section className={styles.drawerSection}>
+        <section className={drawerSectionClass}>
           <h3>错误信息</h3>
-          <div className={styles.recordErrorBox}>{record.errorDetail}</div>
+          <div className="mt-2 rounded-md border border-rp-error bg-rp-error-bg px-3 py-2.5 leading-5.5 text-rp-error">
+            {record.errorDetail}
+          </div>
         </section>
       ) : null}
     </Drawer>
@@ -216,6 +361,7 @@ function RecordDetailDrawer({ record, onClose }: { record: ProbeRecord; onClose(
 
 export function RecordsPage() {
   const { snapshot, refreshProbeRecords, clearProbeRecords } = useRelayPulse();
+  const runBackendAction = useBackendActionFeedback();
   const [mode, setMode] = useState<RecordsMode>('records');
   const [period, setPeriod] = useState<PeriodFilter>('24h');
   const [siteFilter, setSiteFilter] = useState('all');
@@ -301,7 +447,9 @@ export function RecordsPage() {
       sorter: (left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt),
       defaultSortOrder: 'descend',
       render: (value: string) => (
-        <span className={styles.recordTime}>{formatTimestamp(value)}</span>
+        <span className="whitespace-nowrap text-rp-secondary [font-variant-numeric:tabular-nums]">
+          {formatTimestamp(value)}
+        </span>
       ),
     },
     {
@@ -317,7 +465,7 @@ export function RecordsPage() {
       width: 180,
       ellipsis: { showTitle: false },
       render: (value: string) => (
-        <span className={styles.modelName} title={value}>
+        <span className="font-medium" title={value}>
           {value}
         </span>
       ),
@@ -349,10 +497,7 @@ export function RecordsPage() {
       width: 180,
       ellipsis: { showTitle: false },
       render: (value: string, record) => (
-        <span
-          className={record.status === 'error' ? styles.recordResultError : undefined}
-          title={value}
-        >
+        <span className={record.status === 'error' ? 'text-rp-error' : undefined} title={value}>
           {value}
         </span>
       ),
@@ -369,7 +514,7 @@ export function RecordsPage() {
             shape="circle"
             icon={<FileSearchOutlined />}
             aria-label={`查看 ${record.modelName} 探测详情`}
-            className={styles.tableAction}
+            className="text-rp-primary!"
             onClick={() => setSelectedRecord(record)}
           />
         </Tooltip>
@@ -432,7 +577,14 @@ export function RecordsPage() {
   async function refresh() {
     setRefreshing(true);
     try {
-      await refreshProbeRecords();
+      await runBackendAction(() => refreshProbeRecords(), {
+        key: 'refresh-probe-records',
+        presentation: 'message',
+        successTitle: '探测记录已刷新',
+        successDescription: '当前列表已更新为后端返回的最新记录。',
+        errorTitle: '探测记录刷新失败',
+        errorDescription: '仍显示上一次记录，请稍后重试。',
+      });
     } finally {
       setRefreshing(false);
     }
@@ -441,9 +593,17 @@ export function RecordsPage() {
   async function clearRecords() {
     setClearing(true);
     try {
-      await clearProbeRecords();
-      setSelectedRecord(null);
-      setClearConfirmOpen(false);
+      const cleared = await runBackendAction(() => clearProbeRecords(), {
+        key: 'clear-probe-records',
+        successTitle: '探测记录已清理',
+        successDescription: '本地探测记录和 Token 统计数据已全部删除。',
+        errorTitle: '探测记录清理失败',
+        errorDescription: '记录没有删除，请稍后重试。',
+      });
+      if (cleared) {
+        setSelectedRecord(null);
+        setClearConfirmOpen(false);
+      }
     } finally {
       setClearing(false);
     }
@@ -451,12 +611,12 @@ export function RecordsPage() {
 
   return (
     <>
-      <header className={styles.pageHeader}>
+      <header className={pageHeaderClass}>
         <div>
           <h1>探测记录</h1>
           <p>查看模型可用性、响应耗时和供应商上报的 Token 用量</p>
         </div>
-        <div className={styles.recordsHeaderActions}>
+        <div className="flex gap-2">
           <Tooltip title="刷新记录">
             <Button
               shape="circle"
@@ -488,8 +648,8 @@ export function RecordsPage() {
         </div>
       </header>
 
-      <main className={styles.recordsContent}>
-        <div className={styles.recordsModeBar}>
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pt-4">
+        <div className="mb-3 flex min-h-8 items-center justify-between gap-4 [&>span]:text-xs [&>span]:text-rp-tertiary">
           <Segmented
             value={mode}
             options={[
@@ -501,7 +661,7 @@ export function RecordsPage() {
           <span>记录保留 {snapshot.generalSettings.historyRetentionDays} 天</span>
         </div>
 
-        <div className={styles.recordsFilters}>
+        <div className="flex min-h-11 flex-wrap items-start gap-2 border-b border-rp-line pb-3 [&>.ant-input-affix-wrapper]:ml-auto [&>.ant-input-affix-wrapper]:w-55 [&>.ant-select]:w-36 [&_.anticon-search]:text-rp-quaternary">
           <Select<PeriodFilter>
             value={period}
             aria-label="统计周期"
@@ -550,32 +710,37 @@ export function RecordsPage() {
               />
             </>
           ) : (
-            <span className={styles.usageFilterNote}>仅汇总响应中明确返回的 usage 字段</span>
+            <span className="ml-auto pt-1.5 text-xs text-rp-tertiary">
+              仅汇总响应中明确返回的 usage 字段
+            </span>
           )}
         </div>
 
         {mode === 'records' ? (
-          <div className={styles.recordsTableWrap}>
+          <div className="relative min-h-0 flex-1 overflow-hidden">
             <Table<ProbeRecord>
-              className={styles.recordsTable}
+              className={recordsTableClass}
               rowKey="id"
               columns={recordColumns}
               dataSource={filteredRecords}
               size="small"
               tableLayout="fixed"
-              scroll={{ x: 1110 }}
+              scroll={{ x: 1110, y: '100%' }}
               showSorterTooltip={{ target: 'sorter-icon' }}
               pagination={{
-                pageSize: 10,
-                showSizeChanger: false,
-                showTotal: (total) => `共 ${total} 条`,
+                defaultPageSize: 10,
+                pageSizeOptions: [10, 20, 50, 100],
+                responsive: true,
+                showQuickJumper: true,
+                showSizeChanger: true,
+                showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条，共 ${total} 条`,
               }}
               locale={{ emptyText: '没有符合条件的探测记录' }}
             />
           </div>
         ) : (
-          <div className={styles.usageView}>
-            <div className={styles.usageSummaryBar}>
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="flex min-h-13 flex-none items-center border-b border-rp-line bg-rp-subtle [&>span]:min-w-36.25 [&>span]:border-r [&>span]:border-rp-line [&>span]:px-5 [&>span]:text-xs [&>span]:text-rp-secondary [&>span:last-child]:border-r-0 [&_strong]:mr-1 [&_strong]:text-base [&_strong]:font-semibold [&_strong]:text-rp [&_strong]:[font-variant-numeric:tabular-nums]">
               <span>
                 <strong>{usageRecords.length}</strong> 次探测
               </span>
@@ -590,18 +755,18 @@ export function RecordsPage() {
               </span>
             </div>
             <Table<SiteUsageSummary>
-              className={styles.usageTable}
+              className={usageTableClass}
               rowKey="siteId"
               columns={usageColumns}
               dataSource={usageSummary}
               size="small"
               tableLayout="fixed"
-              scroll={{ x: 1050 }}
+              scroll={{ x: 1050, y: '100%' }}
               pagination={false}
               showSorterTooltip={{ target: 'sorter-icon' }}
               locale={{ emptyText: '当前周期没有可统计的探测记录' }}
             />
-            <p className={styles.usageFootnote}>
+            <p className="mt-3 flex-none text-xs leading-5 text-rp-tertiary">
               未上报的请求不参与 Token 合计与平均值；RelayPulse 不根据文本长度估算用量。
             </p>
           </div>
@@ -619,7 +784,7 @@ export function RecordsPage() {
           width={440}
           centered
           getContainer={overlayContainer}
-          rootClassName={styles.scopedOverlay}
+          rootClassName={scopedOverlayClass}
           rootStyle={{ position: 'absolute' }}
           mask={{ closable: false }}
           okText="清理记录"
@@ -629,7 +794,7 @@ export function RecordsPage() {
           onCancel={() => setClearConfirmOpen(false)}
           onOk={() => void clearRecords()}
         >
-          <p className={styles.modalLead}>
+          <p className="m-0 leading-5.5 text-rp-secondary">
             将删除本机保存的全部探测记录和 Token 统计数据，站点与模型配置不会受到影响。
           </p>
         </Modal>

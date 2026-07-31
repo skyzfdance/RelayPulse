@@ -1,10 +1,23 @@
 import type { HealthStatus } from '../domain/types';
-import styles from '../styles/App.module.css';
+
+const statusClass: Record<HealthStatus, string> = {
+  healthy: 'bg-rp-success',
+  warning: 'bg-rp-warning',
+  error: 'bg-rp-error',
+  muted: 'bg-rp-muted',
+};
+
+const haloClass: Record<HealthStatus, string> = {
+  healthy: 'shadow-[0_0_0_4px_rgb(82_196_26/10%)]',
+  warning: 'shadow-[0_0_0_4px_rgb(250_173_20/10%)]',
+  error: 'shadow-[0_0_0_4px_rgb(255_77_79/10%)]',
+  muted: '',
+};
 
 export function StatusDot({ status, halo = false }: { status: HealthStatus; halo?: boolean }) {
   return (
     <span
-      className={`${styles.statusDot} ${styles[`status-${status}`]} ${halo ? styles.statusHalo : ''}`}
+      className={`inline-block flex-none rounded-full ${halo ? 'size-2.75' : 'size-1.75'} ${statusClass[status]} ${halo ? haloClass[status] : ''}`}
       aria-label={
         status === 'healthy'
           ? '正常'

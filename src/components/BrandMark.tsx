@@ -1,9 +1,13 @@
 import { ThunderboltFilled } from '@ant-design/icons';
-import styles from '../styles/App.module.css';
 
 export function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
-    <span className={compact ? styles.brandMarkCompact : styles.brandMark} aria-hidden="true">
+    <span
+      className={`grid flex-none place-items-center bg-rp-primary text-white ${
+        compact ? 'size-5.5 rounded-[5px] text-[11px]' : 'size-6.5 rounded-md text-[13px]'
+      }`}
+      aria-hidden="true"
+    >
       <ThunderboltFilled />
     </span>
   );

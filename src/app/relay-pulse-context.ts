@@ -5,6 +5,7 @@ import type {
   CreateSiteInput,
   CustomProbeSettings,
   GeneralSettings,
+  ModelSyncResult,
   ProbeSettings,
   SiteAdvancedInput,
   UpdateSiteInput,
@@ -17,6 +18,7 @@ export interface RelayPulseContextValue {
   selectSite(id: string): void;
   createSite(input: CreateSiteInput): Promise<void>;
   createModel(siteId: string, input: CreateModelInput): Promise<void>;
+  deleteModel(siteId: string, modelId: string): Promise<void>;
   updateSite(id: string, input: UpdateSiteInput): Promise<void>;
   deleteSite(id: string): Promise<void>;
   reorderSites(siteIds: string[]): Promise<void>;
@@ -31,10 +33,10 @@ export interface RelayPulseContextValue {
     settings: CustomProbeSettings,
   ): Promise<void>;
   updateGeneralSettings(settings: GeneralSettings): Promise<void>;
-  refreshModels(siteId: string): Promise<void>;
+  runImmediateProbe(): Promise<void>;
+  refreshModels(siteId: string, confirmedRemovedModelIds?: string[]): Promise<ModelSyncResult>;
   refreshProbeRecords(): Promise<void>;
   clearProbeRecords(): Promise<void>;
-  reset(): Promise<void>;
 }
 
 export const RelayPulseContext = createContext<RelayPulseContextValue | null>(null);

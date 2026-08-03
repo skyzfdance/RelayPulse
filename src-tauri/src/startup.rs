@@ -1,0 +1,261 @@
+use std::{fs, path::PathBuf, sync::Arc};
+
+use crate::{
+    application::{ApplicationService, CredentialSaga},
+    credentials::{CredentialService, LocalCredentialStore},
+    domain::{SystemClock, UuidGenerator},
+    persistence::{Database, DatabaseError, Repository},
+};
+
+const DATABASE_FILE_NAME: &str = "relaypulse.sqlite3";
+const CREDENTIAL_FILE_NAME: &str = "credentials.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupErrorCode {
+    DataDirectoryUnavailable,
+    DatabaseSchemaTooNew,
+    DatabaseMigrationFailed,
+    DatabaseUnavailable,
+    CredentialWorkerUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupFailure {
+    code: StartupErrorCode,
+    message: &'static str,
+}
+
+impl StartupFailure {
+    pub fn code(&self) -> StartupErrorCode {
+        self.code
+    }
+
+    pub fn message(&self) -> &'static str {
+        self.message
+    }
+
+    pub fn data_directory() -> Self {
+        Self {
+            code: StartupErrorCode::DataDirectoryUnavailable,
+            message: "RelayPulse cannot access its application data directory.",
+        }
+    }
+
+    fn credential_worker() -> Self {
+        Self {
+            code: StartupErrorCode::CredentialWorkerUnavailable,
+            message: "RelayPulse cannot start its credential worker.",
+        }
+    }
+
+    fn from_database_error(error: DatabaseError) -> Self {
+        match error {
+            DatabaseError::SchemaTooNew { .. } => Self {
+                code: StartupErrorCode::DatabaseSchemaTooNew,
+                message: "The database was created by a newer RelayPulse version.",
+            },
+            DatabaseError::Migration(_) => Self {
+                code: StartupErrorCode::DatabaseMigrationFailed,
+                message: "RelayPulse could not upgrade the database safely.",
+            },
+            DatabaseError::Sqlite(_)
+            | DatabaseError::WorkerUnavailable
+            | DatabaseError::WorkerStopped
+            | DatabaseError::WorkerPanicked
+            | DatabaseError::InvalidInput { .. }
+            | DatabaseError::NotFound { .. } => Self {
+                code: StartupErrorCode::DatabaseUnavailable,
+                message: "RelayPulse cannot open its database.",
+            },
+        }
+    }
+}
+
+pub struct BackendState {
+    database: Option<Database>,
+    application_service: Option<ApplicationService>,
+    credential_saga: Option<CredentialSaga>,
+    startup_failure: Option<StartupFailure>,
+}
+
+impl BackendState {
+    pub fn initialize(data_directory: PathBuf) -> Self {
+        if fs::create_dir_all(&data_directory).is_err() {
+            return Self::blocked(StartupFailure::data_directory());
+        }
+
+        match Database::open(data_directory.join(DATABASE_FILE_NAME)) {
+            Ok(database) => {
+                let credentials = match CredentialService::start(LocalCredentialStore::new(
+                    data_directory.join(CREDENTIAL_FILE_NAME),
+                )) {
+                    Ok(credentials) => credentials,
+                    Err(_) => return Self::blocked(StartupFailure::credential_worker()),
+                };
+                let repository = Repository::new(database.clone());
+                let ids = Arc::new(UuidGenerator);
+                let clock = Arc::new(SystemClock);
+                let credential_saga = CredentialSaga::new(
+                    repository.clone(),
+                    credentials,
+                    ids.clone(),
+                    clock.clone(),
+                );
+                let application_service =
+                    ApplicationService::new(repository, credential_saga.clone(), ids, clock);
+                Self {
+                    database: Some(database),
+                    application_service: Some(application_service),
+                    credential_saga: Some(credential_saga),
+                    startup_failure: None,
+                }
+            }
+            Err(error) => Self::blocked(StartupFailure::from_database_error(error)),
+        }
+    }
+
+    pub fn blocked(failure: StartupFailure) -> Self {
+        Self {
+            database: None,
+            application_service: None,
+            credential_saga: None,
+            startup_failure: Some(failure),
+        }
+    }
+
+    pub fn database(&self) -> Option<&Database> {
+        self.database.as_ref()
+    }
+
+    pub fn startup_failure(&self) -> Option<&StartupFailure> {
+        self.startup_failure.as_ref()
+    }
+
+    pub fn credential_saga(&self) -> Option<&CredentialSaga> {
+        self.credential_saga.as_ref()
+    }
+
+    pub fn application_service(&self) -> Option<&ApplicationService> {
+        self.application_service.as_ref()
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.database.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{env, fs};
+
+    use rusqlite::Connection;
+
+    use super::*;
+    use crate::persistence::LATEST_SCHEMA_VERSION;
+
+    #[test]
+    fn initializes_a_ready_database() {
+        let directory = tempfile::tempdir().expect("tempdir created");
+        let state = BackendState::initialize(directory.path().to_path_buf());
+
+        assert!(state.is_ready());
+        assert!(state.database().is_some());
+        assert!(state.application_service().is_some());
+        assert!(state.credential_saga().is_some());
+        assert!(state.startup_failure().is_none());
+    }
+
+    #[test]
+    fn blocks_startup_without_replacing_a_corrupt_database() {
+        let directory = tempfile::tempdir().expect("tempdir created");
+        let path = directory.path().join(DATABASE_FILE_NAME);
+        let original = b"not-a-sqlite-database";
+        fs::write(&path, original).expect("corrupt fixture written");
+
+        let state = BackendState::initialize(directory.path().to_path_buf());
+
+        assert!(!state.is_ready());
+        assert_eq!(
+            state.startup_failure().map(StartupFailure::code),
+            Some(StartupErrorCode::DatabaseUnavailable)
+        );
+        assert_eq!(fs::read(path).expect("fixture can be read"), original);
+    }
+
+    #[test]
+    fn blocks_startup_for_a_newer_schema() {
+        let directory = tempfile::tempdir().expect("tempdir created");
+        let path = directory.path().join(DATABASE_FILE_NAME);
+        let connection = Connection::open(&path).expect("database created");
+        connection
+            .pragma_update(None, "user_version", LATEST_SCHEMA_VERSION + 1)
+            .expect("user version set");
+        drop(connection);
+
+        let state = BackendState::initialize(directory.path().to_path_buf());
+
+        assert!(!state.is_ready());
+        assert_eq!(
+            state.startup_failure().map(StartupFailure::code),
+            Some(StartupErrorCode::DatabaseSchemaTooNew)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "uses an explicitly selected real app database and its local credential file"]
+    async fn real_model_catalog_smoke_test() {
+        let data_directory = env::var_os("RELAYPULSE_REAL_DATA_DIR")
+            .map(PathBuf::from)
+            .expect("RELAYPULSE_REAL_DATA_DIR must select the real app data directory");
+        let expected_site = env::var("RELAYPULSE_REAL_SITE")
+            .expect("RELAYPULSE_REAL_SITE must select one configured site");
+        let state = BackendState::initialize(data_directory);
+        let service = state
+            .application_service()
+            .expect("real backend state initializes");
+        let snapshot = service.snapshot().await.expect("real snapshot loads");
+        let site = snapshot
+            .sites
+            .iter()
+            .find(|aggregate| aggregate.site.name == expected_site)
+            .expect("selected real site exists");
+
+        let outcome = service
+            .refresh_models(site.site.id.clone(), Vec::new())
+            .await
+            .expect("selected real site model catalog synchronizes");
+        let refreshed = match outcome {
+            crate::application::ModelSyncOutcome::Applied(snapshot) => snapshot,
+            crate::application::ModelSyncOutcome::ConfirmationRequired { removed_models } => {
+                let confirmed_removed_model_ids =
+                    removed_models.into_iter().map(|model| model.id).collect();
+                match service
+                    .refresh_models(site.site.id.clone(), confirmed_removed_model_ids)
+                    .await
+                    .expect("selected real site model removals are confirmed")
+                {
+                    crate::application::ModelSyncOutcome::Applied(snapshot) => snapshot,
+                    crate::application::ModelSyncOutcome::ConfirmationRequired { .. } => {
+                        panic!("model catalog changed during the real sync smoke test")
+                    }
+                }
+            }
+        };
+        let refreshed_site = refreshed
+            .sites
+            .iter()
+            .find(|aggregate| aggregate.site.id == site.site.id)
+            .expect("selected real site remains available");
+
+        assert!(
+            !refreshed_site.models.is_empty(),
+            "selected real site returned no models"
+        );
+        eprintln!(
+            "real model sync completed for {}: {} models, revision {}",
+            refreshed_site.site.name,
+            refreshed_site.models.len(),
+            refreshed.revision
+        );
+    }
+}

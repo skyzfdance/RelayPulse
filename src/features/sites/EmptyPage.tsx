@@ -22,8 +22,8 @@ export function EmptyPage() {
             <div className="max-w-130">
               <h2 className="mt-2 mb-1 text-lg text-rp">还没有站点</h2>
               <p className="m-0 leading-5.5 text-rp-secondary">
-                先添加一个 OpenAI、Anthropic、Gemini
-                或兼容协议站点，连接成功后即可选择需要探测的模型。
+                先添加一个 OpenAI 兼容、Anthropic、OpenAI Responses 或自定义 HTTP
+                站点，连接成功后即可选择需要探测的模型。
               </p>
             </div>
           }

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
 import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
 import type { GeneralSettings, ThemeMode } from '../../domain/types';
-import { pageHeaderClass, scrollbarNoneClass } from '../../styles/tailwind';
+import { pageHeaderClass } from '../../styles/tailwind';
 
 function SettingsRow({
   title,
@@ -65,7 +65,7 @@ export function GeneralPage() {
         </div>
       </header>
       <div
-        className={`min-h-0 w-[min(890px,calc(100%-64px))] flex-1 overflow-y-auto pt-5 pb-5 pl-7.5 ${scrollbarNoneClass}`}
+        className="min-h-0 w-[min(890px,calc(100%-64px))] flex-1 overflow-y-auto pt-5 pb-5 pl-7.5"
         data-testid="general-content"
       >
         <section className="border-b border-rp-line pb-3 [&>h2]:mb-1 [&>h2]:text-base">

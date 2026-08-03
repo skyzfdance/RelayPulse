@@ -1,36 +1,56 @@
-import { ApiOutlined, DeleteOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons';
-import { Alert, Button, Form, Input, InputNumber, Modal, Select, Tag } from 'antd';
+import {
+  ApiOutlined,
+  DeleteOutlined,
+  PlusOutlined,
+  SyncOutlined,
+  UndoOutlined,
+} from '@ant-design/icons';
+import {
+  Alert,
+  App as AntdApp,
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+  Tag,
+  Tooltip,
+} from 'antd';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
-import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
+import {
+  backendActionErrorDescription,
+  useBackendActionFeedback,
+} from '../../app/use-backend-action-feedback';
 import { navigateToView } from '../../app/view';
 import { StatusDot } from '../../components/StatusDot';
 import type {
   RequestHeader,
   Site,
   SiteAdvancedInput,
+  ModelSyncRemoval,
   UpdateSiteInput,
   ViewName,
 } from '../../domain/types';
 import { AddModelModal } from '../models/AddModelModal';
 import { ModelTable } from '../models/ModelTable';
 import { SiteList } from './SiteList';
-import {
-  monoInputClass,
-  pageHeaderClass,
-  scopedOverlayClass,
-  scrollbarNoneClass,
-} from '../../styles/tailwind';
+import { siteProtocolOptions } from './protocol-options';
+import { monoInputClass, pageHeaderClass } from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
-const formGridClass =
-  'grid grid-cols-2 gap-x-5 [&_.ant-form-item]:mb-2.5 [&_.ant-form-item-label]:pb-1';
+const formGridClass = 'grid grid-cols-2 gap-x-5';
 const detailSectionClass =
   'border-b border-rp-line pb-3 [&+section]:pt-3 [&_h3]:m-0 [&_h3]:text-sm [&_h3]:leading-5.5 [&_h3]:font-semibold';
 const sectionHeaderClass =
   'mb-2.5 flex items-center justify-between gap-4 [&_p]:m-0 [&_p]:text-xs [&_p]:leading-5 [&_p]:text-rp-tertiary';
 
-type SiteFormValues = UpdateSiteInput & SiteAdvancedInput;
+type SiteFormValues = Omit<UpdateSiteInput, 'credential'> &
+  SiteAdvancedInput & {
+    credentialAction: UpdateSiteInput['credential']['action'];
+    credentialSecret: string;
+  };
 
 interface SiteDetailHandle {
   discard(): void;
@@ -42,7 +62,8 @@ function siteFormValues(site: Site): SiteFormValues {
     name: site.name,
     protocol: site.protocol,
     baseUrl: site.baseUrl,
-    apiKeyMasked: site.apiKeyMasked,
+    credentialAction: 'keep',
+    credentialSecret: '',
     modelsEndpoint: site.modelsEndpoint,
     probeEndpoint: site.probeEndpoint,
     probeIntervalMinutes: site.probeIntervalMinutes,
@@ -61,7 +82,10 @@ function hasFormChanges(values: Partial<SiteFormValues>, baseline: SiteFormValue
     valueOrBaseline(values.name, baseline.name) !== baseline.name ||
     valueOrBaseline(values.protocol, baseline.protocol) !== baseline.protocol ||
     valueOrBaseline(values.baseUrl, baseline.baseUrl) !== baseline.baseUrl ||
-    valueOrBaseline(values.apiKeyMasked, baseline.apiKeyMasked) !== baseline.apiKeyMasked ||
+    valueOrBaseline(values.credentialAction, baseline.credentialAction) !==
+      baseline.credentialAction ||
+    valueOrBaseline(values.credentialSecret, baseline.credentialSecret) !==
+      baseline.credentialSecret ||
     valueOrBaseline(values.modelsEndpoint, baseline.modelsEndpoint) !== baseline.modelsEndpoint ||
     valueOrBaseline(values.probeEndpoint, baseline.probeEndpoint) !== baseline.probeEndpoint ||
     valueOrBaseline(values.probeIntervalMinutes, baseline.probeIntervalMinutes) !==
@@ -86,7 +110,21 @@ function PageHeader() {
   );
 }
 
-function BasicFields() {
+function BasicFields({
+  credential,
+  onCredentialIntentChange,
+}: {
+  credential: Site['credential'];
+  onCredentialIntentChange(): void;
+}) {
+  const form = Form.useFormInstance<SiteFormValues>();
+  const credentialAction = Form.useWatch('credentialAction', form) ?? 'keep';
+
+  function setCredentialIntent(action: SiteFormValues['credentialAction']) {
+    form.setFieldValue('credentialAction', action);
+    onCredentialIntentChange();
+  }
+
   return (
     <div className={formGridClass}>
       <Form.Item
@@ -97,7 +135,7 @@ function BasicFields() {
         <Input />
       </Form.Item>
       <Form.Item label="接口协议" name="protocol" rules={[{ required: true }]}>
-        <Select options={[{ value: 'OpenAI 兼容', label: 'OpenAI 兼容' }]} />
+        <Select options={siteProtocolOptions} />
       </Form.Item>
       <Form.Item
         label="Base URL"
@@ -106,8 +144,59 @@ function BasicFields() {
       >
         <Input className={monoInputClass} />
       </Form.Item>
-      <Form.Item label="API Key" name="apiKeyMasked" rules={[{ required: true }]}>
-        <Input.Password className={monoInputClass} visibilityToggle />
+      <Form.Item
+        label="访问凭据"
+        extra={
+          credentialAction === 'clear'
+            ? '保存后将清除当前凭据'
+            : credential.configured
+              ? '留空则保留当前凭据'
+              : '尚未配置凭据'
+        }
+      >
+        <div className="flex gap-2">
+          <Form.Item
+            noStyle
+            name="credentialSecret"
+            rules={[
+              {
+                validator: async (_, value: string) => {
+                  if (credentialAction === 'replace' && !value.trim()) {
+                    throw new Error('请输入新的访问凭据');
+                  }
+                },
+              },
+            ]}
+          >
+            <Input.Password
+              className={monoInputClass}
+              autoComplete="new-password"
+              disabled={credentialAction === 'clear'}
+              placeholder={
+                credentialAction === 'clear' ? '保存后清除' : credential.masked || '输入访问凭据'
+              }
+              onChange={(event) => {
+                setCredentialIntent(event.target.value ? 'replace' : 'keep');
+              }}
+            />
+          </Form.Item>
+          {credential.configured ? (
+            <Tooltip title={credentialAction === 'clear' ? '撤销清除凭据' : '清除凭据'}>
+              <Button
+                icon={credentialAction === 'clear' ? <UndoOutlined /> : <DeleteOutlined />}
+                aria-label={credentialAction === 'clear' ? '撤销清除凭据' : '清除凭据'}
+                danger={credentialAction !== 'clear'}
+                onClick={() => {
+                  form.setFieldValue('credentialSecret', '');
+                  setCredentialIntent(credentialAction === 'clear' ? 'keep' : 'clear');
+                }}
+              />
+            </Tooltip>
+          ) : null}
+        </div>
+      </Form.Item>
+      <Form.Item name="credentialAction" hidden>
+        <Input />
       </Form.Item>
     </div>
   );
@@ -144,7 +233,7 @@ function AdvancedFields({
             <Input className={monoInputClass} />
           </Form.Item>
         </div>
-        <div className="grid grid-cols-3 gap-x-5 [&_.ant-form-item]:mb-2.5 [&_.ant-form-item-label]:pb-1">
+        <div className="grid grid-cols-3 gap-x-5">
           <Form.Item
             label="探测频率"
             name="probeIntervalMinutes"
@@ -166,7 +255,7 @@ function AdvancedFields({
         <Form.Item name="headers" hidden>
           <Input />
         </Form.Item>
-        <div className="overflow-hidden rounded-md border border-rp-line [&>.ant-btn-link]:h-10">
+        <div className="overflow-hidden rounded-md border border-rp-line">
           <div className="grid min-h-10 grid-cols-[1fr_1.5fr_40px] items-center border-b border-rp-line bg-rp-subtle px-3 text-xs text-rp-secondary">
             <span>请求头</span>
             <span>值</span>
@@ -208,6 +297,7 @@ function AdvancedFields({
           <Button
             type="link"
             icon={<PlusOutlined />}
+            className="h-10!"
             onClick={() => updateHeaders([...headers, { key: '', value: '' }])}
           >
             添加请求头
@@ -229,15 +319,19 @@ const SiteDetail = forwardRef<
   SiteDetailHandle,
   { site: Site; advanced: boolean; onDirtyChange(dirty: boolean): void }
 >(function SiteDetail({ site, advanced, onDirtyChange }, ref) {
-  const { updateSite, updateSiteAdvanced, setModelEnabled, refreshModels } = useRelayPulse();
+  const { updateSite, updateSiteAdvanced, setModelEnabled, deleteModel, refreshModels } =
+    useRelayPulse();
   const runBackendAction = useBackendActionFeedback();
+  const { message, notification } = AntdApp.useApp();
   const [form] = Form.useForm<SiteFormValues>();
   const [advancedDraftVersion, setAdvancedDraftVersion] = useState(0);
   const [addModelOpen, setAddModelOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncingModels, setSyncingModels] = useState(false);
+  const [pendingModelRemovals, setPendingModelRemovals] = useState<ModelSyncRemoval[] | null>(null);
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
 
   const initialValues = useMemo(() => siteFormValues(site), [site]);
   const [baseline, setBaseline] = useState(initialValues);
@@ -274,7 +368,16 @@ const SiteDetail = forwardRef<
     try {
       const saved = await runBackendAction(
         async () => {
-          await updateSite(site.id, values);
+          const credential: UpdateSiteInput['credential'] =
+            values.credentialAction === 'replace'
+              ? { action: 'replace', secret: values.credentialSecret }
+              : { action: values.credentialAction };
+          await updateSite(site.id, {
+            name: values.name,
+            protocol: values.protocol,
+            baseUrl: values.baseUrl,
+            credential,
+          });
           if (advanced) {
             await updateSiteAdvanced(site.id, {
               modelsEndpoint: values.modelsEndpoint,
@@ -297,7 +400,13 @@ const SiteDetail = forwardRef<
         },
       );
       if (!saved) return false;
-      setBaseline(values);
+      const nextBaseline = {
+        ...values,
+        credentialAction: 'keep' as const,
+        credentialSecret: '',
+      };
+      form.setFieldsValue(nextBaseline);
+      setBaseline(nextBaseline);
       updateDirty(false);
       return true;
     } finally {
@@ -305,16 +414,37 @@ const SiteDetail = forwardRef<
     }
   }
 
-  async function syncModels() {
+  async function syncModels(confirmedRemovedModelIds: string[] = []) {
     setSyncingModels(true);
     try {
-      await runBackendAction(() => refreshModels(site.id), {
+      const result = await refreshModels(site.id, confirmedRemovedModelIds);
+      if (result.status === 'confirmationRequired') {
+        setPendingModelRemovals(result.removedModels);
+        if (confirmedRemovedModelIds.length > 0) {
+          message.warning({
+            key: `sync-models-changed-${site.id}`,
+            content: '远端模型列表已变化，请重新确认待删除模型。',
+            duration: 4,
+          });
+        }
+        return;
+      }
+      setPendingModelRemovals(null);
+      message.success({
         key: `sync-models-${site.id}`,
-        presentation: 'message',
-        successTitle: '模型列表已同步',
-        successDescription: `已从“${site.name}”获取最新模型列表。`,
-        errorTitle: '模型列表同步失败',
-        errorDescription: '仍显示上一次模型列表，请稍后重试。',
+        content: '模型列表已同步',
+        duration: 3,
+      });
+    } catch (error) {
+      notification.error({
+        key: `sync-models-${site.id}`,
+        title: '模型列表同步失败',
+        description: backendActionErrorDescription(error, '仍显示上一次模型列表，请稍后重试。'),
+        placement: 'topRight',
+        duration: 6,
+        pauseOnHover: true,
+        showProgress: true,
+        role: 'alert',
       });
     } finally {
       setSyncingModels(false);
@@ -338,6 +468,23 @@ const SiteDetail = forwardRef<
     }
   }
 
+  async function removeModel(modelId: string) {
+    const modelName = site.models.find((model) => model.id === modelId)?.name ?? '当前模型';
+    setDeletingModelId(modelId);
+    try {
+      await runBackendAction(() => deleteModel(site.id, modelId), {
+        key: `delete-model-${modelId}`,
+        presentation: 'message',
+        successTitle: `已删除 ${modelName}`,
+        successDescription: '模型及其探测记录已删除。',
+        errorTitle: `${modelName} 删除失败`,
+        errorDescription: '模型仍然保留，请重试。',
+      });
+    } finally {
+      setDeletingModelId(null);
+    }
+  }
+
   useImperativeHandle(ref, () => ({ discard, save }));
 
   return (
@@ -355,9 +502,7 @@ const SiteDetail = forwardRef<
           updateDirty(hasFormChanges(form.getFieldsValue(true), baseline));
         }}
       >
-        <div
-          className={`min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-20 max-[1180px]:px-4.5 ${scrollbarNoneClass}`}
-        >
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-20 max-[1180px]:px-4.5">
           <div className="mb-4 flex min-h-8 items-center justify-between">
             <div className="flex min-w-0 items-center gap-2 [&_h2]:m-0 [&_h2]:truncate [&_h2]:text-lg [&_h2]:leading-6.5">
               <StatusDot status={site.status} />
@@ -389,7 +534,12 @@ const SiteDetail = forwardRef<
                 {advanced ? '收起高级设置' : '高级设置'}
               </Button>
             </div>
-            <BasicFields />
+            <BasicFields
+              credential={site.credential}
+              onCredentialIntentChange={() => {
+                updateDirty(hasFormChanges(form.getFieldsValue(true), baseline));
+              }}
+            />
           </section>
 
           {advanced ? (
@@ -462,7 +612,9 @@ const SiteDetail = forwardRef<
                 <ModelTable
                   site={site}
                   loadingModelId={loadingModelId}
+                  deletingModelId={deletingModelId}
                   onEnabledChange={(modelId, enabled) => void changeModelEnabled(modelId, enabled)}
+                  onDelete={removeModel}
                 />
               </section>
             </>
@@ -485,6 +637,39 @@ const SiteDetail = forwardRef<
         ) : null}
       </Form>
       <AddModelModal open={addModelOpen} site={site} onClose={() => setAddModelOpen(false)} />
+      {pendingModelRemovals ? (
+        <Modal
+          open
+          title="确认删除已下架模型？"
+          width={480}
+          centered
+          getContainer={overlayContainer}
+          rootStyle={{ position: 'absolute' }}
+          mask={{ closable: false }}
+          closable={!syncingModels}
+          okText="删除并同步"
+          okType="danger"
+          cancelText="取消同步"
+          confirmLoading={syncingModels}
+          cancelButtonProps={{ disabled: syncingModels }}
+          onCancel={() => setPendingModelRemovals(null)}
+          onOk={() => void syncModels(pendingModelRemovals.map((model) => model.id))}
+        >
+          <Alert
+            type="warning"
+            showIcon
+            title={`远端目录中已不存在以下 ${pendingModelRemovals.length} 个模型`}
+            description="继续后将删除这些模型及其单独配置和探测记录；取消则本次不同步。"
+          />
+          <ul className="mt-3 mb-0 max-h-52 overflow-y-auto pl-5 font-mono text-[13px] leading-6">
+            {pendingModelRemovals.map((model) => (
+              <li key={model.id} className="wrap-anywhere">
+                {model.name}
+              </li>
+            ))}
+          </ul>
+        </Modal>
+      ) : null}
     </section>
   );
 });
@@ -591,7 +776,6 @@ export function SitesPage({ view }: { view: ViewName }) {
           width={440}
           centered
           getContainer={overlayContainer}
-          rootClassName={scopedOverlayClass}
           rootStyle={{ position: 'absolute' }}
           mask={{ closable: false }}
           closable={false}

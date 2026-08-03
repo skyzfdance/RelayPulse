@@ -4,7 +4,6 @@ import { useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
 import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
 import { navigateToView } from '../../app/view';
-import { scopedOverlayClass } from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
 
@@ -21,7 +20,6 @@ export function DeleteSiteModal() {
       width={440}
       centered
       getContainer={overlayContainer}
-      rootClassName={scopedOverlayClass}
       rootStyle={{ position: 'absolute' }}
       closable={false}
       mask={{ closable: false }}

@@ -4,6 +4,7 @@ import type {
   CreateSiteInput,
   CustomProbeSettings,
   GeneralSettings,
+  ModelSyncResult,
   ProbeSettings,
   Site,
   SiteAdvancedInput,
@@ -11,11 +12,18 @@ import type {
   UpdateSiteInput,
 } from '../domain/types';
 
+export interface StateChangedEvent {
+  revision: number;
+  domains: string[];
+}
+
 export interface RelayPulseDataSource {
+  subscribeToChanges?(listener: (event: StateChangedEvent) => void): Promise<() => void>;
   getSnapshot(): Promise<AppSnapshot>;
   getSite(id: string): Promise<Site | null>;
   createSite(input: CreateSiteInput): Promise<AppSnapshot>;
   createModel(siteId: string, input: CreateModelInput): Promise<AppSnapshot>;
+  deleteModel(siteId: string, modelId: string): Promise<AppSnapshot>;
   updateSite(id: string, input: UpdateSiteInput): Promise<AppSnapshot>;
   deleteSite(id: string): Promise<AppSnapshot>;
   reorderSites(siteIds: string[]): Promise<AppSnapshot>;
@@ -34,9 +42,9 @@ export interface RelayPulseDataSource {
     settings: CustomProbeSettings,
   ): Promise<AppSnapshot>;
   updateGeneralSettings(settings: GeneralSettings): Promise<AppSnapshot>;
-  refreshModels(siteId: string): Promise<AppSnapshot>;
+  runImmediateProbe(): Promise<AppSnapshot>;
+  refreshModels(siteId: string, confirmedRemovedModelIds?: string[]): Promise<ModelSyncResult>;
   refreshProbeRecords(): Promise<AppSnapshot>;
   clearProbeRecords(): Promise<AppSnapshot>;
   getTraySnapshot(): Promise<{ healthy: TraySnapshot; alerts: TraySnapshot }>;
-  reset(): Promise<AppSnapshot>;
 }

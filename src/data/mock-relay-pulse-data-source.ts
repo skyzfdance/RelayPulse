@@ -6,6 +6,7 @@ import type {
   CreateSiteInput,
   CustomProbeSettings,
   GeneralSettings,
+  ModelSyncResult,
   ProbeSettings,
   SiteAdvancedInput,
   ThemeMode,
@@ -41,6 +42,10 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
     }
   }
 
+  async subscribeToChanges() {
+    return () => undefined;
+  }
+
   private result(): Promise<AppSnapshot> {
     if (this.scenario === 'loading') return new Promise(() => undefined);
     if (this.scenario === 'error') return Promise.reject(new Error('Mock 数据加载失败，请重试。'));
@@ -64,7 +69,10 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
       name: input.name,
       protocol: input.protocol,
       baseUrl: input.baseUrl,
-      apiKeyMasked: input.apiKey ? '••••••••••••••••' : '未设置',
+      credential: {
+        configured: true,
+        masked: '••••••••••••••••',
+      },
       enabled: input.enabled,
       priority: nextIndex,
       status: 'muted',
@@ -116,10 +124,31 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
     return this.result();
   }
 
+  deleteModel(siteId: string, modelId: string): Promise<AppSnapshot> {
+    this.assertActionAvailable();
+    const site = this.requireSite(siteId);
+    if (!site.models.some((model) => model.id === modelId)) {
+      throw new Error(`Unknown model: ${modelId}`);
+    }
+    site.models = site.models.filter((model) => model.id !== modelId);
+    this.snapshot.probeRecords = this.snapshot.probeRecords.filter(
+      (record) => record.siteId !== siteId || record.modelId !== modelId,
+    );
+    this.updateParticipationSummary(site);
+    return this.result();
+  }
+
   updateSite(id: string, input: UpdateSiteInput): Promise<AppSnapshot> {
     this.assertActionAvailable();
     const site = this.requireSite(id);
-    Object.assign(site, input);
+    site.name = input.name;
+    site.protocol = input.protocol;
+    site.baseUrl = input.baseUrl;
+    if (input.credential.action === 'replace') {
+      site.credential = { configured: true, masked: '••••••••••••••••' };
+    } else if (input.credential.action === 'clear') {
+      site.credential = { configured: false, masked: null };
+    }
     return this.result();
   }
 
@@ -228,10 +257,14 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
     return this.result();
   }
 
-  refreshModels(siteId: string): Promise<AppSnapshot> {
+  runImmediateProbe(): Promise<AppSnapshot> {
+    return this.reset();
+  }
+
+  async refreshModels(siteId: string): Promise<ModelSyncResult> {
     this.assertActionAvailable();
     this.requireSite(siteId);
-    return this.result();
+    return { status: 'applied', snapshot: await this.result() };
   }
 
   refreshProbeRecords(): Promise<AppSnapshot> {

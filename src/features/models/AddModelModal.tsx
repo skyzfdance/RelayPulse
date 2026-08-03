@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
 import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
 import type { CreateModelInput, Site } from '../../domain/types';
-import { scopedOverlayClass } from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
 
@@ -53,7 +52,6 @@ export function AddModelModal({ open, site, onClose }: AddModelModalProps) {
       width={480}
       centered
       getContainer={overlayContainer}
-      rootClassName={scopedOverlayClass}
       rootStyle={{ position: 'absolute' }}
       mask={{ closable: false }}
       confirmLoading={submitting}
@@ -73,7 +71,7 @@ export function AddModelModal({ open, site, onClose }: AddModelModalProps) {
         requiredMark={false}
         preserve={false}
         initialValues={{ enabled: true }}
-        className="pt-2 [&_.ant-form-item]:mb-3"
+        className="pt-2"
       >
         <Form.Item
           label="模型名称"

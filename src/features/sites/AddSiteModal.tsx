@@ -4,18 +4,19 @@ import { useRelayPulse } from '../../app/relay-pulse-context';
 import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
 import { navigateToView } from '../../app/view';
 import type { CreateSiteInput } from '../../domain/types';
-import { monoInputClass, scopedOverlayClass } from '../../styles/tailwind';
+import { monoInputClass } from '../../styles/tailwind';
+import { siteProtocolOptions } from './protocol-options';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
 
 export function AddSiteModal() {
   const { createSite } = useRelayPulse();
   const runBackendAction = useBackendActionFeedback();
-  const [form] = Form.useForm<CreateSiteInput>();
+  const [form] = Form.useForm<Omit<CreateSiteInput, 'credential'> & { apiKey: string }>();
   const [submitting, setSubmitting] = useState(false);
 
   async function submit() {
-    let values: CreateSiteInput;
+    let values: Omit<CreateSiteInput, 'credential'> & { apiKey: string };
     try {
       values = await form.validateFields();
     } catch {
@@ -23,13 +24,23 @@ export function AddSiteModal() {
     }
     setSubmitting(true);
     try {
-      const created = await runBackendAction(() => createSite(values), {
-        key: 'create-site',
-        successTitle: '站点已添加',
-        successDescription: `“${values.name}”已保存，可以继续添加或同步模型。`,
-        errorTitle: '站点添加失败',
-        errorDescription: '站点没有创建，当前填写内容已保留，请检查后重试。',
-      });
+      const created = await runBackendAction(
+        () =>
+          createSite({
+            name: values.name,
+            protocol: values.protocol,
+            baseUrl: values.baseUrl,
+            enabled: values.enabled,
+            credential: { action: 'replace', secret: values.apiKey },
+          }),
+        {
+          key: 'create-site',
+          successTitle: '站点已添加',
+          successDescription: `“${values.name}”已保存，可以继续添加或同步模型。`,
+          errorTitle: '站点添加失败',
+          errorDescription: '站点没有创建，当前填写内容已保留，请检查后重试。',
+        },
+      );
       if (created) navigateToView('sites');
     } finally {
       setSubmitting(false);
@@ -43,7 +54,6 @@ export function AddSiteModal() {
       width={560}
       centered
       getContainer={overlayContainer}
-      rootClassName={scopedOverlayClass}
       rootStyle={{ position: 'absolute' }}
       mask={{ closable: false }}
       confirmLoading={submitting}
@@ -53,13 +63,13 @@ export function AddSiteModal() {
       onCancel={() => navigateToView('sites')}
       destroyOnHidden
     >
-      <Form<CreateSiteInput>
+      <Form<Omit<CreateSiteInput, 'credential'> & { apiKey: string }>
         name="add-site"
         form={form}
         layout="vertical"
         requiredMark={false}
-        initialValues={{ protocol: 'OpenAI 兼容', enabled: true }}
-        className="pt-2 [&_.ant-form-item]:mb-3"
+        initialValues={{ protocol: 'openai-compatible', enabled: true }}
+        className="pt-2"
       >
         <Form.Item
           label="站点名称"
@@ -69,13 +79,7 @@ export function AddSiteModal() {
           <Input placeholder="例如：OpenAI 主线路" autoFocus />
         </Form.Item>
         <Form.Item label="接口协议" name="protocol" rules={[{ required: true }]}>
-          <Select
-            options={[
-              { value: 'OpenAI 兼容', label: 'OpenAI 兼容' },
-              { value: 'Anthropic', label: 'Anthropic' },
-              { value: 'Gemini', label: 'Gemini' },
-            ]}
-          />
+          <Select options={siteProtocolOptions} />
         </Form.Item>
         <Form.Item
           label="Base URL"

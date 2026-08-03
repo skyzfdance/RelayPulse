@@ -6,7 +6,6 @@ import { Button, Switch, Tooltip } from 'antd';
 import { StatusDot } from '../../components/StatusDot';
 import type { Site } from '../../domain/types';
 import { navigateToView } from '../../app/view';
-import { scrollbarNoneClass } from '../../styles/tailwind';
 
 function SortableSiteItem({
   site,
@@ -29,7 +28,7 @@ function SortableSiteItem({
   return (
     <div
       ref={ref}
-      className={`grid min-h-16 cursor-pointer grid-cols-[20px_minmax(0,1fr)_34px] items-center gap-1.5 rounded-md border px-2.5 py-2 pl-1 transition-colors [&>.ant-switch]:justify-self-end ${
+      className={`grid min-h-16 cursor-pointer grid-cols-[20px_minmax(0,1fr)_34px] items-center gap-1.5 rounded-md border px-2.5 py-2 pl-1 transition-colors ${
         selected
           ? 'border-rp-line-active bg-rp-surface hover:bg-rp-surface'
           : 'border-transparent bg-transparent hover:bg-rp-hover'
@@ -60,6 +59,7 @@ function SortableSiteItem({
         <div className="mt-px truncate text-xs leading-5 text-rp-tertiary">{site.summary}</div>
       </div>
       <Switch
+        className="justify-self-end"
         size="small"
         checked={site.enabled}
         loading={loading}
@@ -88,9 +88,7 @@ export function SiteList({
   onReorder(ids: string[]): void;
 }) {
   return (
-    <aside
-      className={`w-75 flex-none overflow-y-auto border-r border-rp-line bg-rp-subtle px-3 py-4 max-[1180px]:w-69 ${scrollbarNoneClass}`}
-    >
+    <aside className="w-75 flex-none overflow-y-auto border-r border-rp-line bg-rp-subtle px-3 py-4 max-[1180px]:w-69">
       <div className="mb-2 flex h-8 items-center justify-between">
         <div>
           <strong>站点</strong>

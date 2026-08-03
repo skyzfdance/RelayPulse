@@ -22,9 +22,10 @@ function TrayHeader({ loading, onRefresh }: { loading: boolean; onRefresh(): voi
         <BrandMark compact />
         <strong>RelayPulse</strong>
       </div>
-      <div className="flex gap-1 [&_.ant-btn]:w-8 [&_.ant-btn]:px-0">
+      <div className="flex gap-1">
         <Tooltip title="立即探测">
           <Button
+            shape="circle"
             icon={<ReloadOutlined />}
             loading={loading}
             aria-label="立即探测"
@@ -33,6 +34,7 @@ function TrayHeader({ loading, onRefresh }: { loading: boolean; onRefresh(): voi
         </Tooltip>
         <Tooltip title="打开设置">
           <Button
+            shape="circle"
             icon={<SettingOutlined />}
             aria-label="打开设置"
             onClick={() => navigateToView('sites')}
@@ -53,7 +55,7 @@ function TrayFooter({ snapshot }: { snapshot: TraySnapshot }) {
 }
 
 export function TrayPage({ view }: { view: Extract<ViewName, 'tray-healthy' | 'tray-alerts'> }) {
-  const { snapshot, reset } = useRelayPulse();
+  const { snapshot, runImmediateProbe } = useRelayPulse();
   const runBackendAction = useBackendActionFeedback();
   const [refreshing, setRefreshing] = useState(false);
   if (!snapshot) return null;
@@ -63,7 +65,7 @@ export function TrayPage({ view }: { view: Extract<ViewName, 'tray-healthy' | 't
   async function refreshTray() {
     setRefreshing(true);
     try {
-      await runBackendAction(() => reset(), {
+      await runBackendAction(() => runImmediateProbe(), {
         key: 'refresh-tray-probe',
         presentation: 'message',
         successTitle: '探测状态已刷新',

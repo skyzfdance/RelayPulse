@@ -19,7 +19,7 @@ import {
   reservedProbeFields,
   resolveCustomProbeEndpoint,
 } from '../../domain/probe-request';
-import { monoInputClass, scopedOverlayClass } from '../../styles/tailwind';
+import { monoInputClass } from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
 const drawerSectionClass =
@@ -27,7 +27,6 @@ const drawerSectionClass =
 const drawerSectionHeaderClass =
   'mb-2 flex items-center justify-between gap-4 [&_p]:m-0 [&_p]:text-xs [&_p]:leading-5 [&_p]:text-rp-tertiary';
 const fieldLabelClass = 'mt-2.25 mb-1.25 block text-xs text-rp-secondary';
-const drawerRootClass = `${scopedOverlayClass} [&_.ant-drawer-body]:scrollbar-none [&_.ant-drawer-body]:[-ms-overflow-style:none] [&_.ant-drawer-body::-webkit-scrollbar]:hidden`;
 const economicalDefaults: ProbeSettings = {
   mode: 'disabled-thinking',
   maxOutputTokens: 8,
@@ -221,7 +220,6 @@ export function ModelSettingsDrawer() {
         </div>
       }
       getContainer={overlayContainer}
-      rootClassName={drawerRootClass}
       rootStyle={{ position: 'absolute' }}
       mask={{ closable: false }}
       onClose={closeDrawer}

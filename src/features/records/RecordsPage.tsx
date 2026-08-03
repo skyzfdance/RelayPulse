@@ -2,6 +2,7 @@ import {
   DeleteOutlined,
   FileSearchOutlined,
   MoreOutlined,
+  QuestionCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
 } from '@ant-design/icons';
@@ -29,20 +30,12 @@ import type {
   ProbeRecordStatus,
   RequestHeader,
 } from '../../domain/types';
-import { pageHeaderClass, scopedOverlayClass } from '../../styles/tailwind';
+import { pageHeaderClass } from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
 
 const drawerSectionClass =
   'border-b border-rp-line py-4 last:border-b-0 [&>h3]:m-0 [&>h3]:text-sm [&>h3]:leading-6 [&>h3]:font-semibold';
-
-const recordDrawerClass = `${scopedOverlayClass} [&_.ant-drawer-body]:scrollbar-none [&_.ant-drawer-body]:[-ms-overflow-style:none] [&_.ant-drawer-body::-webkit-scrollbar]:hidden`;
-
-const tableStructureClass =
-  'relative flex h-full min-h-0 flex-col overflow-hidden text-rp [&>.ant-spin]:absolute [&>.ant-spin]:inset-0 [&>.ant-spin]:overflow-hidden [&_.ant-spin-nested-loading]:h-full [&_.ant-spin-nested-loading]:min-h-0 [&_.ant-spin-container]:flex [&_.ant-spin-container]:h-full [&_.ant-spin-container]:min-h-0 [&_.ant-spin-container]:flex-1 [&_.ant-spin-container]:flex-col [&_.ant-spin-container]:overflow-hidden [&_.ant-table]:flex [&_.ant-table]:min-h-0 [&_.ant-table]:flex-1 [&_.ant-table]:flex-col [&_.ant-table]:overflow-hidden [&_.ant-table]:text-rp [&_.ant-table-container]:flex [&_.ant-table-container]:min-h-0 [&_.ant-table-container]:flex-1 [&_.ant-table-container]:flex-col [&_.ant-table-container]:overflow-hidden [&_.ant-table-header]:flex-none [&_.ant-table-body]:min-h-0 [&_.ant-table-body]:max-h-full! [&_.ant-table-body]:flex-1 [&_.ant-table-body]:overflow-y-auto! [&_.ant-table-body]:scrollbar-none [&_.ant-table-body]:[-ms-overflow-style:none] [&_.ant-table-body::-webkit-scrollbar]:hidden [&_.ant-table-thead>tr>th]:bg-rp-subtle [&_.ant-table-thead>tr>th]:text-xs [&_.ant-table-thead>tr>th]:font-normal [&_.ant-table-thead>tr>th]:text-rp-secondary [&_.ant-table-cell]:[font-variant-numeric:tabular-nums]';
-
-const recordsTableClass = `${tableStructureClass} absolute inset-0 [&_.ant-pagination]:my-3! [&_.ant-pagination]:flex-none`;
-const usageTableClass = `${tableStructureClass} flex-1`;
 
 type RecordsMode = 'records' | 'usage';
 type PeriodFilter = '24h' | '7d' | '30d';
@@ -95,7 +88,7 @@ function CaptureBody({ capture, emptyText }: { capture: ProbeCapture; emptyText:
   return (
     <>
       {capture.rawBody ? (
-        <pre className="m-0 max-h-55 overflow-auto rounded-md bg-[#141414] px-3 py-2.5 font-mono text-[11px] leading-4.5 whitespace-pre-wrap text-white wrap-anywhere scrollbar-none [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+        <pre className="m-0 max-h-55 overflow-auto rounded-md bg-[#141414] px-3 py-2.5 font-mono text-[11px] leading-4.5 whitespace-pre-wrap text-white wrap-anywhere">
           {capture.rawBody}
         </pre>
       ) : (
@@ -197,7 +190,6 @@ function RecordDetailDrawer({ record, onClose }: { record: ProbeRecord; onClose(
         </div>
       }
       getContainer={overlayContainer}
-      rootClassName={recordDrawerClass}
       rootStyle={{ position: 'absolute' }}
       mask={{ closable: true }}
       onClose={() => setOpen(false)}
@@ -273,7 +265,7 @@ function RecordDetailDrawer({ record, onClose }: { record: ProbeRecord; onClose(
         <h3>请求与响应</h3>
         <Collapse
           size="small"
-          className="mt-2 bg-rp-surface [&_.ant-collapse-content-box]:px-3 [&_.ant-collapse-content-box]:pt-1 [&_.ant-collapse-content-box]:pb-3 [&_.ant-collapse-header]:items-center! [&_.ant-collapse-header-text]:font-semibold"
+          className="mt-2"
           expandIconPlacement="end"
           items={[
             {
@@ -303,8 +295,8 @@ function RecordDetailDrawer({ record, onClose }: { record: ProbeRecord; onClose(
               key: 'response',
               label: '原始返回',
               extra: (
-                <span className="inline-flex items-center gap-1.5 text-xs font-normal text-rp-tertiary [font-variant-numeric:tabular-nums] [&_.ant-tag]:m-0">
-                  <Tag color={response.mode === 'stream' ? 'blue' : undefined}>
+                <span className="inline-flex items-center gap-1.5 text-xs font-normal text-rp-tertiary [font-variant-numeric:tabular-nums]">
+                  <Tag className="m-0" color={response.mode === 'stream' ? 'blue' : undefined}>
                     {response.mode === 'stream' ? '流式' : '同步'}
                   </Tag>
                   {formatBytes(response.capturedBytes)}
@@ -650,19 +642,34 @@ export function RecordsPage() {
 
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pt-4">
         <div className="mb-3 flex min-h-8 items-center justify-between gap-4 [&>span]:text-xs [&>span]:text-rp-tertiary">
-          <Segmented
-            value={mode}
-            options={[
-              { value: 'records', label: '探测记录' },
-              { value: 'usage', label: 'Token 统计' },
-            ]}
-            onChange={(value) => setMode(value as RecordsMode)}
-          />
+          <div className="flex items-center gap-1">
+            <Segmented
+              value={mode}
+              options={[
+                { value: 'records', label: '探测记录' },
+                { value: 'usage', label: 'Token 统计' },
+              ]}
+              onChange={(value) => setMode(value as RecordsMode)}
+            />
+            {mode === 'usage' ? (
+              <Tooltip title="仅汇总供应商响应中明确返回的 usage 字段。未上报请求不参与 Token 合计与平均值，RelayPulse 也不会根据文本长度估算用量。">
+                <Button
+                  type="text"
+                  size="small"
+                  shape="circle"
+                  icon={<QuestionCircleOutlined />}
+                  aria-label="Token 统计说明"
+                  className="size-7! text-rp-tertiary!"
+                />
+              </Tooltip>
+            ) : null}
+          </div>
           <span>记录保留 {snapshot.generalSettings.historyRetentionDays} 天</span>
         </div>
 
-        <div className="flex min-h-11 flex-wrap items-start gap-2 border-b border-rp-line pb-3 [&>.ant-input-affix-wrapper]:ml-auto [&>.ant-input-affix-wrapper]:w-55 [&>.ant-select]:w-36 [&_.anticon-search]:text-rp-quaternary">
+        <div className="flex min-h-11 flex-wrap items-start gap-2 border-b border-rp-line pb-3">
           <Select<PeriodFilter>
+            className="w-36"
             value={period}
             aria-label="统计周期"
             options={[
@@ -673,6 +680,7 @@ export function RecordsPage() {
             onChange={setPeriod}
           />
           <Select
+            className="w-36"
             value={siteFilter}
             aria-label="站点筛选"
             options={siteOptions}
@@ -684,12 +692,14 @@ export function RecordsPage() {
           {mode === 'records' ? (
             <>
               <Select
+                className="w-36"
                 value={modelFilter}
                 aria-label="模型筛选"
                 options={modelOptions}
                 onChange={setModelFilter}
               />
               <Select<StatusFilter>
+                className="w-36"
                 value={statusFilter}
                 aria-label="状态筛选"
                 options={[
@@ -701,31 +711,27 @@ export function RecordsPage() {
                 onChange={setStatusFilter}
               />
               <Input
+                className="ml-auto w-55"
                 allowClear
-                prefix={<SearchOutlined />}
+                prefix={<SearchOutlined className="text-rp-quaternary" />}
                 value={query}
                 aria-label="搜索探测记录"
                 placeholder="搜索模型或错误"
                 onChange={(event) => setQuery(event.target.value)}
               />
             </>
-          ) : (
-            <span className="ml-auto pt-1.5 text-xs text-rp-tertiary">
-              仅汇总响应中明确返回的 usage 字段
-            </span>
-          )}
+          ) : null}
         </div>
 
         {mode === 'records' ? (
-          <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-y-auto py-3">
             <Table<ProbeRecord>
-              className={recordsTableClass}
               rowKey="id"
               columns={recordColumns}
               dataSource={filteredRecords}
               size="small"
               tableLayout="fixed"
-              scroll={{ x: 1110, y: '100%' }}
+              scroll={{ x: 1110 }}
               showSorterTooltip={{ target: 'sorter-icon' }}
               pagination={{
                 defaultPageSize: 10,
@@ -754,21 +760,19 @@ export function RecordsPage() {
                 <strong>{unavailableCount}</strong> 次未上报
               </span>
             </div>
-            <Table<SiteUsageSummary>
-              className={usageTableClass}
-              rowKey="siteId"
-              columns={usageColumns}
-              dataSource={usageSummary}
-              size="small"
-              tableLayout="fixed"
-              scroll={{ x: 1050, y: '100%' }}
-              pagination={false}
-              showSorterTooltip={{ target: 'sorter-icon' }}
-              locale={{ emptyText: '当前周期没有可统计的探测记录' }}
-            />
-            <p className="mt-3 flex-none text-xs leading-5 text-rp-tertiary">
-              未上报的请求不参与 Token 合计与平均值；RelayPulse 不根据文本长度估算用量。
-            </p>
+            <div className="min-h-0 flex-1 overflow-y-auto py-3">
+              <Table<SiteUsageSummary>
+                rowKey="siteId"
+                columns={usageColumns}
+                dataSource={usageSummary}
+                size="small"
+                tableLayout="fixed"
+                scroll={{ x: 1050 }}
+                pagination={false}
+                showSorterTooltip={{ target: 'sorter-icon' }}
+                locale={{ emptyText: '当前周期没有可统计的探测记录' }}
+              />
+            </div>
           </div>
         )}
       </main>
@@ -784,7 +788,6 @@ export function RecordsPage() {
           width={440}
           centered
           getContainer={overlayContainer}
-          rootClassName={scopedOverlayClass}
           rootStyle={{ position: 'absolute' }}
           mask={{ closable: false }}
           okText="清理记录"

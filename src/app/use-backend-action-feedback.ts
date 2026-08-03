@@ -1,5 +1,6 @@
 import { App as AntdApp } from 'antd';
 import { useCallback } from 'react';
+import { RelayPulseBackendError } from '../data/tauri-relay-pulse-data-source';
 
 interface BackendActionFeedback {
   key: string;
@@ -36,7 +37,7 @@ export function useBackendActionFeedback() {
           role: 'status',
         });
         return true;
-      } catch {
+      } catch (error) {
         if (feedback.presentation === 'message') {
           message.error({
             key: feedback.key,
@@ -48,7 +49,7 @@ export function useBackendActionFeedback() {
         notification.error({
           key: feedback.key,
           title: feedback.errorTitle,
-          description: feedback.errorDescription,
+          description: backendActionErrorDescription(error, feedback.errorDescription),
           placement: 'topRight',
           duration: 6,
           pauseOnHover: true,
@@ -60,4 +61,9 @@ export function useBackendActionFeedback() {
     },
     [message, notification],
   );
+}
+
+export function backendActionErrorDescription(error: unknown, fallback: string) {
+  if (!(error instanceof RelayPulseBackendError)) return fallback;
+  return `${fallback} 错误代码：${error.code}。`;
 }

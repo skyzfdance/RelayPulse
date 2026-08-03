@@ -17,6 +17,15 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 export type ProbeMode = 'inherit' | 'disabled-thinking' | 'minimum-reasoning';
 export type ParameterType = 'string' | 'boolean' | 'number' | 'json';
 export type ProbeRecordStatus = 'healthy' | 'warning' | 'error';
+export type SiteProtocol = 'openai-compatible' | 'anthropic' | 'openai-responses' | 'custom-http';
+
+export type CredentialIntent =
+  { action: 'keep' } | { action: 'replace'; secret: string } | { action: 'clear' };
+
+export interface CredentialSummary {
+  configured: boolean;
+  masked: string | null;
+}
 
 export interface PassThroughParameter {
   key: string;
@@ -50,6 +59,15 @@ export interface Model {
   customProbe: CustomProbeSettings;
 }
 
+export interface ModelSyncRemoval {
+  id: string;
+  name: string;
+}
+
+export type ModelSyncResult =
+  | { status: 'applied'; snapshot: AppSnapshot }
+  | { status: 'confirmationRequired'; removedModels: ModelSyncRemoval[] };
+
 export interface RequestHeader {
   key: string;
   value: string;
@@ -58,16 +76,16 @@ export interface RequestHeader {
 export interface Site {
   id: string;
   name: string;
-  protocol: string;
+  protocol: SiteProtocol;
   baseUrl: string;
-  apiKeyMasked: string;
+  credential: CredentialSummary;
   enabled: boolean;
   priority: number;
   status: HealthStatus;
   summary: string;
   modelsEndpoint: string;
   probeEndpoint: string;
-  probeIntervalMinutes: number;
+  probeIntervalMinutes: number | null;
   firstTokenTimeoutSeconds: number;
   totalTimeoutSeconds: number;
   headers: RequestHeader[];
@@ -81,7 +99,8 @@ export interface GeneralSettings {
   trayAction: 'panel';
   theme: ThemeMode;
   language: 'zh-CN';
-  historyRetentionDays: 30;
+  historyRetentionDays: number;
+  diagnosticCaptureEnabled: boolean;
 }
 
 export interface TrayAlert {
@@ -160,6 +179,7 @@ export interface ProbeRecord {
 }
 
 export interface AppSnapshot {
+  revision: number;
   sites: Site[];
   selectedSiteId: string | null;
   generalSettings: GeneralSettings;
@@ -172,9 +192,9 @@ export interface AppSnapshot {
 
 export interface CreateSiteInput {
   name: string;
-  protocol: string;
+  protocol: SiteProtocol;
   baseUrl: string;
-  apiKey: string;
+  credential: Extract<CredentialIntent, { action: 'replace' }>;
   enabled: boolean;
 }
 
@@ -185,15 +205,15 @@ export interface CreateModelInput {
 
 export interface UpdateSiteInput {
   name: string;
-  protocol: string;
+  protocol: SiteProtocol;
   baseUrl: string;
-  apiKeyMasked: string;
+  credential: CredentialIntent;
 }
 
 export interface SiteAdvancedInput {
   modelsEndpoint: string;
   probeEndpoint: string;
-  probeIntervalMinutes: number;
+  probeIntervalMinutes: number | null;
   firstTokenTimeoutSeconds: number;
   totalTimeoutSeconds: number;
   headers: RequestHeader[];

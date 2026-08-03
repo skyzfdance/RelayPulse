@@ -53,9 +53,9 @@ const sites: Site[] = [
   {
     id: 'openai-main',
     name: 'OpenAI 主线路',
-    protocol: 'OpenAI 兼容',
+    protocol: 'openai-compatible',
     baseUrl: 'https://api.openai.com/v1',
-    apiKeyMasked: 'sk-proj-••••••••••••••••',
+    credential: { configured: true, masked: 'sk-proj-••••••••••••••••' },
     enabled: true,
     priority: 1,
     status: 'healthy',
@@ -94,9 +94,9 @@ const sites: Site[] = [
   {
     id: 'claude-backup',
     name: 'Claude 备用线路',
-    protocol: 'OpenAI 兼容',
+    protocol: 'openai-compatible',
     baseUrl: 'https://claude-gateway.example/v1',
-    apiKeyMasked: 'sk-ant-••••••••••••••••',
+    credential: { configured: true, masked: 'sk-ant-••••••••••••••••' },
     enabled: true,
     priority: 2,
     status: 'error',
@@ -115,9 +115,9 @@ const sites: Site[] = [
   {
     id: 'gemini-asia',
     name: 'Gemini 亚洲线路',
-    protocol: 'OpenAI 兼容',
+    protocol: 'openai-compatible',
     baseUrl: 'https://gemini-gateway.example/v1',
-    apiKeyMasked: 'gm-••••••••••••••••',
+    credential: { configured: true, masked: 'gm-••••••••••••••••' },
     enabled: true,
     priority: 3,
     status: 'warning',
@@ -136,9 +136,9 @@ const sites: Site[] = [
   {
     id: 'ollama-local',
     name: '本地 Ollama',
-    protocol: 'OpenAI 兼容',
+    protocol: 'openai-compatible',
     baseUrl: 'http://127.0.0.1:11434/v1',
-    apiKeyMasked: '不需要凭据',
+    credential: { configured: false, masked: null },
     enabled: true,
     priority: 4,
     status: 'muted',
@@ -155,9 +155,9 @@ const sites: Site[] = [
   {
     id: 'legacy-proxy',
     name: '旧代理节点',
-    protocol: 'OpenAI 兼容',
+    protocol: 'openai-compatible',
     baseUrl: 'https://legacy.example/v1',
-    apiKeyMasked: 'sk-old-••••••••••••',
+    credential: { configured: true, masked: 'sk-old-••••••••••••' },
     enabled: false,
     priority: 5,
     status: 'muted',
@@ -587,6 +587,7 @@ const probeRecords: ProbeRecord[] = [
 
 export function createFixtureSnapshot(): AppSnapshot {
   return structuredClone({
+    revision: 0,
     sites,
     selectedSiteId: 'openai-main',
     generalSettings: {
@@ -596,6 +597,7 @@ export function createFixtureSnapshot(): AppSnapshot {
       theme: 'system',
       language: 'zh-CN',
       historyRetentionDays: 30,
+      diagnosticCaptureEnabled: true,
     },
     probeRecords,
     tray: {

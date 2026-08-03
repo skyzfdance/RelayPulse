@@ -20,14 +20,17 @@ describe('MockRelayPulseDataSource', () => {
   it('creates and deletes only the in-memory snapshot', async () => {
     const created = await dataSource.createSite({
       name: '测试站点',
-      protocol: 'OpenAI 兼容',
+      protocol: 'openai-compatible',
       baseUrl: 'https://mock.example/v1',
-      apiKey: 'fixture-only',
+      credential: { action: 'replace', secret: 'fixture-only' },
       enabled: true,
     });
     const id = created.selectedSiteId;
     expect(id).toBeTruthy();
-    expect(created.sites[created.sites.length - 1]?.apiKeyMasked).toBe('••••••••••••••••');
+    expect(created.sites[created.sites.length - 1]?.credential).toEqual({
+      configured: true,
+      masked: '••••••••••••••••',
+    });
 
     await dataSource.deleteSite(id!);
     expect((await dataSource.getSnapshot()).sites.some((site) => site.id === id)).toBe(false);
@@ -36,10 +39,58 @@ describe('MockRelayPulseDataSource', () => {
     expect((await dataSource.getSnapshot()).sites).toHaveLength(5);
   });
 
+  it('deletes a model only from its owning site', async () => {
+    const before = await dataSource.getSnapshot();
+    const site = before.sites[0];
+    const model = site.models[0];
+
+    const after = await dataSource.deleteModel(site.id, model.id);
+
+    expect(after.sites[0].models.some((item) => item.id === model.id)).toBe(false);
+    expect(after.sites.slice(1)).toEqual(before.sites.slice(1));
+  });
+
+  it('returns an applied result for mock model synchronization', async () => {
+    const site = (await dataSource.getSnapshot()).sites[0];
+
+    const result = await dataSource.refreshModels(site.id);
+
+    expect(result.status).toBe('applied');
+    if (result.status === 'applied') expect(result.snapshot.sites[0].id).toBe(site.id);
+  });
+
   it('returns cloned values that cannot mutate the fixture', async () => {
     const first = await dataSource.getSnapshot();
     first.sites[0].name = '外部修改';
     expect((await dataSource.getSnapshot()).sites[0].name).toBe('OpenAI 主线路');
+  });
+
+  it('uses explicit keep, replace and clear credential intents', async () => {
+    const site = (await dataSource.getSnapshot()).sites[0];
+
+    const kept = await dataSource.updateSite(site.id, {
+      name: site.name,
+      protocol: site.protocol,
+      baseUrl: site.baseUrl,
+      credential: { action: 'keep' },
+    });
+    expect(kept.sites[0].credential).toEqual(site.credential);
+
+    const cleared = await dataSource.updateSite(site.id, {
+      name: site.name,
+      protocol: site.protocol,
+      baseUrl: site.baseUrl,
+      credential: { action: 'clear' },
+    });
+    expect(cleared.sites[0].credential).toEqual({ configured: false, masked: null });
+
+    const replaced = await dataSource.updateSite(site.id, {
+      name: site.name,
+      protocol: site.protocol,
+      baseUrl: site.baseUrl,
+      credential: { action: 'replace', secret: 'new-fixture-only' },
+    });
+    expect(replaced.sites[0].credential.configured).toBe(true);
   });
 
   it('excludes enabled sites when all of their models are disabled', async () => {

@@ -22,6 +22,10 @@ for (const [view, width, height] of cases) {
     await page.goto(`/?view=${view}&theme=dark`);
     await expect(page.locator('[data-theme="dark"]')).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
+    if (view.startsWith('tray-')) {
+      await expect(page.getByTestId('tray-panel')).toHaveAttribute('data-motion', 'open');
+      await expect(page.getByTestId('tray-panel')).toHaveCSS('opacity', '1');
+    }
 
     const customSurfaces = await page.evaluate(() => {
       const selectors = [

@@ -109,3 +109,43 @@
 .rp-table-scrollbar::-webkit-scrollbar-thumb:hover {
   background: var(--rp-text-tertiary, #595959);
 }
+
+.rp-tray-panel {
+  background: rgb(255 255 255 / 56%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    opacity 100ms ease-in,
+    transform 100ms ease-in;
+}
+
+[data-theme='dark'] .rp-tray-panel {
+  background: rgb(20 20 23 / 62%);
+}
+
+@supports (background: color-mix(in srgb, white 50%, transparent)) {
+  .rp-tray-panel {
+    background: color-mix(in srgb, var(--rp-bg-container) 58%, transparent);
+  }
+}
+
+.rp-tray-panel[data-motion='open'] {
+  opacity: 1;
+  transform: translateY(0);
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
+}
+
+.rp-tray-panel[data-motion='closed'] {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rp-tray-panel,
+  .rp-tray-panel[data-motion='open'] {
+    transform: none;
+    transition: none;
+  }
+}

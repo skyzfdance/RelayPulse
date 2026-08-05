@@ -84,10 +84,10 @@ pub fn run() {
             }
             WindowEvent::CloseRequested { api, .. } if window.label() == "status-panel" => {
                 api.prevent_close();
-                let _ = window.hide();
+                let _ = desktop::request_status_panel_hide(window.app_handle(), true);
             }
             WindowEvent::Focused(false) if window.label() == "status-panel" => {
-                let _ = window.hide();
+                let _ = desktop::request_status_panel_hide(window.app_handle(), false);
             }
             _ => {}
         })

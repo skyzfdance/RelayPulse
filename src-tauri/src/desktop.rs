@@ -1,11 +1,18 @@
-use std::{collections::HashSet, io, path::Path, process::Command};
+use std::{
+    io,
+    path::Path,
+    process::Command,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::Duration,
+};
 
 use serde::Serialize;
 use tauri::{
     image::Image,
     menu::MenuBuilder,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Rect, WebviewUrl,
+    window::{Effect, EffectState, EffectsBuilder},
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Rect, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::ManagerExt;
@@ -17,6 +24,12 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "relaypulse-status";
 const MAIN_WINDOW_MENU_ID: &str = "main-window";
 const QUIT_MENU_ID: &str = "quit";
+const STATUS_PANEL_OPENING_EVENT: &str = "relaypulse://status-panel-opening";
+const STATUS_PANEL_CLOSING_EVENT: &str = "relaypulse://status-panel-closing";
+const STATUS_PANEL_CLOSE_DELAY: Duration = Duration::from_millis(110);
+static STATUS_PANEL_MOTION_GENERATION: AtomicU64 = AtomicU64::new(0);
+static STATUS_PANEL_CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
+static STATUS_PANEL_OPEN_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 struct StatusPanelAnchor {
@@ -44,6 +57,8 @@ struct NavigateEvent<'a> {
 
 pub fn set_tray_enabled(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
     if !enabled {
+        STATUS_PANEL_CLOSE_REQUESTED.store(true, Ordering::Relaxed);
+        STATUS_PANEL_MOTION_GENERATION.fetch_add(1, Ordering::Relaxed);
         if let Some(panel) = app.get_webview_window(STATUS_WINDOW_LABEL) {
             panel.hide()?;
         }
@@ -62,7 +77,7 @@ pub fn set_tray_enabled(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
         .build()?;
     let builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .icon(status_icon(TrayHealth::Neutral))
+        .icon(status_icon(TrayIconState::Idle))
         .show_menu_on_left_click(false)
         .tooltip("RelayPulse")
         .on_tray_icon_event(|tray, event| {
@@ -99,34 +114,36 @@ pub fn update_status_projection(
     snapshot: &ApplicationSnapshot,
 ) -> tauri::Result<()> {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        tray.set_icon(Some(status_icon(tray_health(snapshot))))?;
+        tray.set_icon(Some(status_icon(tray_icon_state(snapshot))))?;
     }
     if let Some(window) = app.get_webview_window(STATUS_WINDOW_LABEL) {
-        let view = if snapshot_has_alerts(snapshot) {
-            "tray-alerts"
-        } else {
-            "tray-healthy"
-        };
-        window.emit("relaypulse://navigate", NavigateEvent { view })?;
+        let (view, width, height) = status_panel_layout(snapshot_alert_count(snapshot));
+        window.set_size(LogicalSize::new(width, height))?;
+        app.emit_to(
+            STATUS_WINDOW_LABEL,
+            "relaypulse://navigate",
+            NavigateEvent { view },
+        )?;
     }
     Ok(())
 }
 
 fn show_status_panel(
     app: &AppHandle,
-    has_alerts: bool,
+    alert_count: usize,
     anchor: StatusPanelAnchor,
 ) -> tauri::Result<()> {
-    let (view, width, height) = if has_alerts {
-        ("tray-alerts", 440.0, 380.0)
-    } else {
-        ("tray-healthy", 400.0, 230.0)
-    };
+    let (view, width, height) = status_panel_layout(alert_count);
     let position = status_panel_position(app, anchor, width, height)?;
     if let Some(window) = app.get_webview_window(STATUS_WINDOW_LABEL) {
         window.set_size(LogicalSize::new(width, height))?;
         window.set_position(position)?;
-        window.emit("relaypulse://navigate", NavigateEvent { view })?;
+        app.emit_to(
+            STATUS_WINDOW_LABEL,
+            "relaypulse://navigate",
+            NavigateEvent { view },
+        )?;
+        begin_status_panel_opening(&window)?;
         window.show()?;
         window.set_focus()?;
         return Ok(());
@@ -139,19 +156,72 @@ fn show_status_panel(
     )
     .title("RelayPulse 状态")
     .inner_size(width, height)
-    .min_inner_size(width, height)
-    .max_inner_size(width, height)
     .resizable(false)
     .decorations(false)
     .transparent(true)
     .shadow(false)
+    .effects(
+        EffectsBuilder::new()
+            .effects([Effect::Popover, Effect::Acrylic])
+            .state(EffectState::Active)
+            .radius(10.0)
+            .build(),
+    )
     .always_on_top(true)
     .skip_taskbar(true)
     .visible(false)
     .build()?;
     window.set_position(position)?;
+    begin_status_panel_opening(&window)?;
     window.show()?;
     window.set_focus()?;
+    Ok(())
+}
+
+fn status_panel_layout(alert_count: usize) -> (&'static str, f64, f64) {
+    if alert_count == 0 {
+        ("tray-healthy", 368.0, 180.0)
+    } else {
+        let visible_alerts = alert_count.min(3) as f64;
+        ("tray-alerts", 404.0, 182.0 + visible_alerts * 64.0)
+    }
+}
+
+fn begin_status_panel_opening(window: &WebviewWindow) -> tauri::Result<()> {
+    STATUS_PANEL_CLOSE_REQUESTED.store(false, Ordering::Relaxed);
+    STATUS_PANEL_MOTION_GENERATION.fetch_add(1, Ordering::Relaxed);
+    window
+        .app_handle()
+        .emit_to(STATUS_WINDOW_LABEL, STATUS_PANEL_OPENING_EVENT, ())
+}
+
+fn schedule_status_panel_hide(
+    window: &WebviewWindow,
+    hide_even_if_focused: bool,
+) -> tauri::Result<()> {
+    STATUS_PANEL_CLOSE_REQUESTED.store(true, Ordering::Relaxed);
+    let generation = STATUS_PANEL_MOTION_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    window
+        .app_handle()
+        .emit_to(STATUS_WINDOW_LABEL, STATUS_PANEL_CLOSING_EVENT, ())?;
+    let window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(STATUS_PANEL_CLOSE_DELAY).await;
+        if STATUS_PANEL_MOTION_GENERATION.load(Ordering::Relaxed) != generation {
+            return;
+        }
+        let should_hide = hide_even_if_focused || !window.is_focused().unwrap_or(false);
+        if should_hide {
+            let _ = window.hide();
+        }
+    });
+    Ok(())
+}
+
+pub fn request_status_panel_hide(app: &AppHandle, hide_even_if_focused: bool) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(STATUS_WINDOW_LABEL) {
+        schedule_status_panel_hide(&window, hide_even_if_focused)?;
+    }
     Ok(())
 }
 
@@ -202,12 +272,16 @@ fn status_panel_position(
 
 pub fn show_main_window(app: &AppHandle, view: &str) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        window.emit("relaypulse://navigate", NavigateEvent { view })?;
+        app.emit_to(
+            MAIN_WINDOW_LABEL,
+            "relaypulse://navigate",
+            NavigateEvent { view },
+        )?;
         window.show()?;
         window.set_focus()?;
     }
     if let Some(status_panel) = app.get_webview_window(STATUS_WINDOW_LABEL) {
-        status_panel.hide()?;
+        schedule_status_panel_hide(&status_panel, true)?;
     }
     Ok(())
 }
@@ -234,113 +308,105 @@ fn directory_opener() -> &'static str {
 }
 
 pub fn snapshot_has_alerts(snapshot: &ApplicationSnapshot) -> bool {
+    snapshot_alert_count(snapshot) > 0
+}
+
+fn snapshot_alert_count(snapshot: &ApplicationSnapshot) -> usize {
     let latest = snapshot
         .latest_model_statuses
         .iter()
         .map(|status| (status.model_id.clone(), status.status))
         .collect::<std::collections::HashMap<_, _>>();
-    snapshot.sites.iter().any(|site| {
-        site.site.enabled
-            && site.models.iter().any(|model| {
-                model.model.enabled
-                    && latest
-                        .get(&model.model.id)
-                        .is_some_and(|status| *status != ProbeStatus::Healthy)
-            })
-    })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrayHealth {
-    Neutral,
-    Healthy,
-    Warning,
-    Error,
-}
-
-fn tray_health(snapshot: &ApplicationSnapshot) -> TrayHealth {
-    let enabled_models = snapshot
+    snapshot
         .sites
         .iter()
         .filter(|site| site.site.enabled)
         .flat_map(|site| site.models.iter())
         .filter(|model| model.model.enabled)
-        .map(|model| model.model.id.clone())
-        .collect::<HashSet<_>>();
-    if enabled_models.is_empty() {
-        return TrayHealth::Neutral;
-    }
-    let statuses = snapshot
-        .latest_model_statuses
+        .filter_map(|model| latest.get(&model.model.id))
+        .filter(|status| {
+            !matches!(
+                status,
+                ProbeStatus::Healthy | ProbeStatus::Unknown | ProbeStatus::Probing
+            )
+        })
+        .count()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayIconState {
+    Idle,
+    Active,
+}
+
+fn tray_icon_state(snapshot: &ApplicationSnapshot) -> TrayIconState {
+    let has_enabled_model = snapshot
+        .sites
         .iter()
-        .filter(|status| enabled_models.contains(&status.model_id))
-        .map(|status| status.status)
-        .collect::<Vec<_>>();
-    if statuses.iter().any(|status| {
-        !matches!(
-            status,
-            ProbeStatus::Healthy | ProbeStatus::Slow | ProbeStatus::Unknown
-        )
-    }) {
-        TrayHealth::Error
-    } else if statuses.contains(&ProbeStatus::Slow) {
-        TrayHealth::Warning
-    } else if statuses.len() == enabled_models.len()
-        && statuses
-            .iter()
-            .all(|status| *status == ProbeStatus::Healthy)
-    {
-        TrayHealth::Healthy
+        .filter(|site| site.site.enabled)
+        .flat_map(|site| site.models.iter())
+        .any(|model| model.model.enabled);
+    if has_enabled_model {
+        TrayIconState::Active
     } else {
-        TrayHealth::Neutral
+        TrayIconState::Idle
     }
 }
 
-fn status_icon(health: TrayHealth) -> Image<'static> {
-    const SIZE: u32 = 18;
-    let color = match health {
-        TrayHealth::Neutral => [142, 142, 147, 255],
-        TrayHealth::Healthy => [52, 199, 89, 255],
-        TrayHealth::Warning => [255, 159, 10, 255],
-        TrayHealth::Error => [255, 69, 58, 255],
+fn status_icon(state: TrayIconState) -> Image<'static> {
+    const SIZE: u32 = 64;
+    let color = match state {
+        TrayIconState::Idle => [28, 28, 30, 255],
+        TrayIconState::Active => [22, 119, 255, 255],
     };
-    let mut rgba = vec![0; (SIZE * SIZE * 4) as usize];
-    let center = (f64::from(SIZE) - 1.0) / 2.0;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = f64::from(x) - center;
-            let dy = f64::from(y) - center;
-            if dx * dx + dy * dy <= 56.25 {
-                let offset = ((y * SIZE + x) * 4) as usize;
-                rgba[offset..offset + 4].copy_from_slice(&color);
-            }
+    let mut rgba = include_bytes!("../icons/tray-logo.rgba").to_vec();
+    for pixel in rgba.chunks_exact_mut(4) {
+        if pixel[3] != 0 {
+            pixel[..3].copy_from_slice(&color[..3]);
         }
     }
     Image::new_owned(rgba, SIZE, SIZE)
 }
 
 fn open_current_status_panel(app: AppHandle, anchor: StatusPanelAnchor) {
-    if app
-        .get_webview_window(STATUS_WINDOW_LABEL)
-        .and_then(|window| window.is_visible().ok().map(|visible| (window, visible)))
-        .is_some_and(|(window, visible)| visible && window.hide().is_ok())
+    if let Some(window) = app.get_webview_window(STATUS_WINDOW_LABEL) {
+        if window.is_visible().unwrap_or(false) {
+            if STATUS_PANEL_CLOSE_REQUESTED.load(Ordering::Relaxed) {
+                let _ = begin_status_panel_opening(&window);
+                let _ = window.show();
+                let _ = window.set_focus();
+                return;
+            }
+            let _ = schedule_status_panel_hide(&window, true);
+            return;
+        }
+    }
+
+    if STATUS_PANEL_OPEN_PENDING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
     {
+        STATUS_PANEL_MOTION_GENERATION.fetch_add(1, Ordering::AcqRel);
         return;
     }
+    let generation = STATUS_PANEL_MOTION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
 
     tauri::async_runtime::spawn(async move {
         let service = app
             .try_state::<BackendState>()
             .and_then(|state| state.application_service().cloned());
-        let has_alerts = match service {
+        let alert_count = match service {
             Some(service) => service
                 .snapshot()
                 .await
-                .map(|snapshot| snapshot_has_alerts(&snapshot))
-                .unwrap_or(false),
-            None => false,
+                .map(|snapshot| snapshot_alert_count(&snapshot))
+                .unwrap_or(0),
+            None => 0,
         };
-        if show_status_panel(&app, has_alerts, anchor).is_ok() {
+        let opened = STATUS_PANEL_MOTION_GENERATION.load(Ordering::Acquire) == generation
+            && show_status_panel(&app, alert_count, anchor).is_ok();
+        STATUS_PANEL_OPEN_PENDING.store(false, Ordering::Release);
+        if opened {
             if let Some(state) = app.try_state::<BackendState>() {
                 if let Some(diagnostics) = state.diagnostics() {
                     diagnostics.record_window_opened("status-panel");
@@ -362,5 +428,32 @@ mod tests {
         assert_eq!(directory_opener(), "explorer");
         #[cfg(all(unix, not(target_os = "macos")))]
         assert_eq!(directory_opener(), "xdg-open");
+    }
+
+    #[test]
+    fn tray_logo_preserves_transparency_and_uses_the_monitoring_color() {
+        for (state, expected_color) in [
+            (TrayIconState::Idle, [28, 28, 30]),
+            (TrayIconState::Active, [22, 119, 255]),
+        ] {
+            let icon = status_icon(state);
+            assert_eq!((icon.width(), icon.height()), (64, 64));
+            let pixels = icon.rgba().chunks_exact(4).collect::<Vec<_>>();
+            assert!(pixels.iter().any(|pixel| pixel[3] == 0));
+            assert!(pixels.iter().any(|pixel| (1..=254).contains(&pixel[3])));
+            assert!(pixels.iter().any(|pixel| pixel[3] == 255));
+            assert!(pixels
+                .iter()
+                .filter(|pixel| pixel[3] != 0)
+                .all(|pixel| pixel[..3] == expected_color));
+        }
+    }
+
+    #[test]
+    fn status_panel_layout_matches_the_rendered_content() {
+        assert_eq!(status_panel_layout(0), ("tray-healthy", 368.0, 180.0));
+        assert_eq!(status_panel_layout(1), ("tray-alerts", 404.0, 246.0));
+        assert_eq!(status_panel_layout(2), ("tray-alerts", 404.0, 310.0));
+        assert_eq!(status_panel_layout(8), ("tray-alerts", 404.0, 374.0));
     }
 }

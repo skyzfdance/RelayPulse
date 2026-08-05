@@ -3,11 +3,17 @@ import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useState } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { CSSProperties, PropsWithChildren } from 'react';
 import { MainShell } from './app/MainShell';
 import { RelayPulseProvider } from './app/RelayPulseProvider';
 import { useRelayPulse } from './app/relay-pulse-context';
-import { navigateToView, parseView } from './app/view';
+import {
+  defaultViewForWindow,
+  isViewAllowedForWindow,
+  navigateToView,
+  parseView,
+} from './app/view';
 import type { ThemeMode, ViewName } from './domain/types';
 import { GeneralPage } from './features/general/GeneralPage';
 import { ModelSettingsDrawer } from './features/models/ModelSettingsDrawer';
@@ -19,18 +25,29 @@ import { SitesPage } from './features/sites/SitesPage';
 import { TrayPage } from './features/tray/TrayPage';
 
 function useActiveView() {
-  const [view, setView] = useState<ViewName>(() => parseView(window.location.search));
+  const windowLabel = isTauri() ? getCurrentWebviewWindow().label : null;
+  const [view, setView] = useState<ViewName>(() => {
+    const requested = parseView(window.location.search);
+    return isViewAllowedForWindow(windowLabel, requested)
+      ? requested
+      : defaultViewForWindow(windowLabel);
+  });
   useEffect(() => {
-    const sync = () => setView(parseView(window.location.search));
+    const sync = () => {
+      const requested = parseView(window.location.search);
+      if (isViewAllowedForWindow(windowLabel, requested)) setView(requested);
+    };
     window.addEventListener('popstate', sync);
     return () => window.removeEventListener('popstate', sync);
-  }, []);
+  }, [windowLabel]);
   useEffect(() => {
     if (!isTauri()) return;
     let disposed = false;
     let stop: (() => void) | undefined;
     void listen<{ view: ViewName }>('relaypulse://navigate', (event) => {
-      if (!disposed) navigateToView(event.payload.view);
+      if (!disposed && isViewAllowedForWindow(windowLabel, event.payload.view)) {
+        navigateToView(event.payload.view);
+      }
     }).then((unlisten) => {
       if (disposed) unlisten();
       else stop = unlisten;
@@ -39,7 +56,11 @@ function useActiveView() {
       disposed = true;
       stop?.();
     };
-  }, []);
+  }, [windowLabel]);
+  useEffect(() => {
+    if (isViewAllowedForWindow(windowLabel, view)) return;
+    navigateToView(defaultViewForWindow(windowLabel));
+  }, [view, windowLabel]);
   useEffect(() => {
     const compact = view === 'tray-healthy' || view === 'tray-alerts';
     document.documentElement.classList.toggle('tray-window', compact);

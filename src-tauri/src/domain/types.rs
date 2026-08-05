@@ -5,10 +5,9 @@ use zeroize::Zeroizing;
 use super::{DomainError, EntityId, Result, TimestampMs};
 
 pub const DEFAULT_PROBE_INTERVAL_MINUTES: u16 = 10;
-pub const DEFAULT_FIRST_TOKEN_TIMEOUT_MS: u32 = 8_000;
-pub const DEFAULT_TOTAL_TIMEOUT_MS: u32 = 30_000;
 pub const DEFAULT_SLOW_FIRST_TOKEN_MS: u32 = 2_000;
 pub const DEFAULT_SLOW_TOTAL_MS: u32 = 10_000;
+pub const MAX_SLOW_THRESHOLD_MS: u32 = 86_400_000;
 pub const DEFAULT_FAILURE_THRESHOLD: u8 = 2;
 pub const DEFAULT_RECOVERY_THRESHOLD: u8 = 2;
 pub const REQUEST_CAPTURE_LIMIT_BYTES: u32 = 32 * 1024;
@@ -109,6 +108,12 @@ pub enum ThemeMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayAction {
+    Panel,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialAction {
     Create,
     Replace,
@@ -127,8 +132,6 @@ pub enum CredentialOperationStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeTimingPolicy {
     pub interval_minutes: Option<u16>,
-    pub first_token_timeout_ms: u32,
-    pub total_timeout_ms: u32,
     pub slow_first_token_ms: u32,
     pub slow_total_ms: u32,
     pub failure_threshold: u8,
@@ -139,8 +142,6 @@ impl ProbeTimingPolicy {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         interval_minutes: Option<u16>,
-        first_token_timeout_ms: u32,
-        total_timeout_ms: u32,
         slow_first_token_ms: u32,
         slow_total_ms: u32,
         failure_threshold: u8,
@@ -149,16 +150,10 @@ impl ProbeTimingPolicy {
         if interval_minutes.is_some_and(|value| !(1..=1_440).contains(&value)) {
             return Err(DomainError::invalid("probe_interval_minutes"));
         }
-        if !(1_000..=120_000).contains(&first_token_timeout_ms) {
-            return Err(DomainError::invalid("first_token_timeout_ms"));
-        }
-        if !(first_token_timeout_ms..=300_000).contains(&total_timeout_ms) {
-            return Err(DomainError::invalid("total_timeout_ms"));
-        }
-        if slow_first_token_ms == 0 || slow_first_token_ms >= first_token_timeout_ms {
+        if !(1..=MAX_SLOW_THRESHOLD_MS).contains(&slow_first_token_ms) {
             return Err(DomainError::invalid("slow_first_token_ms"));
         }
-        if slow_total_ms == 0 || slow_total_ms >= total_timeout_ms {
+        if !(1..=MAX_SLOW_THRESHOLD_MS).contains(&slow_total_ms) {
             return Err(DomainError::invalid("slow_total_ms"));
         }
         if !(1..=10).contains(&failure_threshold) {
@@ -170,8 +165,6 @@ impl ProbeTimingPolicy {
 
         Ok(Self {
             interval_minutes,
-            first_token_timeout_ms,
-            total_timeout_ms,
             slow_first_token_ms,
             slow_total_ms,
             failure_threshold,
@@ -184,8 +177,6 @@ impl Default for ProbeTimingPolicy {
     fn default() -> Self {
         Self {
             interval_minutes: Some(DEFAULT_PROBE_INTERVAL_MINUTES),
-            first_token_timeout_ms: DEFAULT_FIRST_TOKEN_TIMEOUT_MS,
-            total_timeout_ms: DEFAULT_TOTAL_TIMEOUT_MS,
             slow_first_token_ms: DEFAULT_SLOW_FIRST_TOKEN_MS,
             slow_total_ms: DEFAULT_SLOW_TOTAL_MS,
             failure_threshold: DEFAULT_FAILURE_THRESHOLD,
@@ -278,6 +269,9 @@ pub struct ProbeResult {
     pub site_id: EntityId,
     pub model_id: EntityId,
     pub run_kind: ProbeRunKind,
+    pub request_method: HttpMethod,
+    pub endpoint: String,
+    pub probe_mode: ProbeMode,
     pub started_at: TimestampMs,
     pub finished_at: Option<TimestampMs>,
     pub status: ProbeStatus,
@@ -330,6 +324,7 @@ pub struct LatestModelStatus {
 pub struct GeneralSettings {
     pub launch_at_startup: bool,
     pub continue_in_background: bool,
+    pub tray_action: TrayAction,
     pub theme: ThemeMode,
     pub history_retention_days: u16,
     pub diagnostic_capture_enabled: bool,
@@ -397,8 +392,6 @@ mod tests {
         let policy = ProbeTimingPolicy::default();
 
         assert_eq!(policy.interval_minutes, Some(10));
-        assert_eq!(policy.first_token_timeout_ms, 8_000);
-        assert_eq!(policy.total_timeout_ms, 30_000);
         assert_eq!(policy.slow_first_token_ms, 2_000);
         assert_eq!(policy.slow_total_ms, 10_000);
         assert_eq!(policy.failure_threshold, 2);
@@ -407,11 +400,11 @@ mod tests {
 
     #[test]
     fn invalid_timing_relations_are_rejected_at_the_domain_boundary() {
-        let error = ProbeTimingPolicy::new(Some(10), 8_000, 30_000, 8_000, 10_000, 2, 2)
-            .expect_err("slow threshold must be below timeout");
+        let error = ProbeTimingPolicy::new(Some(10), MAX_SLOW_THRESHOLD_MS + 1, 10_000, 2, 2)
+            .expect_err("slow threshold must stay within the supported range");
         assert_eq!(error.field(), Some("slow_first_token_ms"));
 
-        let error = ProbeTimingPolicy::new(Some(0), 8_000, 30_000, 2_000, 10_000, 2, 2)
+        let error = ProbeTimingPolicy::new(Some(0), 2_000, 10_000, 2, 2)
             .expect_err("zero interval is invalid");
         assert_eq!(error.field(), Some("probe_interval_minutes"));
     }

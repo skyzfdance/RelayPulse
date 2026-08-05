@@ -2,19 +2,24 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCustomProbeRequest,
   buildProbeRequest,
+  isParameterPathValid,
+  isReservedParameter,
   isParameterValueValid,
+  reservedProbeFields,
   resolveCustomProbeEndpoint,
 } from './probe-request';
 
 describe('buildProbeRequest', () => {
-  it('keeps reserved fields under RelayPulse control and converts parameter values', () => {
-    const request = buildProbeRequest('gpt-test', {
-      mode: 'disabled-thinking',
+  it('deeply merges pass-through parameters while keeping transport fields protected', () => {
+    const request = buildProbeRequest('gpt-test', 'openai-responses', {
+      mode: 'minimum-reasoning',
       maxOutputTokens: 8,
       prompt: '只回复 OK',
       parameters: [
         { key: 'model', value: 'overridden', type: 'string' },
         { key: 'stream', value: 'false', type: 'boolean' },
+        { key: 'reasoning.effort', value: 'max', type: 'string' },
+        { key: 'max_output_tokens', value: '16', type: 'number' },
         { key: 'temperature', value: '0', type: 'number' },
         { key: 'store', value: 'false', type: 'boolean' },
       ],
@@ -22,11 +27,23 @@ describe('buildProbeRequest', () => {
 
     expect(request).toMatchObject({
       model: 'gpt-test',
+      input: '只回复 OK',
       stream: true,
-      max_output_tokens: 8,
+      max_output_tokens: 16,
+      reasoning: { effort: 'max' },
       temperature: 0,
       store: false,
     });
+  });
+
+  it('validates safe object paths and protocol-specific reserved roots', () => {
+    const reserved = reservedProbeFields('openai-responses');
+
+    expect(isParameterPathValid('reasoning.effort')).toBe(true);
+    expect(isParameterPathValid('reasoning..effort')).toBe(false);
+    expect(isParameterPathValid('metadata.__proto__.value')).toBe(false);
+    expect(isReservedParameter('stream.enabled', reserved)).toBe(true);
+    expect(isReservedParameter('reasoning.effort', reserved)).toBe(false);
   });
 
   it('builds custom non-streaming requests with JSON parameters', () => {

@@ -1,14 +1,21 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     application::{
-        ApplicationError, ApplicationService, ApplicationSnapshot, CreateModel, CreateSite,
-        CustomProbeUpdate, ModelAggregate, ModelSyncOutcome, ParameterValue, ProbeSettingsUpdate,
-        SiteAdvancedUpdate, SiteAggregate, UpdateSite,
+        resolve_probe_endpoint, ApplicationError, ApplicationService, ApplicationSnapshot,
+        CreateModel, CreateSite, CustomProbeUpdate, ModelAggregate, ModelSyncOutcome,
+        ParameterValue, ProbeRecordAggregate, ProbeSettingsUpdate, SiteAdvancedUpdate,
+        SiteAggregate, UpdateSite,
     },
+    desktop,
     domain::{
-        CredentialIntent, EntityId, ParameterType, ProbeMode, SecretValue, SiteProtocol, ThemeMode,
+        CredentialIntent, EntityId, HttpMethod, ParameterType, ProbeMode, ProbeResult, ProbeStatus,
+        ResponseMode, SecretValue, SiteProtocol, ThemeMode, TimestampMs, TrayAction,
     },
     startup::BackendState,
 };
@@ -102,6 +109,14 @@ impl From<ApplicationError> for CommandError {
                 retryable: false,
                 operation_id: None,
             },
+            ApplicationError::Conflict => Self {
+                code: "probe_conflict",
+                category: "conflict",
+                message: "A probe is already running for this model.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
             ApplicationError::Internal => Self {
                 code: "internal",
                 category: "internal",
@@ -126,13 +141,24 @@ impl CommandError {
         }
     }
 
-    fn not_implemented() -> Self {
+    fn desktop_operation_failed() -> Self {
         Self {
-            code: "not_implemented",
-            category: "internal",
-            message: "This RelayPulse operation is not available yet.",
+            code: "desktop_operation_failed",
+            category: "platform",
+            message: "RelayPulse could not complete the desktop operation.",
             field: None,
-            retryable: false,
+            retryable: true,
+            operation_id: None,
+        }
+    }
+
+    fn diagnostics_unavailable() -> Self {
+        Self {
+            code: "diagnostics_unavailable",
+            category: "platform",
+            message: "RelayPulse diagnostics are unavailable.",
+            field: None,
+            retryable: true,
             operation_id: None,
         }
     }
@@ -214,6 +240,22 @@ impl From<ThemeModeDto> for ThemeMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TrayActionDto {
+    Panel,
+    Disabled,
+}
+
+impl From<TrayActionDto> for TrayAction {
+    fn from(value: TrayActionDto) -> Self {
+        match value {
+            TrayActionDto::Panel => Self::Panel,
+            TrayActionDto::Disabled => Self::Disabled,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "lowercase")]
 enum CredentialIntentDto {
@@ -275,8 +317,10 @@ pub struct SiteAdvancedInputDto {
     models_endpoint: String,
     probe_endpoint: String,
     probe_interval_minutes: Option<u16>,
-    first_token_timeout_seconds: u32,
-    total_timeout_seconds: u32,
+    slow_first_token_seconds: u32,
+    slow_total_seconds: u32,
+    failure_threshold: u8,
+    recovery_threshold: u8,
     headers: Vec<RequestHeaderInputDto>,
 }
 
@@ -320,6 +364,7 @@ pub struct CustomProbeInputDto {
 pub struct GeneralSettingsInputDto {
     launch_at_startup: bool,
     continue_in_background: bool,
+    tray_action: TrayActionDto,
     theme: ThemeModeDto,
     history_retention_days: u16,
     diagnostic_capture_enabled: bool,
@@ -331,6 +376,7 @@ pub struct SnapshotDto {
     revision: u64,
     sites: Vec<SiteDto>,
     general_settings: GeneralSettingsDto,
+    probe_records: Vec<ProbeRecordDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -381,14 +427,16 @@ pub struct SiteDto {
     models_endpoint: String,
     probe_endpoint: String,
     probe_interval_minutes: Option<u16>,
-    first_token_timeout_seconds: u32,
-    total_timeout_seconds: u32,
+    slow_first_token_seconds: u32,
+    slow_total_seconds: u32,
+    failure_threshold: u8,
+    recovery_threshold: u8,
     headers: Vec<RequestHeaderDto>,
     default_probe_settings: ProbeSettingsDto,
     models: Vec<ModelDto>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct RequestHeaderDto {
     key: String,
     value: String,
@@ -402,8 +450,10 @@ struct ModelDto {
     enabled: bool,
     status: &'static str,
     inference_summary: &'static str,
-    first_token: &'static str,
-    total_time: &'static str,
+    first_token: String,
+    total_time: String,
+    latest_probe_id: Option<String>,
+    next_probe_at: Option<String>,
     capabilities: Vec<&'static str>,
     probe_settings: ProbeSettingsDto,
     custom_probe: CustomProbeSettingsDto,
@@ -444,9 +494,90 @@ struct GeneralSettingsDto {
     diagnostic_capture_enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeRecordDto {
+    id: String,
+    started_at: String,
+    status: &'static str,
+    site_id: String,
+    site_name: String,
+    model_id: String,
+    model_name: String,
+    first_token_ms: Option<u32>,
+    first_token_label: String,
+    total_time_ms: u32,
+    total_time_label: String,
+    result: String,
+    method: &'static str,
+    endpoint: String,
+    probe_mode: &'static str,
+    http_status: Option<u16>,
+    request_id: Option<String>,
+    error_detail: Option<String>,
+    token_usage: TokenUsageDto,
+    exchange: ProbeExchangeDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenUsageDto {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    source: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ProbeExchangeDto {
+    request: ProbeCaptureDto,
+    response: ProbeResponseCaptureDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeCaptureDto {
+    headers: Vec<RequestHeaderDto>,
+    raw_body: String,
+    captured_bytes: u32,
+    capture_limit_bytes: u32,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeResponseCaptureDto {
+    headers: Vec<RequestHeaderDto>,
+    raw_body: String,
+    captured_bytes: u32,
+    capture_limit_bytes: u32,
+    truncated: bool,
+    mode: &'static str,
+    content_type: Option<String>,
+    chunks: Vec<ProbeResponseChunkDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeResponseChunkDto {
+    sequence: usize,
+    received_after_ms: u32,
+    captured_bytes: usize,
+    raw: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticExportDto {
+    status: &'static str,
+    path: Option<String>,
+}
+
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, BackendState>) -> CommandResult<SnapshotDto> {
-    snapshot(&service(&state)?.snapshot().await?)
+    let value = service(&state)?.snapshot().await?;
+    state.set_continue_in_background(value.general_settings.continue_in_background);
+    snapshot(&value)
 }
 
 #[tauri::command]
@@ -457,12 +588,13 @@ pub async fn get_site(
     let service = service(&state)?;
     let site_id = entity_id(id, "id")?;
     let snapshot = service.snapshot().await?;
+    let latest = latest_probes(&snapshot);
     Ok(snapshot
         .sites
         .into_iter()
         .enumerate()
         .find(|(_, site)| site.site.id == site_id)
-        .map(|(index, site)| site_dto(site, priority(index))))
+        .map(|(index, site)| site_dto(site, priority(index), &latest)))
 }
 
 #[tauri::command]
@@ -607,14 +739,16 @@ pub async fn update_site_advanced(
             models_endpoint: input.models_endpoint,
             probe_endpoint: input.probe_endpoint,
             interval_minutes: input.probe_interval_minutes,
-            first_token_timeout_ms: input
-                .first_token_timeout_seconds
+            slow_first_token_ms: input
+                .slow_first_token_seconds
                 .checked_mul(1_000)
-                .ok_or_else(|| invalid_field("first_token_timeout_seconds"))?,
-            total_timeout_ms: input
-                .total_timeout_seconds
+                .ok_or_else(|| invalid_field("slow_first_token_seconds"))?,
+            slow_total_ms: input
+                .slow_total_seconds
                 .checked_mul(1_000)
-                .ok_or_else(|| invalid_field("total_timeout_seconds"))?,
+                .ok_or_else(|| invalid_field("slow_total_seconds"))?,
+            failure_threshold: input.failure_threshold,
+            recovery_threshold: input.recovery_threshold,
             headers: input
                 .headers
                 .into_iter()
@@ -692,15 +826,37 @@ pub async fn update_general_settings(
     state: State<'_, BackendState>,
     settings: GeneralSettingsInputDto,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
+    let service = service(&state)?;
+    let previous = service.snapshot().await?;
+    let tray_action: TrayAction = settings.tray_action.into();
+    desktop::set_autostart(&app, settings.launch_at_startup)
+        .map_err(|_| CommandError::desktop_operation_failed())?;
+    if desktop::set_tray_enabled(&app, tray_action == TrayAction::Panel).is_err() {
+        let _ = desktop::set_autostart(&app, previous.general_settings.launch_at_startup);
+        return Err(CommandError::desktop_operation_failed());
+    }
+    let result = match service
         .update_general_settings(
             settings.launch_at_startup,
             settings.continue_in_background,
+            tray_action,
             settings.theme.into(),
             settings.history_retention_days,
             settings.diagnostic_capture_enabled,
         )
-        .await?;
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = desktop::set_autostart(&app, previous.general_settings.launch_at_startup);
+            let _ = desktop::set_tray_enabled(
+                &app,
+                previous.general_settings.tray_action == TrayAction::Panel,
+            );
+            return Err(error.into());
+        }
+    };
+    state.set_continue_in_background(result.general_settings.continue_in_background);
     changed(&app, &result, &["settings"])
 }
 
@@ -714,8 +870,81 @@ pub async fn clear_probe_records(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
 ) -> CommandResult<SnapshotDto> {
-    let (_, result) = service(&state)?.clear_probe_records().await?;
+    let (cleanup, result) = service(&state)?.clear_probe_records().await?;
+    if let Some(diagnostics) = state.diagnostics() {
+        diagnostics.record_records_cleared(cleanup.deleted, cleanup.revision);
+    }
     changed(&app, &result, &["records", "status"])
+}
+
+#[tauri::command]
+pub fn open_log_directory(state: State<'_, BackendState>) -> CommandResult<()> {
+    let diagnostics = state
+        .diagnostics()
+        .ok_or_else(CommandError::diagnostics_unavailable)?;
+    desktop::open_directory(diagnostics.log_directory())
+        .map_err(|_| CommandError::desktop_operation_failed())?;
+    diagnostics.record_log_directory_opened();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn export_diagnostics(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+) -> CommandResult<DiagnosticExportDto> {
+    let diagnostics = state
+        .diagnostics()
+        .cloned()
+        .ok_or_else(CommandError::diagnostics_unavailable)?;
+    let file_name = format!(
+        "RelayPulse-diagnostics-{}.json.gz",
+        OffsetDateTime::now_utc().unix_timestamp()
+    );
+    let selected = app
+        .dialog()
+        .file()
+        .set_title("导出 RelayPulse 诊断包")
+        .set_file_name(file_name)
+        .add_filter("压缩诊断包", &["gz"])
+        .blocking_save_file();
+    let Some(selected) = selected else {
+        return Ok(DiagnosticExportDto {
+            status: "cancelled",
+            path: None,
+        });
+    };
+    let path = selected
+        .into_path()
+        .map_err(|_| CommandError::desktop_operation_failed())?;
+    let value = service(&state)?.snapshot().await?;
+    diagnostics
+        .export(&path, &value)
+        .map_err(|_| CommandError::desktop_operation_failed())?;
+    diagnostics.record_diagnostics_exported();
+    Ok(DiagnosticExportDto {
+        status: "exported",
+        path: Some(path.to_string_lossy().into_owned()),
+    })
+}
+
+#[tauri::command]
+pub fn open_main_window(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    view: Option<String>,
+) -> CommandResult<()> {
+    let view = match view.as_deref().unwrap_or("sites") {
+        "sites" => "sites",
+        "general" => "general",
+        "records" => "records",
+        _ => return Err(invalid_field("view")),
+    };
+    desktop::show_main_window(&app, view).map_err(|_| CommandError::desktop_operation_failed())?;
+    if let Some(diagnostics) = state.diagnostics() {
+        diagnostics.record_window_opened("main");
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -752,8 +981,40 @@ pub async fn refresh_models(
 }
 
 #[tauri::command]
-pub async fn run_immediate_probe(_state: State<'_, BackendState>) -> CommandResult<SnapshotDto> {
-    Err(CommandError::not_implemented())
+pub async fn run_immediate_probe(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+) -> CommandResult<SnapshotDto> {
+    let result = service(&state)?.probe_all_enabled().await?;
+    changed(&app, &result, &["records", "status", "sites"])
+}
+
+#[tauri::command]
+pub async fn run_site_probe(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    site_id: String,
+) -> CommandResult<SnapshotDto> {
+    let result = service(&state)?
+        .probe_site(entity_id(site_id, "site_id")?)
+        .await?;
+    changed(&app, &result, &["records", "status", "sites"])
+}
+
+#[tauri::command]
+pub async fn run_model_probe(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    site_id: String,
+    model_id: String,
+) -> CommandResult<SnapshotDto> {
+    let result = service(&state)?
+        .probe_model(
+            entity_id(site_id, "site_id")?,
+            entity_id(model_id, "model_id")?,
+        )
+        .await?;
+    changed(&app, &result, &["records", "status", "sites"])
 }
 
 fn service(state: &State<'_, BackendState>) -> CommandResult<ApplicationService> {
@@ -783,7 +1044,13 @@ fn changed(
     value: &ApplicationSnapshot,
     domains: &[&'static str],
 ) -> CommandResult<SnapshotDto> {
+    let _ = desktop::update_status_projection(app, value);
     let value = snapshot(value)?;
+    if let Some(state) = app.try_state::<BackendState>() {
+        if let Some(diagnostics) = state.diagnostics() {
+            diagnostics.record_state_change(value.revision, domains);
+        }
+    }
     let _ = app.emit(
         "relaypulse://state-changed",
         StateChangedDto {
@@ -794,7 +1061,12 @@ fn changed(
     Ok(value)
 }
 
+pub(crate) fn publish_background_snapshot(app: &tauri::AppHandle, value: &ApplicationSnapshot) {
+    let _ = changed(app, value, &["records", "status", "sites"]);
+}
+
 fn snapshot(value: &ApplicationSnapshot) -> CommandResult<SnapshotDto> {
+    let latest = latest_probes(value);
     Ok(SnapshotDto {
         revision: value.revision,
         sites: value
@@ -802,31 +1074,76 @@ fn snapshot(value: &ApplicationSnapshot) -> CommandResult<SnapshotDto> {
             .iter()
             .cloned()
             .enumerate()
-            .map(|(index, site)| site_dto(site, priority(index)))
+            .map(|(index, site)| site_dto(site, priority(index), &latest))
             .collect(),
         general_settings: GeneralSettingsDto {
             launch_at_startup: value.general_settings.launch_at_startup,
             continue_in_background: value.general_settings.continue_in_background,
-            tray_action: "panel",
+            tray_action: tray_action_name(value.general_settings.tray_action),
             theme: theme_name(value.general_settings.theme),
             language: "zh-CN",
             history_retention_days: value.general_settings.history_retention_days,
             diagnostic_capture_enabled: value.general_settings.diagnostic_capture_enabled,
         },
+        probe_records: value
+            .probe_records
+            .iter()
+            .map(|record| probe_record_dto(value, record))
+            .collect(),
     })
 }
 
-fn site_dto(value: SiteAggregate, priority: u32) -> SiteDto {
+fn site_dto(
+    value: SiteAggregate,
+    priority: u32,
+    latest: &HashMap<EntityId, LatestProbe>,
+) -> SiteDto {
     let enabled_models = value
         .models
         .iter()
         .filter(|aggregate| aggregate.model.enabled)
         .count();
-    let status = "muted";
+    let enabled_results = value.models.iter().filter_map(|model| {
+        model
+            .model
+            .enabled
+            .then(|| latest.get(&model.model.id).map(|probe| probe.status))
+            .flatten()
+    });
+    let statuses = enabled_results.collect::<Vec<_>>();
+    let status = if !value.site.enabled {
+        "muted"
+    } else if statuses
+        .iter()
+        .any(|status| probe_status_name(*status) == "error")
+    {
+        "error"
+    } else if statuses.contains(&ProbeStatus::Slow) {
+        "warning"
+    } else if enabled_models > 0
+        && statuses.len() == enabled_models
+        && statuses
+            .iter()
+            .all(|status| *status == ProbeStatus::Healthy)
+    {
+        "healthy"
+    } else {
+        "muted"
+    };
     let summary = if !value.site.enabled {
         "站点已停用".to_owned()
     } else if enabled_models == 0 {
         "0 个模型启用 · 不参与探测".to_owned()
+    } else if status == "error" {
+        let failures = statuses
+            .iter()
+            .filter(|status| probe_status_name(**status) == "error")
+            .count();
+        format!("{enabled_models} 个模型 · {failures} 个异常")
+    } else if status == "warning" {
+        format!("{enabled_models} 个模型 · 响应偏慢")
+    } else if status == "healthy" {
+        format!("{enabled_models} 个模型 · 全部正常")
     } else {
         format!("{enabled_models} 个模型 · 等待首次探测")
     };
@@ -838,7 +1155,10 @@ fn site_dto(value: SiteAggregate, priority: u32) -> SiteDto {
     let models = value
         .models
         .into_iter()
-        .map(|model| model_dto(model, &value.default_policy))
+        .map(|model| {
+            let latest_probe = latest.get(&model.model.id);
+            model_dto(model, &value.default_policy, latest_probe)
+        })
         .collect();
     SiteDto {
         id: value.site.id.to_string(),
@@ -860,8 +1180,10 @@ fn site_dto(value: SiteAggregate, priority: u32) -> SiteDto {
         models_endpoint: value.site.models_endpoint,
         probe_endpoint: value.site.probe_endpoint,
         probe_interval_minutes: value.site.timing.interval_minutes,
-        first_token_timeout_seconds: value.site.timing.first_token_timeout_ms / 1_000,
-        total_timeout_seconds: value.site.timing.total_timeout_ms / 1_000,
+        slow_first_token_seconds: value.site.timing.slow_first_token_ms / 1_000,
+        slow_total_seconds: value.site.timing.slow_total_ms / 1_000,
+        failure_threshold: value.site.timing.failure_threshold,
+        recovery_threshold: value.site.timing.recovery_threshold,
         headers: value
             .headers
             .into_iter()
@@ -879,7 +1201,11 @@ fn priority(index: usize) -> u32 {
     u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1)
 }
 
-fn model_dto(value: ModelAggregate, default_policy: &crate::domain::ProbePolicy) -> ModelDto {
+fn model_dto(
+    value: ModelAggregate,
+    default_policy: &crate::domain::ProbePolicy,
+    latest: Option<&LatestProbe>,
+) -> ModelDto {
     let effective_policy = value.policy.as_ref().unwrap_or(default_policy);
     let mode = value
         .policy
@@ -894,14 +1220,33 @@ fn model_dto(value: ModelAggregate, default_policy: &crate::domain::ProbePolicy)
             .display_name
             .unwrap_or_else(|| value.model.model_key.clone()),
         enabled: value.model.enabled,
-        status: "muted",
-        inference_summary: match mode {
-            ProbeMode::Inherit => "继承站点默认",
-            ProbeMode::DisabledThinking => "自动 · 关闭思考",
-            ProbeMode::MinimumReasoning => "自动 · 最低推理",
+        status: latest.map_or("muted", |probe| probe_status_name(probe.status)),
+        inference_summary: if value
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.custom_endpoint.as_ref())
+            .is_some()
+        {
+            "自定义探针"
+        } else if parameters.is_empty() {
+            "默认 · low"
+        } else {
+            "默认 low · 透传覆盖"
         },
-        first_token: "—",
-        total_time: "—",
+        first_token: latest
+            .and_then(|probe| probe.result.as_ref())
+            .and_then(|result| result.first_token_ms)
+            .map_or_else(|| "—".to_owned(), format_duration),
+        total_time: latest
+            .and_then(|probe| probe.result.as_ref())
+            .and_then(|result| result.total_time_ms)
+            .map_or_else(|| "—".to_owned(), format_duration),
+        latest_probe_id: latest
+            .and_then(|probe| probe.probe_result_id.as_ref())
+            .map(ToString::to_string),
+        next_probe_at: latest
+            .and_then(|probe| probe.next_probe_at)
+            .map(timestamp_rfc3339),
         capabilities: vec!["待首次探测识别"],
         probe_settings: ProbeSettingsDto {
             mode: probe_mode_name(mode),
@@ -923,6 +1268,192 @@ fn model_dto(value: ModelAggregate, default_policy: &crate::domain::ProbePolicy)
             parameters,
         },
     }
+}
+
+#[derive(Clone)]
+struct LatestProbe {
+    status: ProbeStatus,
+    result: Option<ProbeResult>,
+    probe_result_id: Option<EntityId>,
+    next_probe_at: Option<TimestampMs>,
+}
+
+fn latest_probes(value: &ApplicationSnapshot) -> HashMap<EntityId, LatestProbe> {
+    let results = value
+        .latest_model_results
+        .iter()
+        .map(|result| (result.id.clone(), result.clone()))
+        .collect::<HashMap<_, _>>();
+    value
+        .latest_model_statuses
+        .iter()
+        .map(|status| {
+            (
+                status.model_id.clone(),
+                LatestProbe {
+                    status: status.status,
+                    probe_result_id: status.probe_result_id.clone(),
+                    next_probe_at: status.next_probe_at,
+                    result: status
+                        .probe_result_id
+                        .as_ref()
+                        .and_then(|result_id| results.get(result_id))
+                        .cloned(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn probe_record_dto(
+    snapshot: &ApplicationSnapshot,
+    aggregate: &ProbeRecordAggregate,
+) -> ProbeRecordDto {
+    let result = &aggregate.result;
+    let site = snapshot
+        .sites
+        .iter()
+        .find(|site| site.site.id == result.site_id);
+    let model = site.and_then(|site| {
+        site.models
+            .iter()
+            .find(|model| model.model.id == result.model_id)
+    });
+    let policy = site.and_then(|site| {
+        model
+            .and_then(|model| model.policy.as_ref())
+            .or(Some(&site.default_policy))
+    });
+    let endpoint = if result.endpoint.is_empty() {
+        match (site, policy) {
+            (Some(site), Some(policy)) => resolve_probe_endpoint(&site.site, policy)
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| site.site.probe_endpoint.clone()),
+            _ => String::new(),
+        }
+    } else {
+        result.endpoint.clone()
+    };
+    let method = match result.request_method {
+        HttpMethod::Get => "GET",
+        HttpMethod::Post => "POST",
+    };
+    let probe_mode = match result.probe_mode {
+        ProbeMode::Inherit => "继承站点默认",
+        ProbeMode::DisabledThinking => "低推理",
+        ProbeMode::MinimumReasoning => "最低推理",
+    };
+    let request_headers = parse_json_array(&aggregate.capture.request_headers_json);
+    let response_headers = parse_json_array(&aggregate.capture.response_headers_json);
+    let response_chunks = parse_json_array(&aggregate.capture.response_chunks_json);
+    let total_time_ms = result.total_time_ms.unwrap_or_default();
+
+    ProbeRecordDto {
+        id: result.id.to_string(),
+        started_at: timestamp_rfc3339(result.started_at),
+        status: probe_status_name(result.status),
+        site_id: result.site_id.to_string(),
+        site_name: site.map_or_else(|| "已删除站点".to_owned(), |site| site.site.name.clone()),
+        model_id: result.model_id.to_string(),
+        model_name: model.map_or_else(
+            || "已删除模型".to_owned(),
+            |model| {
+                model
+                    .model
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| model.model.model_key.clone())
+            },
+        ),
+        first_token_ms: result.first_token_ms,
+        first_token_label: result
+            .first_token_ms
+            .map_or_else(|| "—".to_owned(), format_duration),
+        total_time_ms,
+        total_time_label: format_duration(total_time_ms),
+        result: result_label(result),
+        method,
+        endpoint,
+        probe_mode,
+        http_status: result.http_status,
+        request_id: result.request_id.clone(),
+        error_detail: result.error_message.clone(),
+        token_usage: TokenUsageDto {
+            input_tokens: result.token_usage.input_tokens,
+            output_tokens: result.token_usage.output_tokens,
+            total_tokens: result.token_usage.total_tokens,
+            source: if result.token_usage.reported {
+                "reported"
+            } else {
+                "unavailable"
+            },
+        },
+        exchange: ProbeExchangeDto {
+            request: ProbeCaptureDto {
+                headers: request_headers,
+                raw_body: aggregate.capture.request_body.clone(),
+                captured_bytes: aggregate.capture.request_captured_bytes,
+                capture_limit_bytes: aggregate.capture.request_limit_bytes,
+                truncated: aggregate.capture.request_truncated,
+            },
+            response: ProbeResponseCaptureDto {
+                headers: response_headers,
+                raw_body: aggregate.capture.response_body.clone(),
+                captured_bytes: aggregate.capture.response_captured_bytes,
+                capture_limit_bytes: aggregate.capture.response_limit_bytes,
+                truncated: aggregate.capture.response_truncated,
+                mode: match aggregate
+                    .capture
+                    .response_mode
+                    .unwrap_or(ResponseMode::Synchronous)
+                {
+                    ResponseMode::Stream => "stream",
+                    ResponseMode::Synchronous => "synchronous",
+                },
+                content_type: aggregate.capture.response_content_type.clone(),
+                chunks: response_chunks,
+            },
+        },
+    }
+}
+
+fn parse_json_array<T: for<'de> Deserialize<'de>>(value: &str) -> Vec<T> {
+    serde_json::from_str(value).unwrap_or_default()
+}
+
+fn probe_status_name(value: ProbeStatus) -> &'static str {
+    match value {
+        ProbeStatus::Healthy => "healthy",
+        ProbeStatus::Slow => "warning",
+        ProbeStatus::Unknown | ProbeStatus::Probing => "muted",
+        _ => "error",
+    }
+}
+
+fn result_label(result: &ProbeResult) -> String {
+    match result.status {
+        ProbeStatus::Healthy => "探测成功".to_owned(),
+        ProbeStatus::Slow => "响应偏慢".to_owned(),
+        _ => result
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "探测失败".to_owned()),
+    }
+}
+
+fn format_duration(value: u32) -> String {
+    if value < 1_000 {
+        format!("{value} ms")
+    } else {
+        format!("{:.2} s", f64::from(value) / 1_000.0)
+    }
+}
+
+fn timestamp_rfc3339(value: TimestampMs) -> String {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(value.as_i64()) * 1_000_000)
+        .ok()
+        .and_then(|value| value.format(&Rfc3339).ok())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_owned())
 }
 
 fn probe_settings_dto(
@@ -980,6 +1511,13 @@ fn theme_name(value: ThemeMode) -> &'static str {
         ThemeMode::System => "system",
         ThemeMode::Light => "light",
         ThemeMode::Dark => "dark",
+    }
+}
+
+fn tray_action_name(value: TrayAction) -> &'static str {
+    match value {
+        TrayAction::Panel => "panel",
+        TrayAction::Disabled => "disabled",
     }
 }
 

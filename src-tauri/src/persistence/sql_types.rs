@@ -5,7 +5,7 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, 
 use crate::domain::{
     AuthPreset, CredentialAction, CredentialOperationStatus, DiscoveryStatus, EntityId, HttpMethod,
     LifecycleState, ModelSource, ParameterType, ProbeMode, ProbeRunKind, ProbeStatus, ResponseMode,
-    SiteProtocol, ThemeMode, TimestampMs,
+    SiteProtocol, ThemeMode, TimestampMs, TrayAction,
 };
 
 #[derive(Debug)]
@@ -152,6 +152,11 @@ sqlite_enum!(ThemeMode, "general_settings.theme", {
     ThemeMode::System => "system",
     ThemeMode::Light => "light",
     ThemeMode::Dark => "dark",
+});
+
+sqlite_enum!(TrayAction, "general_settings.tray_action", {
+    TrayAction::Panel => "panel",
+    TrayAction::Disabled => "disabled",
 });
 
 sqlite_enum!(CredentialAction, "credential_operation.action", {

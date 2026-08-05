@@ -17,8 +17,8 @@ impl Repository {
                     "SELECT id, name, protocol, base_url, credential_ref, enabled, sort_order,
                             models_method, models_endpoint, probe_method, probe_endpoint,
                             content_type, auth_preset, stream_enabled, probe_interval_minutes,
-                            first_token_timeout_ms, total_timeout_ms, slow_first_token_ms,
-                            slow_total_ms, failure_threshold, recovery_threshold, lifecycle_state,
+                            slow_first_token_ms, slow_total_ms, failure_threshold,
+                            recovery_threshold, lifecycle_state,
                             created_at_ms, updated_at_ms
                      FROM sites ORDER BY sort_order, id",
                 )?;
@@ -59,10 +59,10 @@ impl Repository {
                        enabled = ?6, models_method = ?7, models_endpoint = ?8,
                        probe_method = ?9, probe_endpoint = ?10, content_type = ?11,
                        auth_preset = ?12, stream_enabled = ?13,
-                       probe_interval_minutes = ?14, first_token_timeout_ms = ?15,
-                       total_timeout_ms = ?16, slow_first_token_ms = ?17,
-                       slow_total_ms = ?18, failure_threshold = ?19,
-                       recovery_threshold = ?20, lifecycle_state = ?21, updated_at_ms = ?22
+                       probe_interval_minutes = ?14, slow_first_token_ms = ?15,
+                       slow_total_ms = ?16, failure_threshold = ?17,
+                       recovery_threshold = ?18, lifecycle_state = ?19,
+                       updated_at_ms = ?20
                      WHERE id = ?1",
                     params![
                         site.id,
@@ -79,8 +79,6 @@ impl Repository {
                         site.auth_preset,
                         site.stream_enabled,
                         site.timing.interval_minutes,
-                        site.timing.first_token_timeout_ms,
-                        site.timing.total_timeout_ms,
                         site.timing.slow_first_token_ms,
                         site.timing.slow_total_ms,
                         site.timing.failure_threshold,
@@ -492,7 +490,7 @@ impl Repository {
         self.database
             .call(|connection| {
                 Ok(connection.query_row(
-                    "SELECT launch_at_startup, continue_in_background, theme,
+                    "SELECT launch_at_startup, continue_in_background, tray_action, theme,
                             history_retention_days, diagnostic_capture_enabled, updated_at_ms
                      FROM general_settings WHERE singleton = 1",
                     [],
@@ -500,10 +498,11 @@ impl Repository {
                         Ok(GeneralSettings {
                             launch_at_startup: row.get(0)?,
                             continue_in_background: row.get(1)?,
-                            theme: row.get(2)?,
-                            history_retention_days: row.get(3)?,
-                            diagnostic_capture_enabled: row.get(4)?,
-                            updated_at: row.get(5)?,
+                            tray_action: row.get(2)?,
+                            theme: row.get(3)?,
+                            history_retention_days: row.get(4)?,
+                            diagnostic_capture_enabled: row.get(5)?,
+                            updated_at: row.get(6)?,
                         })
                     },
                 )?)
@@ -517,13 +516,14 @@ impl Repository {
                 let transaction = connection.transaction()?;
                 let changed = transaction.execute(
                     "UPDATE general_settings SET
-                       launch_at_startup = ?1, continue_in_background = ?2, theme = ?3,
-                       history_retention_days = ?4, diagnostic_capture_enabled = ?5,
-                       updated_at_ms = ?6
+                       launch_at_startup = ?1, continue_in_background = ?2, tray_action = ?3,
+                       theme = ?4, history_retention_days = ?5,
+                       diagnostic_capture_enabled = ?6, updated_at_ms = ?7
                      WHERE singleton = 1",
                     params![
                         settings.launch_at_startup,
                         settings.continue_in_background,
+                        settings.tray_action,
                         settings.theme,
                         settings.history_retention_days,
                         settings.diagnostic_capture_enabled,
@@ -612,12 +612,12 @@ pub(super) fn insert_site(connection: &Connection, site: &Site) -> Result<()> {
         "INSERT INTO sites (
            id, name, protocol, base_url, credential_ref, enabled, sort_order,
            models_method, models_endpoint, probe_method, probe_endpoint, content_type,
-           auth_preset, stream_enabled, probe_interval_minutes, first_token_timeout_ms,
-           total_timeout_ms, slow_first_token_ms, slow_total_ms, failure_threshold,
+           auth_preset, stream_enabled, probe_interval_minutes, slow_first_token_ms,
+           slow_total_ms, failure_threshold,
            recovery_threshold, lifecycle_state, created_at_ms, updated_at_ms
          ) VALUES (
            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-           ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+           ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
          )",
         params![
             site.id,
@@ -635,8 +635,6 @@ pub(super) fn insert_site(connection: &Connection, site: &Site) -> Result<()> {
             site.auth_preset,
             site.stream_enabled,
             site.timing.interval_minutes,
-            site.timing.first_token_timeout_ms,
-            site.timing.total_timeout_ms,
             site.timing.slow_first_token_ms,
             site.timing.slow_total_ms,
             site.timing.failure_threshold,
@@ -768,16 +766,14 @@ fn site_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Site> {
         stream_enabled: row.get(13)?,
         timing: ProbeTimingPolicy {
             interval_minutes: row.get(14)?,
-            first_token_timeout_ms: row.get(15)?,
-            total_timeout_ms: row.get(16)?,
-            slow_first_token_ms: row.get(17)?,
-            slow_total_ms: row.get(18)?,
-            failure_threshold: row.get(19)?,
-            recovery_threshold: row.get(20)?,
+            slow_first_token_ms: row.get(15)?,
+            slow_total_ms: row.get(16)?,
+            failure_threshold: row.get(17)?,
+            recovery_threshold: row.get(18)?,
         },
-        lifecycle_state: row.get(21)?,
-        created_at: row.get(22)?,
-        updated_at: row.get(23)?,
+        lifecycle_state: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
     })
 }
 
@@ -838,7 +834,7 @@ mod tests {
     use crate::{
         domain::{
             GeneralSettings, HttpMethod, ParameterType, ProbeMode, ProbeParameter, RequestHeader,
-            ThemeMode,
+            ThemeMode, TrayAction,
         },
         persistence::Database,
     };
@@ -885,6 +881,7 @@ mod tests {
         let settings = GeneralSettings {
             launch_at_startup: true,
             continue_in_background: false,
+            tray_action: TrayAction::Disabled,
             theme: ThemeMode::Dark,
             history_retention_days: 90,
             diagnostic_capture_enabled: false,

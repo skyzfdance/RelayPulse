@@ -10,6 +10,7 @@ import type {
   SiteAdvancedInput,
   UpdateSiteInput,
 } from '../domain/types';
+import type { DiagnosticExportResult } from '../data/relay-pulse-data-source';
 
 export interface RelayPulseContextValue {
   snapshot: AppSnapshot | null;
@@ -34,9 +35,14 @@ export interface RelayPulseContextValue {
   ): Promise<void>;
   updateGeneralSettings(settings: GeneralSettings): Promise<void>;
   runImmediateProbe(): Promise<void>;
+  runSiteProbe(siteId: string): Promise<void>;
+  runModelProbe(siteId: string, modelId: string): Promise<void>;
   refreshModels(siteId: string, confirmedRemovedModelIds?: string[]): Promise<ModelSyncResult>;
   refreshProbeRecords(): Promise<void>;
   clearProbeRecords(): Promise<void>;
+  openLogDirectory(): Promise<void>;
+  exportDiagnostics(): Promise<DiagnosticExportResult>;
+  openMainWindow(view?: 'sites' | 'general' | 'records'): Promise<void>;
 }
 
 export const RelayPulseContext = createContext<RelayPulseContextValue | null>(null);

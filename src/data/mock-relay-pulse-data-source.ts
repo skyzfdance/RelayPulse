@@ -1,5 +1,6 @@
 import { createFixtureSnapshot } from './fixtures';
 import type { RelayPulseDataSource } from './relay-pulse-data-source';
+import type { DiagnosticExportResult } from './relay-pulse-data-source';
 import type {
   AppSnapshot,
   CreateModelInput,
@@ -80,8 +81,10 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
       modelsEndpoint: '/models',
       probeEndpoint: '/chat/completions',
       probeIntervalMinutes: 10,
-      firstTokenTimeoutSeconds: 8,
-      totalTimeoutSeconds: 30,
+      slowFirstTokenSeconds: 2,
+      slowTotalSeconds: 10,
+      failureThreshold: 2,
+      recoveryThreshold: 2,
       headers: [],
       defaultProbeSettings: {
         mode: 'disabled-thinking',
@@ -218,12 +221,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
     const target = site.models.find((item) => item.id === modelId);
     if (!target) throw new Error(`Unknown model: ${modelId}`);
     target.probeSettings = clone(settings);
-    target.inferenceSummary =
-      settings.mode === 'disabled-thinking'
-        ? '自动 · 关闭思考'
-        : settings.mode === 'minimum-reasoning'
-          ? '自动 · 最低推理'
-          : '继承站点默认';
+    target.inferenceSummary = settings.parameters.length > 0 ? '默认 low · 透传覆盖' : '默认 · low';
     return this.result();
   }
 
@@ -239,11 +237,9 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
     target.customProbe = clone(settings);
     target.inferenceSummary = settings.enabled
       ? '自定义探针'
-      : target.probeSettings.mode === 'disabled-thinking'
-        ? '自动 · 关闭思考'
-        : target.probeSettings.mode === 'minimum-reasoning'
-          ? '自动 · 最低推理'
-          : '继承站点默认';
+      : target.probeSettings.parameters.length > 0
+        ? '默认 low · 透传覆盖'
+        : '默认 · low';
     if (settings.enabled) {
       target.firstToken = '—';
       target.totalTime = '—';
@@ -259,6 +255,21 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
 
   runImmediateProbe(): Promise<AppSnapshot> {
     return this.reset();
+  }
+
+  runSiteProbe(siteId: string): Promise<AppSnapshot> {
+    this.assertActionAvailable();
+    this.requireSite(siteId);
+    return this.result();
+  }
+
+  runModelProbe(siteId: string, modelId: string): Promise<AppSnapshot> {
+    this.assertActionAvailable();
+    const site = this.requireSite(siteId);
+    if (!site.models.some((model) => model.id === modelId)) {
+      throw new Error(`Unknown model: ${modelId}`);
+    }
+    return this.result();
   }
 
   async refreshModels(siteId: string): Promise<ModelSyncResult> {
@@ -280,6 +291,19 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
 
   async getTraySnapshot() {
     return clone(this.snapshot.tray);
+  }
+
+  async openLogDirectory(): Promise<void> {
+    this.assertActionAvailable();
+  }
+
+  async exportDiagnostics(): Promise<DiagnosticExportResult> {
+    this.assertActionAvailable();
+    return { status: 'exported', path: 'RelayPulse-diagnostics-mock.json.gz' };
+  }
+
+  async openMainWindow(): Promise<void> {
+    this.assertActionAvailable();
   }
 
   reset(): Promise<AppSnapshot> {

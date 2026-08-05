@@ -3,12 +3,17 @@ import { createFixtureSnapshot } from './fixtures';
 import { TauriRelayPulseDataSource } from './tauri-relay-pulse-data-source';
 
 function authoritativeSnapshot() {
-  const { revision, sites, generalSettings } = createFixtureSnapshot();
-  return { revision: revision + 4, sites: sites.slice(0, 1), generalSettings };
+  const { revision, sites, generalSettings, probeRecords } = createFixtureSnapshot();
+  return {
+    revision: revision + 4,
+    sites: sites.slice(0, 1),
+    generalSettings,
+    probeRecords: probeRecords.slice(0, 1),
+  };
 }
 
 describe('TauriRelayPulseDataSource', () => {
-  it('maps the authoritative snapshot without importing probe fixtures', async () => {
+  it('maps authoritative sites and probe records from the backend snapshot', async () => {
     const invoke = vi.fn().mockResolvedValue(authoritativeSnapshot());
     const dataSource = new TauriRelayPulseDataSource(invoke);
 
@@ -17,13 +22,40 @@ describe('TauriRelayPulseDataSource', () => {
     expect(invoke).toHaveBeenCalledWith('get_snapshot', undefined);
     expect(snapshot.revision).toBe(4);
     expect(snapshot.selectedSiteId).toBe(snapshot.sites[0].id);
-    expect(snapshot.probeRecords).toEqual([]);
+    expect(snapshot.probeRecords).toHaveLength(1);
     expect(snapshot.tray.healthy).toMatchObject({
       activeSites: 1,
       activeModels: 3,
-      alertCount: 0,
-      completedLabel: '尚未执行探测',
+      alertCount: 1,
+      completedLabel: '最近完成 14:10:42',
+      nextProbeLabel: '等待首次调度',
     });
+  });
+
+  it('uses authoritative model status for tray alerts and orders by site priority', async () => {
+    const { revision, sites, generalSettings } = createFixtureSnapshot();
+    const warningSites = sites.map((site) => ({
+      ...site,
+      models: site.models.map((model) => ({
+        ...model,
+        status: model.enabled ? ('warning' as const) : model.status,
+      })),
+    }));
+    const invoke = vi.fn().mockResolvedValue({
+      revision,
+      sites: warningSites,
+      generalSettings,
+      probeRecords: [],
+    });
+    const dataSource = new TauriRelayPulseDataSource(invoke);
+
+    const tray = (await dataSource.getSnapshot()).tray.alerts;
+    const priorities = tray.alerts.map(
+      (alert) => warningSites.find((site) => site.name === alert.siteName)?.priority,
+    );
+
+    expect(tray.status).toBe('warning');
+    expect(priorities).toEqual([...priorities].sort((left, right) => (left ?? 0) - (right ?? 0)));
   });
 
   it('uses camelCase command arguments and explicit credential intent', async () => {
@@ -83,19 +115,20 @@ describe('TauriRelayPulseDataSource', () => {
     });
   });
 
-  it('maps immediate probe to its production command instead of the mock reset', async () => {
-    const invoke = vi.fn().mockRejectedValue({
-      code: 'not_implemented',
-      category: 'internal',
-      message: 'This RelayPulse operation is not available yet.',
-      retryable: false,
-    });
+  it('maps global, site and single-model probes to their production commands', async () => {
+    const invoke = vi.fn().mockResolvedValue(authoritativeSnapshot());
     const dataSource = new TauriRelayPulseDataSource(invoke);
 
-    await expect(dataSource.runImmediateProbe()).rejects.toMatchObject({
-      code: 'not_implemented',
-    });
+    await dataSource.runImmediateProbe();
+    await dataSource.runSiteProbe('site-a');
+    await dataSource.runModelProbe('site-a', 'model-disabled');
+
     expect(invoke).toHaveBeenCalledWith('run_immediate_probe', undefined);
+    expect(invoke).toHaveBeenCalledWith('run_site_probe', { siteId: 'site-a' });
+    expect(invoke).toHaveBeenCalledWith('run_model_probe', {
+      siteId: 'site-a',
+      modelId: 'model-disabled',
+    });
   });
 
   it('maps model refresh to the real backend command with its site id', async () => {
@@ -144,5 +177,25 @@ describe('TauriRelayPulseDataSource', () => {
       siteId: 'site-a',
       modelId: 'model-a',
     });
+  });
+
+  it('maps desktop diagnostics and window actions to dedicated commands', async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ status: 'exported', path: '/tmp/diagnostics.json.gz' })
+      .mockResolvedValueOnce(undefined);
+    const dataSource = new TauriRelayPulseDataSource(invoke);
+
+    await dataSource.openLogDirectory();
+    await expect(dataSource.exportDiagnostics()).resolves.toEqual({
+      status: 'exported',
+      path: '/tmp/diagnostics.json.gz',
+    });
+    await dataSource.openMainWindow('records');
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'open_log_directory', undefined);
+    expect(invoke).toHaveBeenNthCalledWith(2, 'export_diagnostics', undefined);
+    expect(invoke).toHaveBeenNthCalledWith(3, 'open_main_window', { view: 'records' });
   });
 });

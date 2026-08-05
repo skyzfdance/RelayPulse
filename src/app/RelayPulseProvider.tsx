@@ -128,6 +128,8 @@ export function RelayPulseProvider({
         }
       },
       runImmediateProbe: () => run(() => dataSource.runImmediateProbe()),
+      runSiteProbe: (siteId) => run(() => dataSource.runSiteProbe(siteId)),
+      runModelProbe: (siteId, modelId) => run(() => dataSource.runModelProbe(siteId, modelId)),
       async refreshModels(siteId, confirmedRemovedModelIds) {
         const result = await dataSource.refreshModels(siteId, confirmedRemovedModelIds);
         if (result.status === 'applied') {
@@ -137,6 +139,9 @@ export function RelayPulseProvider({
       },
       refreshProbeRecords: () => run(() => dataSource.refreshProbeRecords()),
       clearProbeRecords: () => run(() => dataSource.clearProbeRecords()),
+      openLogDirectory: () => dataSource.openLogDirectory(),
+      exportDiagnostics: () => dataSource.exportDiagnostics(),
+      openMainWindow: (view) => dataSource.openMainWindow(view),
     }),
     [dataSource, error, loading, run, snapshot],
   );

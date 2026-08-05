@@ -1,23 +1,31 @@
-import { DeleteOutlined, SettingOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlayCircleOutlined, SettingOutlined } from '@ant-design/icons';
 import { Button, Popconfirm, Switch, Table, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { Model, Site } from '../../domain/types';
 import { navigateToView } from '../../app/view';
+import { FirstTokenColumnTitle } from '../../components/FirstTokenColumnTitle';
 
 export function ModelTable({
   site,
   loadingModelId,
   deletingModelId,
+  probingModelId,
+  siteProbeRunning,
   onEnabledChange,
+  onProbe,
   onDelete,
 }: {
   site: Site;
   loadingModelId?: string | null;
   deletingModelId?: string | null;
+  probingModelId?: string | null;
+  siteProbeRunning?: boolean;
   onEnabledChange(modelId: string, enabled: boolean): void;
+  onProbe(modelId: string): Promise<void>;
   onDelete(modelId: string): Promise<void>;
 }) {
-  const busyModelId = loadingModelId ?? deletingModelId;
+  const busyModelId = loadingModelId ?? deletingModelId ?? probingModelId;
+  const tableBusy = Boolean(siteProbeRunning || busyModelId);
   const columns: ColumnsType<Model> = [
     {
       title: '启用',
@@ -30,7 +38,7 @@ export function ModelTable({
           size="small"
           checked={model.enabled}
           loading={loadingModelId === model.id}
-          disabled={Boolean(busyModelId)}
+          disabled={tableBusy}
           aria-label={`${model.enabled ? '停用' : '启用'}模型 ${model.name}`}
           onChange={(enabled) => onEnabledChange(model.id, enabled)}
         />
@@ -54,16 +62,28 @@ export function ModelTable({
       ellipsis: true,
       className: 'text-rp-secondary',
     },
-    { title: '首 Token', dataIndex: 'firstToken', width: 125 },
+    { title: <FirstTokenColumnTitle />, dataIndex: 'firstToken', width: 125 },
     { title: '总耗时', dataIndex: 'totalTime', width: 110 },
     {
       title: '操作',
       key: 'action',
-      width: 104,
+      width: 140,
       align: 'center',
       fixed: 'right',
       render: (_, model) => (
         <div className="flex items-center justify-center gap-1">
+          <Tooltip title="立即探测模型">
+            <Button
+              type="text"
+              shape="circle"
+              icon={<PlayCircleOutlined />}
+              loading={probingModelId === model.id}
+              aria-label={`立即探测模型 ${model.name}`}
+              className="size-8! text-rp-primary!"
+              disabled={Boolean(siteProbeRunning || (busyModelId && probingModelId !== model.id))}
+              onClick={() => void onProbe(model.id)}
+            />
+          </Tooltip>
           <Tooltip title="模型探针设置">
             <Button
               type="text"
@@ -71,7 +91,7 @@ export function ModelTable({
               icon={<SettingOutlined />}
               aria-label={`设置模型 ${model.name}`}
               className="size-8! text-rp-primary!"
-              disabled={Boolean(busyModelId)}
+              disabled={tableBusy}
               onClick={() => {
                 const url = new URL(window.location.href);
                 url.searchParams.set('model', model.id);
@@ -87,7 +107,7 @@ export function ModelTable({
             okText="删除"
             cancelText="取消"
             okButtonProps={{ danger: true }}
-            disabled={Boolean(busyModelId && deletingModelId !== model.id)}
+            disabled={Boolean(siteProbeRunning || (busyModelId && deletingModelId !== model.id))}
             onConfirm={() => onDelete(model.id)}
           >
             <Button
@@ -96,7 +116,7 @@ export function ModelTable({
               danger
               icon={<DeleteOutlined />}
               loading={deletingModelId === model.id}
-              disabled={Boolean(busyModelId && deletingModelId !== model.id)}
+              disabled={Boolean(siteProbeRunning || (busyModelId && deletingModelId !== model.id))}
               aria-label={`删除模型 ${model.name}`}
               className="size-8!"
             />
@@ -114,6 +134,7 @@ export function ModelTable({
       pagination={false}
       size="small"
       tableLayout="fixed"
+      classNames={{ content: 'rp-table-scrollbar' }}
       scroll={{ x: 900 }}
     />
   );

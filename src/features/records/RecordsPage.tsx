@@ -23,6 +23,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useMemo, useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
 import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
+import { FirstTokenColumnTitle } from '../../components/FirstTokenColumnTitle';
 import { StatusDot } from '../../components/StatusDot';
 import type {
   ProbeCapture,
@@ -30,6 +31,7 @@ import type {
   ProbeRecordStatus,
   RequestHeader,
 } from '../../domain/types';
+import { formatLocalTimestamp } from '../../domain/time';
 import { pageHeaderClass } from '../../styles/tailwind';
 
 const overlayContainer = () => document.getElementById('relaypulse-overlay-root') ?? document.body;
@@ -52,10 +54,6 @@ const statusMeta: Record<ProbeRecordStatus, { label: string; color?: string }> =
   warning: { label: '偏慢', color: 'gold' },
   error: { label: '失败', color: 'red' },
 };
-
-function formatTimestamp(value: string) {
-  return `${value.slice(5, 10)} ${value.slice(11, 19)}`;
-}
 
 function formatTokens(value: number | null) {
   return value === null ? '—' : new Intl.NumberFormat('zh-CN').format(value);
@@ -200,7 +198,7 @@ function RecordDetailDrawer({ record, onClose }: { record: ProbeRecord; onClose(
       <div className="border-b border-rp-line pb-3.5">
         <div className="mb-2 flex items-center justify-between gap-4 text-xs text-rp-tertiary">
           <RecordStatus status={record.status} />
-          <span>{formatTimestamp(record.startedAt)}</span>
+          <span>{formatLocalTimestamp(record.startedAt)}</span>
         </div>
         <strong className="text-base leading-6">{record.result}</strong>
       </div>
@@ -440,7 +438,7 @@ export function RecordsPage() {
       defaultSortOrder: 'descend',
       render: (value: string) => (
         <span className="whitespace-nowrap text-rp-secondary [font-variant-numeric:tabular-nums]">
-          {formatTimestamp(value)}
+          {formatLocalTimestamp(value)}
         </span>
       ),
     },
@@ -463,9 +461,9 @@ export function RecordsPage() {
       ),
     },
     {
-      title: '首 Token',
+      title: <FirstTokenColumnTitle />,
       dataIndex: 'firstTokenLabel',
-      width: 112,
+      width: 136,
       sorter: (left, right) => (left.firstTokenMs ?? Infinity) - (right.firstTokenMs ?? Infinity),
     },
     {
@@ -731,7 +729,8 @@ export function RecordsPage() {
               dataSource={filteredRecords}
               size="small"
               tableLayout="fixed"
-              scroll={{ x: 1110 }}
+              classNames={{ content: 'rp-table-scrollbar' }}
+              scroll={{ x: 1134 }}
               showSorterTooltip={{ target: 'sorter-icon' }}
               pagination={{
                 defaultPageSize: 10,
@@ -767,6 +766,7 @@ export function RecordsPage() {
                 dataSource={usageSummary}
                 size="small"
                 tableLayout="fixed"
+                classNames={{ content: 'rp-table-scrollbar' }}
                 scroll={{ x: 1050 }}
                 pagination={false}
                 showSorterTooltip={{ target: 'sorter-icon' }}

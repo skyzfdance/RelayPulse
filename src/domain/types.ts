@@ -54,6 +54,8 @@ export interface Model {
   inferenceSummary: string;
   firstToken: string;
   totalTime: string;
+  latestProbeId?: string | null;
+  nextProbeAt?: string | null;
   capabilities: string[];
   probeSettings: ProbeSettings;
   customProbe: CustomProbeSettings;
@@ -86,8 +88,10 @@ export interface Site {
   modelsEndpoint: string;
   probeEndpoint: string;
   probeIntervalMinutes: number | null;
-  firstTokenTimeoutSeconds: number;
-  totalTimeoutSeconds: number;
+  slowFirstTokenSeconds: number;
+  slowTotalSeconds: number;
+  failureThreshold: number;
+  recoveryThreshold: number;
   headers: RequestHeader[];
   defaultProbeSettings: ProbeSettings;
   models: Model[];
@@ -96,7 +100,7 @@ export interface Site {
 export interface GeneralSettings {
   launchAtStartup: boolean;
   continueInBackground: boolean;
-  trayAction: 'panel';
+  trayAction: 'panel' | 'disabled';
   theme: ThemeMode;
   language: 'zh-CN';
   historyRetentionDays: number;
@@ -113,7 +117,7 @@ export interface TrayAlert {
 }
 
 export interface TraySnapshot {
-  status: 'healthy' | 'error';
+  status: 'healthy' | 'warning' | 'error' | 'muted';
   activeSites: number;
   activeModels: number;
   alertCount: number;
@@ -168,7 +172,7 @@ export interface ProbeRecord {
   totalTimeMs: number;
   totalTimeLabel: string;
   result: string;
-  method: 'POST';
+  method: 'GET' | 'POST';
   endpoint: string;
   probeMode: string;
   httpStatus: number | null;
@@ -214,7 +218,9 @@ export interface SiteAdvancedInput {
   modelsEndpoint: string;
   probeEndpoint: string;
   probeIntervalMinutes: number | null;
-  firstTokenTimeoutSeconds: number;
-  totalTimeoutSeconds: number;
+  slowFirstTokenSeconds: number;
+  slowTotalSeconds: number;
+  failureThreshold: number;
+  recoveryThreshold: number;
   headers: RequestHeader[];
 }

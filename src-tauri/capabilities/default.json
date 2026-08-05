@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Minimal capability for the RelayPulse main window",
-  "windows": ["main"],
+  "windows": ["main", "status-panel"],
   "permissions": ["core:default"]
 }

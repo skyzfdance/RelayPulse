@@ -1,6 +1,7 @@
 import {
   ApiOutlined,
   DeleteOutlined,
+  ExperimentOutlined,
   PlusOutlined,
   SyncOutlined,
   UndoOutlined,
@@ -67,8 +68,10 @@ function siteFormValues(site: Site): SiteFormValues {
     modelsEndpoint: site.modelsEndpoint,
     probeEndpoint: site.probeEndpoint,
     probeIntervalMinutes: site.probeIntervalMinutes,
-    firstTokenTimeoutSeconds: site.firstTokenTimeoutSeconds,
-    totalTimeoutSeconds: site.totalTimeoutSeconds,
+    slowFirstTokenSeconds: site.slowFirstTokenSeconds,
+    slowTotalSeconds: site.slowTotalSeconds,
+    failureThreshold: site.failureThreshold,
+    recoveryThreshold: site.recoveryThreshold,
     headers: site.headers,
   };
 }
@@ -90,10 +93,14 @@ function hasFormChanges(values: Partial<SiteFormValues>, baseline: SiteFormValue
     valueOrBaseline(values.probeEndpoint, baseline.probeEndpoint) !== baseline.probeEndpoint ||
     valueOrBaseline(values.probeIntervalMinutes, baseline.probeIntervalMinutes) !==
       baseline.probeIntervalMinutes ||
-    valueOrBaseline(values.firstTokenTimeoutSeconds, baseline.firstTokenTimeoutSeconds) !==
-      baseline.firstTokenTimeoutSeconds ||
-    valueOrBaseline(values.totalTimeoutSeconds, baseline.totalTimeoutSeconds) !==
-      baseline.totalTimeoutSeconds ||
+    valueOrBaseline(values.slowFirstTokenSeconds, baseline.slowFirstTokenSeconds) !==
+      baseline.slowFirstTokenSeconds ||
+    valueOrBaseline(values.slowTotalSeconds, baseline.slowTotalSeconds) !==
+      baseline.slowTotalSeconds ||
+    valueOrBaseline(values.failureThreshold, baseline.failureThreshold) !==
+      baseline.failureThreshold ||
+    valueOrBaseline(values.recoveryThreshold, baseline.recoveryThreshold) !==
+      baseline.recoveryThreshold ||
     JSON.stringify(valueOrBaseline(values.headers, baseline.headers)) !==
       JSON.stringify(baseline.headers)
   );
@@ -222,7 +229,7 @@ function AdvancedFields({
         <div className={sectionHeaderClass}>
           <div>
             <h3>高级连接</h3>
-            <p>端点、超时和自定义请求头</p>
+            <p>端点、探测频率和自定义请求头</p>
           </div>
         </div>
         <div className={formGridClass}>
@@ -233,7 +240,7 @@ function AdvancedFields({
             <Input className={monoInputClass} />
           </Form.Item>
         </div>
-        <div className="grid grid-cols-3 gap-x-5">
+        <div className={formGridClass}>
           <Form.Item
             label="探测频率"
             name="probeIntervalMinutes"
@@ -244,12 +251,6 @@ function AdvancedFields({
             ]}
           >
             <InputNumber min={1} max={1440} precision={0} suffix="分钟" className="w-full" />
-          </Form.Item>
-          <Form.Item label="首 Token 超时" name="firstTokenTimeoutSeconds">
-            <InputNumber min={1} max={120} suffix="秒" className="w-full" />
-          </Form.Item>
-          <Form.Item label="请求总超时" name="totalTimeoutSeconds">
-            <InputNumber min={1} max={300} suffix="秒" className="w-full" />
           </Form.Item>
         </div>
         <Form.Item name="headers" hidden>
@@ -304,6 +305,60 @@ function AdvancedFields({
           </Button>
         </div>
       </section>
+      <section className={detailSectionClass}>
+        <div className={sectionHeaderClass}>
+          <div>
+            <h3>状态判定</h3>
+            <p>按站点设置黄灯、红灯及恢复条件</p>
+          </div>
+        </div>
+        <div className={formGridClass}>
+          <Form.Item
+            label="首 Token 慢阈值"
+            name="slowFirstTokenSeconds"
+            tooltip="仅在流式响应提供首 Token 数据时参与黄灯判定；达到阈值不会中断请求或转为红灯"
+            rules={[
+              { required: true, message: '请输入首 Token 慢阈值' },
+              { type: 'number', min: 1, max: 86400, message: '请输入 1 至 86400 秒' },
+            ]}
+          >
+            <InputNumber min={1} max={86400} precision={0} suffix="秒" className="w-full" />
+          </Form.Item>
+          <Form.Item
+            label="总耗时慢阈值"
+            name="slowTotalSeconds"
+            tooltip="请求成功但总耗时达到该值时显示黄灯；不会中断请求或转为红灯"
+            rules={[
+              { required: true, message: '请输入总耗时慢阈值' },
+              { type: 'number', min: 1, max: 86400, message: '请输入 1 至 86400 秒' },
+            ]}
+          >
+            <InputNumber min={1} max={86400} precision={0} suffix="秒" className="w-full" />
+          </Form.Item>
+          <Form.Item
+            label="连续失败转红"
+            name="failureThreshold"
+            tooltip="连续失败达到该次数后显示红灯；此前保持上一次稳定状态，没有历史时保持灰色"
+            rules={[
+              { required: true, message: '请输入连续失败次数' },
+              { type: 'number', min: 1, max: 10, message: '请输入 1 至 10 次' },
+            ]}
+          >
+            <InputNumber min={1} max={10} precision={0} suffix="次" className="w-full" />
+          </Form.Item>
+          <Form.Item
+            label="连续成功恢复"
+            name="recoveryThreshold"
+            tooltip="红灯后连续成功达到该次数才恢复；黄灯结果也计为成功"
+            rules={[
+              { required: true, message: '请输入连续成功次数' },
+              { type: 'number', min: 1, max: 10, message: '请输入 1 至 10 次' },
+            ]}
+          >
+            <InputNumber min={1} max={10} precision={0} suffix="次" className="w-full" />
+          </Form.Item>
+        </div>
+      </section>
       <HeaderSync headers={headers} />
     </>
   );
@@ -319,8 +374,15 @@ const SiteDetail = forwardRef<
   SiteDetailHandle,
   { site: Site; advanced: boolean; onDirtyChange(dirty: boolean): void }
 >(function SiteDetail({ site, advanced, onDirtyChange }, ref) {
-  const { updateSite, updateSiteAdvanced, setModelEnabled, deleteModel, refreshModels } =
-    useRelayPulse();
+  const {
+    updateSite,
+    updateSiteAdvanced,
+    setModelEnabled,
+    deleteModel,
+    refreshModels,
+    runSiteProbe,
+    runModelProbe,
+  } = useRelayPulse();
   const runBackendAction = useBackendActionFeedback();
   const { message, notification } = AntdApp.useApp();
   const [form] = Form.useForm<SiteFormValues>();
@@ -332,17 +394,20 @@ const SiteDetail = forwardRef<
   const [pendingModelRemovals, setPendingModelRemovals] = useState<ModelSyncRemoval[] | null>(null);
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
+  const [probingModelId, setProbingModelId] = useState<string | null>(null);
+  const [siteProbeRunning, setSiteProbeRunning] = useState(false);
 
   const initialValues = useMemo(() => siteFormValues(site), [site]);
   const [baseline, setBaseline] = useState(initialValues);
   const defaultStrategyIsEconomical =
-    site.defaultProbeSettings.mode === 'disabled-thinking' &&
     site.defaultProbeSettings.maxOutputTokens === 8 &&
     site.defaultProbeSettings.prompt === '只回复 OK' &&
     site.defaultProbeSettings.parameters.length === 0;
-  const defaultStrategySummary = `${
-    site.defaultProbeSettings.mode === 'disabled-thinking' ? '优先关闭思考' : '使用最低推理'
-  } · 最多输出 ${site.defaultProbeSettings.maxOutputTokens} tokens · ${site.defaultProbeSettings.prompt}`;
+  const defaultStrategySummary = `默认 low · 最多输出 ${site.defaultProbeSettings.maxOutputTokens} tokens · ${site.defaultProbeSettings.prompt}${
+    site.defaultProbeSettings.parameters.length > 0
+      ? ` · ${site.defaultProbeSettings.parameters.length} 项透传覆盖`
+      : ''
+  }`;
 
   function updateDirty(next: boolean) {
     setDirty(next);
@@ -383,8 +448,10 @@ const SiteDetail = forwardRef<
               modelsEndpoint: values.modelsEndpoint,
               probeEndpoint: values.probeEndpoint,
               probeIntervalMinutes: values.probeIntervalMinutes,
-              firstTokenTimeoutSeconds: values.firstTokenTimeoutSeconds,
-              totalTimeoutSeconds: values.totalTimeoutSeconds,
+              slowFirstTokenSeconds: values.slowFirstTokenSeconds,
+              slowTotalSeconds: values.slowTotalSeconds,
+              failureThreshold: values.failureThreshold,
+              recoveryThreshold: values.recoveryThreshold,
               headers: values.headers,
             });
           }
@@ -393,7 +460,7 @@ const SiteDetail = forwardRef<
           key: `save-site-${site.id}`,
           successTitle: advanced ? '站点高级设置已保存' : '站点配置已保存',
           successDescription: advanced
-            ? `“${values.name}”的端点、探测频率、超时和请求头已更新。`
+            ? `“${values.name}”的端点、探测频率、状态判定和请求头已更新。`
             : `“${values.name}”的基本信息已更新。`,
           errorTitle: advanced ? '站点高级设置保存失败' : '站点配置保存失败',
           errorDescription: '更改没有保存，当前编辑内容已保留，请检查后重试。',
@@ -482,6 +549,41 @@ const SiteDetail = forwardRef<
       });
     } finally {
       setDeletingModelId(null);
+    }
+  }
+
+  async function probeEnabledModels() {
+    const enabledCount = site.models.filter((model) => model.enabled).length;
+    if (enabledCount === 0) return;
+    setSiteProbeRunning(true);
+    try {
+      await runBackendAction(() => runSiteProbe(site.id), {
+        key: `probe-site-${site.id}`,
+        presentation: 'notification',
+        successTitle: '站点探针已完成',
+        successDescription: `已探测 ${enabledCount} 个启用模型，结果、耗时和 Token 用量已写入探测记录。`,
+        errorTitle: '站点探针执行失败',
+        errorDescription: '未能完成本次批量探测，请检查站点高级设置和本地凭据。',
+      });
+    } finally {
+      setSiteProbeRunning(false);
+    }
+  }
+
+  async function probeModel(modelId: string) {
+    const modelName = site.models.find((model) => model.id === modelId)?.name ?? '当前模型';
+    setProbingModelId(modelId);
+    try {
+      await runBackendAction(() => runModelProbe(site.id, modelId), {
+        key: `probe-model-${modelId}`,
+        presentation: 'message',
+        successTitle: `${modelName} 探针已完成`,
+        successDescription: '本次结果、耗时和 Token 用量已写入探测记录。',
+        errorTitle: `${modelName} 探针执行失败`,
+        errorDescription: '未能执行本次探测，请检查模型探针设置和本地凭据。',
+      });
+    } finally {
+      setProbingModelId(null);
     }
   }
 
@@ -594,8 +696,21 @@ const SiteDetail = forwardRef<
                   </div>
                   <div className="flex gap-2">
                     <Button
+                      icon={<ExperimentOutlined />}
+                      loading={siteProbeRunning}
+                      disabled={
+                        site.models.every((model) => !model.enabled) ||
+                        syncingModels ||
+                        Boolean(probingModelId)
+                      }
+                      onClick={() => void probeEnabledModels()}
+                    >
+                      探测已启用模型
+                    </Button>
+                    <Button
                       icon={<SyncOutlined />}
                       loading={syncingModels}
+                      disabled={siteProbeRunning || Boolean(probingModelId)}
                       onClick={() => void syncModels()}
                     >
                       同步模型
@@ -603,6 +718,7 @@ const SiteDetail = forwardRef<
                     <Button
                       type="primary"
                       icon={<PlusOutlined />}
+                      disabled={siteProbeRunning || syncingModels || Boolean(probingModelId)}
                       onClick={() => setAddModelOpen(true)}
                     >
                       添加模型
@@ -613,7 +729,10 @@ const SiteDetail = forwardRef<
                   site={site}
                   loadingModelId={loadingModelId}
                   deletingModelId={deletingModelId}
+                  probingModelId={probingModelId}
+                  siteProbeRunning={siteProbeRunning}
                   onEnabledChange={(modelId, enabled) => void changeModelEnabled(modelId, enabled)}
+                  onProbe={probeModel}
                   onDelete={removeModel}
                 />
               </section>

@@ -17,6 +17,9 @@ export interface StateChangedEvent {
   domains: string[];
 }
 
+export type DiagnosticExportResult =
+  { status: 'exported'; path: string } | { status: 'cancelled'; path: null };
+
 export interface RelayPulseDataSource {
   subscribeToChanges?(listener: (event: StateChangedEvent) => void): Promise<() => void>;
   getSnapshot(): Promise<AppSnapshot>;
@@ -43,8 +46,13 @@ export interface RelayPulseDataSource {
   ): Promise<AppSnapshot>;
   updateGeneralSettings(settings: GeneralSettings): Promise<AppSnapshot>;
   runImmediateProbe(): Promise<AppSnapshot>;
+  runSiteProbe(siteId: string): Promise<AppSnapshot>;
+  runModelProbe(siteId: string, modelId: string): Promise<AppSnapshot>;
   refreshModels(siteId: string, confirmedRemovedModelIds?: string[]): Promise<ModelSyncResult>;
   refreshProbeRecords(): Promise<AppSnapshot>;
   clearProbeRecords(): Promise<AppSnapshot>;
   getTraySnapshot(): Promise<{ healthy: TraySnapshot; alerts: TraySnapshot }>;
+  openLogDirectory(): Promise<void>;
+  exportDiagnostics(): Promise<DiagnosticExportResult>;
+  openMainWindow(view?: 'sites' | 'general' | 'records'): Promise<void>;
 }

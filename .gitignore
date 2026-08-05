@@ -17,3 +17,33 @@
 *.local
 *.log
 .DS_Store
+
+# Local runtime databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Local credentials and environment secrets
+.env
+.env.*
+!.env.example
+.envrc
+credentials.json
+credentials.*.json
+secret.json
+secret.*.json
+secrets.json
+secrets.*.json
+api-key.json
+api-key.*.json
+api-keys.json
+api-keys.*.json
+api_keys.json
+api_keys.*.json
+*.key
+*.pem
+*.p12
+*.pfx

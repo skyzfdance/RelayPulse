@@ -1,11 +1,13 @@
 import { App as AntdApp, Button, ConfigProvider, Result, Spin, theme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useState } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { CSSProperties, PropsWithChildren } from 'react';
 import { MainShell } from './app/MainShell';
 import { RelayPulseProvider } from './app/RelayPulseProvider';
 import { useRelayPulse } from './app/relay-pulse-context';
-import { parseView } from './app/view';
+import { navigateToView, parseView } from './app/view';
 import type { ThemeMode, ViewName } from './domain/types';
 import { GeneralPage } from './features/general/GeneralPage';
 import { ModelSettingsDrawer } from './features/models/ModelSettingsDrawer';
@@ -23,6 +25,30 @@ function useActiveView() {
     window.addEventListener('popstate', sync);
     return () => window.removeEventListener('popstate', sync);
   }, []);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen<{ view: ViewName }>('relaypulse://navigate', (event) => {
+      if (!disposed) navigateToView(event.payload.view);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, []);
+  useEffect(() => {
+    const compact = view === 'tray-healthy' || view === 'tray-alerts';
+    document.documentElement.classList.toggle('tray-window', compact);
+    document.body.classList.toggle('tray-window', compact);
+    return () => {
+      document.documentElement.classList.remove('tray-window');
+      document.body.classList.remove('tray-window');
+    };
+  }, [view]);
   return view;
 }
 
@@ -42,7 +68,11 @@ function useResolvedTheme(mode: ThemeMode) {
 
 type RelayPulseThemeVariables = CSSProperties & Record<`--rp-${string}`, string>;
 
-function ThemeSurface({ children, dark }: PropsWithChildren<{ dark: boolean }>) {
+function ThemeSurface({
+  children,
+  dark,
+  transparent = false,
+}: PropsWithChildren<{ dark: boolean; transparent?: boolean }>) {
   const { token } = theme.useToken();
   const variables: RelayPulseThemeVariables = {
     '--rp-bg-stage': dark ? token.colorBgLayout : '#edf0f4',
@@ -71,7 +101,7 @@ function ThemeSurface({ children, dark }: PropsWithChildren<{ dark: boolean }>) 
 
   return (
     <div
-      className={`h-full w-full bg-rp-canvas text-rp ${dark ? 'scheme-dark' : 'scheme-light'}`}
+      className={`h-full w-full text-rp ${transparent ? 'bg-transparent' : 'bg-rp-canvas'} ${dark ? 'scheme-dark' : 'scheme-light'}`}
       data-theme={dark ? 'dark' : 'light'}
       style={variables}
     >
@@ -114,6 +144,7 @@ function RelayPulseApplication() {
   const view = useActiveView();
   const { snapshot, loading, error } = useRelayPulse();
   const isDark = useResolvedTheme(snapshot?.generalSettings.theme ?? 'light');
+  const isTrayView = view === 'tray-healthy' || view === 'tray-alerts';
 
   function retryMockLoad() {
     const url = new URL(window.location.href);
@@ -144,7 +175,7 @@ function RelayPulseApplication() {
         },
       }}
     >
-      <ThemeSurface dark={isDark}>
+      <ThemeSurface dark={isDark} transparent={isTrayView}>
         {loading ? (
           <div className="grid h-full w-full place-items-center bg-rp-canvas">
             <Spin size="large" description="正在加载 Mock 数据" />
@@ -162,7 +193,7 @@ function RelayPulseApplication() {
               }
             />
           </div>
-        ) : view === 'tray-healthy' || view === 'tray-alerts' ? (
+        ) : isTrayView ? (
           <TrayPage view={view} />
         ) : (
           <MainView view={view} />

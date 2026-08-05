@@ -40,10 +40,10 @@ impl Repository {
                        status, response_headers_ms, first_token_ms, total_time_ms, http_status,
                        provider_model, finish_reason, error_code, error_message,
                        input_tokens, output_tokens, total_tokens, usage_reported, ended_normally,
-                       retry_count, request_id, revision
+                       retry_count, request_id, revision, request_method, endpoint, probe_mode
                      ) VALUES (
                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                       ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+                       ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
                      )",
                     params![
                         result.id,
@@ -69,6 +69,9 @@ impl Repository {
                         result.retry_count,
                         result.request_id,
                         revision_sql,
+                        result.request_method,
+                        result.endpoint,
+                        result.probe_mode,
                     ],
                 )?;
                 transaction.execute(
@@ -144,7 +147,8 @@ impl Repository {
                             status, response_headers_ms, first_token_ms, total_time_ms,
                             http_status, provider_model, finish_reason, error_code, error_message,
                             input_tokens, output_tokens, total_tokens, usage_reported,
-                            ended_normally, retry_count, request_id, revision
+                            ended_normally, retry_count, request_id, revision,
+                            request_method, endpoint, probe_mode
                      FROM probe_results
                      WHERE (?1 IS NULL OR site_id = ?1)
                        AND (?2 IS NULL OR model_id = ?2)
@@ -227,6 +231,31 @@ impl Repository {
             .await
     }
 
+    pub async fn list_latest_probe_results(&self) -> Result<Vec<ProbeResult>> {
+        self.database
+            .call(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT result.id, result.site_id, result.model_id, result.run_kind,
+                            result.started_at_ms, result.finished_at_ms, result.status,
+                            result.response_headers_ms, result.first_token_ms,
+                            result.total_time_ms, result.http_status, result.provider_model,
+                            result.finish_reason, result.error_code, result.error_message,
+                            result.input_tokens, result.output_tokens, result.total_tokens,
+                            result.usage_reported, result.ended_normally, result.retry_count,
+                            result.request_id, result.revision, result.request_method,
+                            result.endpoint, result.probe_mode
+                     FROM latest_model_status AS latest
+                     JOIN probe_results AS result ON result.id = latest.probe_result_id
+                     ORDER BY result.model_id",
+                )?;
+                let results = statement
+                    .query_map([], probe_result_from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(results)
+            })
+            .await
+    }
+
     pub async fn clear_probe_results_before(&self, cutoff: TimestampMs) -> Result<CleanupResult> {
         self.database
             .call(move |connection| {
@@ -277,6 +306,9 @@ fn probe_result_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeResul
         site_id: row.get(1)?,
         model_id: row.get(2)?,
         run_kind: row.get(3)?,
+        request_method: row.get(23)?,
+        endpoint: row.get(24)?,
+        probe_mode: row.get(25)?,
         started_at: row.get(4)?,
         finished_at: row.get(5)?,
         status: row.get(6)?,
@@ -549,5 +581,11 @@ mod tests {
         assert_eq!(latest.len(), 1);
         assert_eq!(latest[0].probe_result_id, Some(result.id));
         assert_eq!(latest[0].revision, 3);
+        let latest_results = repository
+            .list_latest_probe_results()
+            .await
+            .expect("latest results read");
+        assert_eq!(latest_results.len(), 1);
+        assert_eq!(latest_results[0].id, page.records[0].id);
     }
 }

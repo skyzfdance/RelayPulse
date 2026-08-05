@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use thiserror::Error;
@@ -9,15 +9,18 @@ use crate::{
     credentials::CredentialError,
     domain::{
         AuthPreset, Clock, CredentialIntent, DiscoveryStatus, EntityId, GeneralSettings,
-        HttpMethod, IdGenerator, LifecycleState, Model, ModelSource, ParameterType, ProbeMode,
-        ProbeParameter, ProbePolicy, ProbeTimingPolicy, RequestHeader, SecretValue, Site,
-        SiteProtocol, ThemeMode,
+        HttpMethod, IdGenerator, LatestModelStatus, LifecycleState, Model, ModelSource,
+        ParameterType, ProbeCapture, ProbeMode, ProbeParameter, ProbePolicy, ProbeResult,
+        ProbeRunKind, ProbeTimingPolicy, RequestHeader, SecretValue, Site, SiteProtocol, ThemeMode,
+        TrayAction,
     },
-    persistence::{CleanupResult, DatabaseError, Repository},
+    persistence::{CleanupResult, DatabaseError, ProbePageRequest, Repository},
 };
 
 use super::{
+    scheduler::{aggregate_latest_status, stable_next_probe_at},
     CredentialSaga, CredentialSagaError, DiscoveredModel, ModelCatalogClient, ModelCatalogError,
+    ProbeExecutor, ScheduleSnapshot, ScheduledModel,
 };
 
 #[derive(Debug, Error)]
@@ -42,6 +45,8 @@ pub enum ApplicationError {
     Upstream,
     #[error("the model catalog response is not supported")]
     Protocol,
+    #[error("a probe is already running for this model")]
+    Conflict,
     #[error("an internal application operation failed")]
     Internal,
 }
@@ -116,6 +121,15 @@ pub struct ApplicationSnapshot {
     pub revision: u64,
     pub sites: Vec<SiteAggregate>,
     pub general_settings: GeneralSettings,
+    pub latest_model_statuses: Vec<LatestModelStatus>,
+    pub latest_model_results: Vec<ProbeResult>,
+    pub probe_records: Vec<ProbeRecordAggregate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeRecordAggregate {
+    pub result: ProbeResult,
+    pub capture: ProbeCapture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,8 +178,10 @@ pub struct SiteAdvancedUpdate {
     pub models_endpoint: String,
     pub probe_endpoint: String,
     pub interval_minutes: Option<u16>,
-    pub first_token_timeout_ms: u32,
-    pub total_timeout_ms: u32,
+    pub slow_first_token_ms: u32,
+    pub slow_total_ms: u32,
+    pub failure_threshold: u8,
+    pub recovery_threshold: u8,
     pub headers: Vec<(String, String)>,
 }
 
@@ -197,6 +213,8 @@ pub struct ApplicationService {
     repository: Repository,
     credentials: CredentialSaga,
     model_catalog: ModelCatalogClient,
+    probe_executor: ProbeExecutor,
+    active_probes: Arc<Mutex<HashSet<EntityId>>>,
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
 }
@@ -212,6 +230,8 @@ impl ApplicationService {
             repository,
             credentials,
             model_catalog: ModelCatalogClient::default(),
+            probe_executor: ProbeExecutor::default(),
+            active_probes: Arc::new(Mutex::new(HashSet::new())),
             ids,
             clock,
         }
@@ -220,14 +240,259 @@ impl ApplicationService {
     pub async fn snapshot(&self) -> Result<ApplicationSnapshot> {
         let revision = self.repository.revision().await?;
         let general_settings = self.repository.load_general_settings().await?;
+        let latest_model_statuses = self.repository.list_latest_model_statuses().await?;
+        let latest_model_results = self.repository.list_latest_probe_results().await?;
         let mut aggregates = Vec::new();
         for site in self.repository.list_sites().await? {
             aggregates.push(self.load_site_aggregate(site).await?);
+        }
+        let page = self
+            .repository
+            .page_probe_results(ProbePageRequest {
+                limit: 100,
+                ..ProbePageRequest::default()
+            })
+            .await?;
+        let mut probe_records = Vec::with_capacity(page.records.len());
+        for result in page.records {
+            let capture = self
+                .repository
+                .load_probe_capture(result.id.clone())
+                .await?
+                .ok_or(ApplicationError::Internal)?;
+            probe_records.push(ProbeRecordAggregate { result, capture });
         }
         Ok(ApplicationSnapshot {
             revision,
             sites: aggregates,
             general_settings,
+            latest_model_statuses,
+            latest_model_results,
+            probe_records,
+        })
+    }
+
+    pub(crate) async fn schedule_snapshot(&self) -> Result<ScheduleSnapshot> {
+        let latest = self
+            .repository
+            .list_latest_model_statuses()
+            .await?
+            .into_iter()
+            .map(|status| (status.model_id.clone(), status))
+            .collect::<HashMap<_, _>>();
+        let mut models = Vec::new();
+        for site in self
+            .repository
+            .list_sites()
+            .await?
+            .into_iter()
+            .filter(|site| site.enabled)
+        {
+            let Some(interval_minutes) = site.timing.interval_minutes else {
+                continue;
+            };
+            for model in self
+                .repository
+                .list_models(site.id.clone())
+                .await?
+                .into_iter()
+                .filter(|model| model.enabled)
+            {
+                models.push(ScheduledModel {
+                    site_id: site.id.clone(),
+                    persisted_next_probe_at: latest
+                        .get(&model.id)
+                        .and_then(|status| status.next_probe_at),
+                    model_id: model.id,
+                    interval_minutes,
+                });
+            }
+        }
+        Ok(ScheduleSnapshot {
+            now: self.clock.now(),
+            models,
+        })
+    }
+
+    pub async fn probe_all_enabled(&self) -> Result<ApplicationSnapshot> {
+        let sites = self.snapshot().await?.sites;
+        for site in sites.iter().filter(|site| site.site.enabled) {
+            for model in site.models.iter().filter(|model| model.model.enabled) {
+                self.execute_probe(site, model, ProbeRunKind::Manual)
+                    .await?;
+            }
+        }
+        self.snapshot().await
+    }
+
+    pub async fn probe_site(&self, site_id: EntityId) -> Result<ApplicationSnapshot> {
+        let site = self
+            .site(site_id)
+            .await?
+            .ok_or(ApplicationError::NotFound { entity: "site" })?;
+        for model in site.models.iter().filter(|model| model.model.enabled) {
+            self.execute_probe(&site, model, ProbeRunKind::Manual)
+                .await?;
+        }
+        self.snapshot().await
+    }
+
+    pub async fn probe_model(
+        &self,
+        site_id: EntityId,
+        model_id: EntityId,
+    ) -> Result<ApplicationSnapshot> {
+        let site = self
+            .site(site_id)
+            .await?
+            .ok_or(ApplicationError::NotFound { entity: "site" })?;
+        let model = site
+            .models
+            .iter()
+            .find(|model| model.model.id == model_id)
+            .ok_or(ApplicationError::NotFound { entity: "model" })?;
+        self.execute_probe(&site, model, ProbeRunKind::Manual)
+            .await?;
+        self.snapshot().await
+    }
+
+    pub(crate) async fn probe_scheduled_model(
+        &self,
+        site_id: EntityId,
+        model_id: EntityId,
+    ) -> Result<Option<ApplicationSnapshot>> {
+        let Some(site) = self.site(site_id).await? else {
+            return Ok(None);
+        };
+        if !site.site.enabled || site.site.timing.interval_minutes.is_none() {
+            return Ok(None);
+        }
+        let Some(model) = site
+            .models
+            .iter()
+            .find(|model| model.model.id == model_id && model.model.enabled)
+        else {
+            return Ok(None);
+        };
+        self.execute_probe(&site, model, ProbeRunKind::Scheduled)
+            .await?;
+        self.snapshot().await.map(Some)
+    }
+
+    async fn execute_probe(
+        &self,
+        site: &SiteAggregate,
+        model: &ModelAggregate,
+        run_kind: ProbeRunKind,
+    ) -> Result<()> {
+        let _active_probe = self.begin_probe(&model.model.id)?;
+        let secret = match site.site.credential_ref.as_ref() {
+            Some(reference) => Some(self.credentials.read_secret(reference.clone()).await?),
+            None => None,
+        };
+        let effective_policy = effective_probe_policy(&site.default_policy, model.policy.as_ref());
+        let parameters = if model.policy.is_some() {
+            &model.parameters
+        } else {
+            &site.default_parameters
+        };
+        let started_at = self.clock.now();
+        let execution = self
+            .probe_executor
+            .execute(
+                &site.site,
+                &model.model,
+                &effective_policy,
+                parameters,
+                &site.headers,
+                secret.as_ref(),
+            )
+            .await;
+        let finished_at = self.clock.now();
+        let result_id = self.ids.next_id();
+        let result = ProbeResult {
+            id: result_id.clone(),
+            site_id: site.site.id.clone(),
+            model_id: model.model.id.clone(),
+            run_kind,
+            request_method: effective_policy
+                .custom_method
+                .unwrap_or(site.site.probe_method),
+            endpoint: execution.endpoint.clone(),
+            probe_mode: effective_policy.mode,
+            started_at,
+            finished_at: Some(finished_at),
+            status: execution.status,
+            response_headers_ms: execution.response_headers_ms,
+            first_token_ms: execution.first_token_ms,
+            total_time_ms: Some(execution.total_time_ms),
+            http_status: execution.http_status,
+            provider_model: execution.provider_model,
+            finish_reason: execution.finish_reason,
+            error_code: execution.error_code,
+            error_message: execution.error_message,
+            token_usage: execution.token_usage,
+            ended_normally: execution.ended_normally,
+            retry_count: 0,
+            request_id: execution.request_id,
+            revision: 0,
+        };
+        let previous = self
+            .repository
+            .list_latest_model_statuses()
+            .await?
+            .into_iter()
+            .find(|status| status.model_id == model.model.id);
+        let next_probe_at = site.site.timing.interval_minutes.map(|interval_minutes| {
+            stable_next_probe_at(
+                finished_at,
+                &site.site.id,
+                &model.model.id,
+                interval_minutes,
+            )
+        });
+        let latest = aggregate_latest_status(
+            previous.as_ref(),
+            execution.status,
+            &site.site.timing,
+            model.model.id.clone(),
+            result_id.clone(),
+            finished_at,
+            next_probe_at,
+        );
+        let general_settings = self.repository.load_general_settings().await?;
+        let mut capture = execution.capture;
+        capture.probe_result_id = result_id;
+        if !general_settings.diagnostic_capture_enabled {
+            capture.request_headers_json = "[]".to_owned();
+            capture.request_body.clear();
+            capture.request_captured_bytes = 0;
+            capture.request_truncated = false;
+            capture.response_headers_json = "[]".to_owned();
+            capture.response_body.clear();
+            capture.response_chunks_json = "[]".to_owned();
+            capture.response_captured_bytes = 0;
+            capture.response_truncated = false;
+        }
+        self.repository
+            .record_probe(result, capture, latest)
+            .await?;
+        self.clear_expired_probe_records(general_settings.history_retention_days, finished_at)
+            .await?;
+        Ok(())
+    }
+
+    fn begin_probe(&self, model_id: &EntityId) -> Result<ActiveProbeGuard> {
+        let mut active = self
+            .active_probes
+            .lock()
+            .map_err(|_| ApplicationError::Internal)?;
+        if !active.insert(model_id.clone()) {
+            return Err(ApplicationError::Conflict);
+        }
+        Ok(ActiveProbeGuard {
+            active: Arc::clone(&self.active_probes),
+            model_id: model_id.clone(),
         })
     }
 
@@ -251,6 +516,7 @@ impl ApplicationService {
         let sites = self.repository.list_sites().await?;
         let sort_order = next_sort_order(sites.iter().map(|site| site.sort_order))?;
         let site_id = self.ids.next_id();
+        let (probe_endpoint, auth_preset) = protocol_probe_defaults(input.protocol);
         let site = Site {
             id: site_id.clone(),
             name: input.name.trim().to_owned(),
@@ -262,10 +528,10 @@ impl ApplicationService {
             models_method: HttpMethod::Get,
             models_endpoint: "/models".to_owned(),
             probe_method: HttpMethod::Post,
-            probe_endpoint: "/chat/completions".to_owned(),
+            probe_endpoint: probe_endpoint.to_owned(),
             content_type: "application/json".to_owned(),
-            auth_preset: AuthPreset::Bearer,
-            stream_enabled: true,
+            auth_preset,
+            stream_enabled: false,
             timing: ProbeTimingPolicy::default(),
             lifecycle_state: LifecycleState::Ready,
             created_at: now,
@@ -444,12 +710,10 @@ impl ApplicationService {
         site.probe_endpoint = input.probe_endpoint;
         site.timing = ProbeTimingPolicy::new(
             input.interval_minutes,
-            input.first_token_timeout_ms,
-            input.total_timeout_ms,
-            site.timing.slow_first_token_ms,
-            site.timing.slow_total_ms,
-            site.timing.failure_threshold,
-            site.timing.recovery_threshold,
+            input.slow_first_token_ms,
+            input.slow_total_ms,
+            input.failure_threshold,
+            input.recovery_threshold,
         )
         .map_err(|error| ApplicationError::InvalidInput {
             field: error.field().unwrap_or("probe_timing"),
@@ -581,7 +845,7 @@ impl ApplicationService {
                 .unwrap_or_else(|| default_policy.0.prompt.clone()),
             custom_endpoint: input.enabled.then_some(input.endpoint),
             custom_method: input.enabled.then_some(HttpMethod::Post),
-            custom_stream_enabled: input.enabled.then_some(true),
+            custom_stream_enabled: input.enabled.then_some(false),
             created_at: existing.map(|(policy, _)| policy.created_at).unwrap_or(now),
             updated_at: now,
         };
@@ -616,6 +880,7 @@ impl ApplicationService {
         &self,
         launch_at_startup: bool,
         continue_in_background: bool,
+        tray_action: TrayAction,
         theme: ThemeMode,
         history_retention_days: u16,
         diagnostic_capture_enabled: bool,
@@ -629,13 +894,32 @@ impl ApplicationService {
             .update_general_settings(GeneralSettings {
                 launch_at_startup,
                 continue_in_background,
+                tray_action,
                 theme,
                 history_retention_days,
                 diagnostic_capture_enabled,
                 updated_at: self.clock.now(),
             })
             .await?;
+        self.clear_expired_probe_records(history_retention_days, self.clock.now())
+            .await?;
         self.snapshot().await
+    }
+
+    async fn clear_expired_probe_records(
+        &self,
+        retention_days: u16,
+        now: crate::domain::TimestampMs,
+    ) -> Result<CleanupResult> {
+        const MILLISECONDS_PER_DAY: i64 = 86_400_000;
+        let retention_ms = i64::from(retention_days).saturating_mul(MILLISECONDS_PER_DAY);
+        let cutoff =
+            crate::domain::TimestampMs::new(now.as_i64().saturating_sub(retention_ms).max(0))
+                .map_err(|_| ApplicationError::Internal)?;
+        self.repository
+            .clear_probe_results_before(cutoff)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn clear_probe_records(&self) -> Result<(CleanupResult, ApplicationSnapshot)> {
@@ -768,6 +1052,19 @@ impl ApplicationService {
     }
 }
 
+struct ActiveProbeGuard {
+    active: Arc<Mutex<HashSet<EntityId>>>,
+    model_id: EntityId,
+}
+
+impl Drop for ActiveProbeGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.model_id);
+        }
+    }
+}
+
 fn model_identity_key(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
@@ -790,13 +1087,39 @@ fn require_text(value: &str, field: &'static str) -> Result<()> {
     Ok(())
 }
 
+fn protocol_probe_defaults(protocol: SiteProtocol) -> (&'static str, AuthPreset) {
+    match protocol {
+        SiteProtocol::OpenAiCompatible => ("/chat/completions", AuthPreset::Bearer),
+        SiteProtocol::OpenAiResponses => ("/responses", AuthPreset::Bearer),
+        SiteProtocol::Anthropic => ("/messages", AuthPreset::XApiKey),
+        SiteProtocol::CustomHttp => ("/probe", AuthPreset::None),
+    }
+}
+
+fn effective_probe_policy(
+    site_default: &ProbePolicy,
+    model_policy: Option<&ProbePolicy>,
+) -> ProbePolicy {
+    let mut effective = model_policy
+        .cloned()
+        .unwrap_or_else(|| site_default.clone());
+    effective.mode = ProbeMode::DisabledThinking;
+    effective
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, sync::Mutex};
+    use std::{
+        collections::VecDeque,
+        io::{Read, Write},
+        net::TcpListener,
+        sync::Mutex,
+        thread,
+    };
 
     use crate::{
         credentials::{CredentialService, InMemoryCredentialStore},
-        domain::{FixedClock, TimestampMs},
+        domain::{FixedClock, ProbeStatus, TimestampMs},
         persistence::Database,
     };
 
@@ -827,6 +1150,132 @@ mod tests {
                 .pop_front()
                 .expect("fixture id available")
         }
+    }
+
+    #[test]
+    fn effective_probe_policy_always_uses_the_low_reasoning_default() {
+        let site_id = EntityId::parse("site-a").expect("site id is valid");
+        let model_id = EntityId::parse("model-a").expect("model id is valid");
+        let timestamp = TimestampMs::new(100).expect("timestamp is valid");
+        let site_default = ProbePolicy {
+            id: EntityId::parse("policy-default").expect("policy id is valid"),
+            site_id: site_id.clone(),
+            model_id: None,
+            mode: ProbeMode::MinimumReasoning,
+            max_output_tokens: 8,
+            prompt: "只回复 OK".to_owned(),
+            custom_endpoint: None,
+            custom_method: None,
+            custom_stream_enabled: None,
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+        let mut model_policy = site_default.clone();
+        model_policy.id = EntityId::parse("policy-model").expect("policy id is valid");
+        model_policy.model_id = Some(model_id);
+        model_policy.mode = ProbeMode::Inherit;
+
+        let effective = effective_probe_policy(&site_default, Some(&model_policy));
+
+        assert_eq!(effective.mode, ProbeMode::DisabledThinking);
+    }
+
+    fn serve_probe() -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("probe server binds");
+        let address = listener
+            .local_addr()
+            .expect("probe server address is available");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("probe request connects");
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream
+                .read(&mut request)
+                .expect("probe request is readable");
+            let response = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "Content-Type: text/event-stream\r\n",
+                "Connection: close\r\n\r\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}],",
+                "\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("probe response is writable");
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn single_model_probe_ignores_enabled_state_and_returns_persisted_usage() {
+        let (base_url, server) = serve_probe();
+        let repository = Repository::new(Database::open_in_memory().expect("database opens"));
+        let store = InMemoryCredentialStore::default();
+        let ids: Arc<dyn IdGenerator> = Arc::new(SequenceIds::new(&[
+            "site-a",
+            "policy-a",
+            "credential-a",
+            "operation-create",
+            "model-a",
+            "result-a",
+        ]));
+        let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(
+            TimestampMs::new(100).expect("timestamp is valid"),
+        ));
+        let saga = CredentialSaga::new(
+            repository.clone(),
+            CredentialService::start(store).expect("credential worker starts"),
+            ids.clone(),
+            clock.clone(),
+        );
+        let service = ApplicationService::new(repository, saga, ids, clock);
+
+        service
+            .create_site(CreateSite {
+                name: "Site A".to_owned(),
+                protocol: SiteProtocol::OpenAiCompatible,
+                base_url,
+                enabled: true,
+                secret: SecretValue::new("fixture-secret").expect("secret is valid"),
+            })
+            .await
+            .expect("site is created");
+        service
+            .create_model(CreateModel {
+                site_id: EntityId::parse("site-a").expect("site id is valid"),
+                model_key: "model-a".to_owned(),
+                enabled: false,
+            })
+            .await
+            .expect("disabled model is created");
+
+        let snapshot = service
+            .probe_model(
+                EntityId::parse("site-a").expect("site id is valid"),
+                EntityId::parse("model-a").expect("model id is valid"),
+            )
+            .await
+            .expect("manual probe succeeds for a disabled model");
+
+        assert_eq!(snapshot.probe_records.len(), 1);
+        assert_eq!(snapshot.probe_records[0].result.id.as_str(), "result-a");
+        assert_eq!(
+            snapshot.probe_records[0].result.status,
+            ProbeStatus::Healthy
+        );
+        assert_eq!(
+            snapshot.probe_records[0].result.token_usage.total_tokens,
+            Some(5)
+        );
+        assert_eq!(snapshot.latest_model_statuses.len(), 1);
+        assert_eq!(
+            snapshot.latest_model_statuses[0].status,
+            ProbeStatus::Healthy
+        );
+        assert!(snapshot.latest_model_statuses[0].next_probe_at.is_some());
+        assert_eq!(snapshot.latest_model_results.len(), 1);
+        assert!(!snapshot.sites[0].models[0].model.enabled);
+        server.join().expect("probe server stops");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1007,6 +1456,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("site-a", 0), ("site-c", 1)]
         );
+        assert_eq!(snapshot.sites[1].site.probe_endpoint, "/responses");
     }
 
     #[test]

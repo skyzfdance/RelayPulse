@@ -25,21 +25,15 @@ CREATE TABLE sites (
   auth_preset TEXT NOT NULL DEFAULT 'bearer' CHECK (
     auth_preset IN ('bearer', 'x-api-key', 'api-key', 'none')
   ),
-  stream_enabled INTEGER NOT NULL DEFAULT 1 CHECK (stream_enabled IN (0, 1)),
+  stream_enabled INTEGER NOT NULL DEFAULT 0 CHECK (stream_enabled IN (0, 1)),
   probe_interval_minutes INTEGER DEFAULT 10 CHECK (
     probe_interval_minutes IS NULL OR probe_interval_minutes BETWEEN 1 AND 1440
   ),
-  first_token_timeout_ms INTEGER NOT NULL DEFAULT 8000 CHECK (
-    first_token_timeout_ms BETWEEN 1000 AND 120000
-  ),
-  total_timeout_ms INTEGER NOT NULL DEFAULT 30000 CHECK (
-    total_timeout_ms BETWEEN 1000 AND 300000 AND total_timeout_ms >= first_token_timeout_ms
-  ),
   slow_first_token_ms INTEGER NOT NULL DEFAULT 2000 CHECK (
-    slow_first_token_ms > 0 AND slow_first_token_ms < first_token_timeout_ms
+    slow_first_token_ms BETWEEN 1 AND 86400000
   ),
   slow_total_ms INTEGER NOT NULL DEFAULT 10000 CHECK (
-    slow_total_ms > 0 AND slow_total_ms < total_timeout_ms
+    slow_total_ms BETWEEN 1 AND 86400000
   ),
   failure_threshold INTEGER NOT NULL DEFAULT 2 CHECK (failure_threshold BETWEEN 1 AND 10),
   recovery_threshold INTEGER NOT NULL DEFAULT 2 CHECK (recovery_threshold BETWEEN 1 AND 10),
@@ -121,6 +115,11 @@ CREATE TABLE probe_results (
   site_id TEXT NOT NULL REFERENCES sites (id) ON DELETE CASCADE,
   model_id TEXT NOT NULL,
   run_kind TEXT NOT NULL CHECK (run_kind IN ('scheduled', 'manual', 'trial')),
+  request_method TEXT NOT NULL DEFAULT 'POST' CHECK (request_method IN ('GET', 'POST')),
+  endpoint TEXT NOT NULL DEFAULT '',
+  probe_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (
+    probe_mode IN ('inherit', 'disabled-thinking', 'minimum-reasoning')
+  ),
   started_at_ms INTEGER NOT NULL CHECK (started_at_ms >= 0),
   finished_at_ms INTEGER CHECK (
     finished_at_ms IS NULL OR finished_at_ms >= started_at_ms
@@ -238,7 +237,7 @@ CREATE TABLE general_settings (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   launch_at_startup INTEGER NOT NULL DEFAULT 0 CHECK (launch_at_startup IN (0, 1)),
   continue_in_background INTEGER NOT NULL DEFAULT 1 CHECK (continue_in_background IN (0, 1)),
-  tray_action TEXT NOT NULL DEFAULT 'panel' CHECK (tray_action = 'panel'),
+  tray_action TEXT NOT NULL DEFAULT 'panel' CHECK (tray_action IN ('panel', 'disabled')),
   theme TEXT NOT NULL DEFAULT 'system' CHECK (theme IN ('system', 'light', 'dark')),
   language TEXT NOT NULL DEFAULT 'zh-CN' CHECK (language = 'zh-CN'),
   history_retention_days INTEGER NOT NULL DEFAULT 30 CHECK (history_retention_days BETWEEN 1 AND 3650),

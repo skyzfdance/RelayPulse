@@ -250,11 +250,19 @@ describe('MockRelayPulseDataSource', () => {
       modelsEndpoint: site.modelsEndpoint,
       probeEndpoint: site.probeEndpoint,
       probeIntervalMinutes: 15,
-      firstTokenTimeoutSeconds: site.firstTokenTimeoutSeconds,
-      totalTimeoutSeconds: site.totalTimeoutSeconds,
+      slowFirstTokenSeconds: 3,
+      slowTotalSeconds: 12,
+      failureThreshold: 3,
+      recoveryThreshold: 2,
       headers: site.headers,
     });
 
     expect(after.sites[0].probeIntervalMinutes).toBe(15);
+    expect(after.sites[0]).toMatchObject({
+      slowFirstTokenSeconds: 3,
+      slowTotalSeconds: 12,
+      failureThreshold: 3,
+      recoveryThreshold: 2,
+    });
   });
 });

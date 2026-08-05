@@ -1,7 +1,9 @@
 use std::{collections::HashSet, time::Duration};
 
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE},
+    header::{
+        HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT,
+    },
     Method, StatusCode, Url,
 };
 use serde_json::Value;
@@ -11,6 +13,7 @@ use crate::domain::{AuthPreset, HttpMethod, RequestHeader, SecretValue, Site, Si
 
 const MAX_CATALOG_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_MODELS: usize = 10_000;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredModel {
@@ -50,7 +53,10 @@ pub struct ModelCatalogClient {
 impl Default for ModelCatalogClient {
     fn default() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 }
@@ -73,13 +79,7 @@ impl ModelCatalogClient {
             HttpMethod::Get => Method::GET,
             HttpMethod::Post => Method::POST,
         };
-        let mut request =
-            self.client
-                .request(method, url)
-                .headers(headers)
-                .timeout(Duration::from_millis(u64::from(
-                    site.timing.total_timeout_ms,
-                )));
+        let mut request = self.client.request(method, url).headers(headers);
         if site.models_method == HttpMethod::Post {
             request = request.json(&serde_json::json!({}));
         }
@@ -127,6 +127,10 @@ fn request_headers(
 ) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, header_value(&site.content_type)?);
+    headers.insert(
+        USER_AGENT,
+        header_value(&super::outbound_user_agent("model-catalog"))?,
+    );
 
     match site.auth_preset {
         AuthPreset::Bearer => {

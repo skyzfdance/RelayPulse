@@ -1,8 +1,16 @@
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use crate::{
-    application::{ApplicationService, CredentialSaga},
+    application::{ApplicationService, CredentialSaga, SchedulerHandle},
     credentials::{CredentialService, LocalCredentialStore},
+    diagnostics::Diagnostics,
     domain::{SystemClock, UuidGenerator},
     persistence::{Database, DatabaseError, Repository},
 };
@@ -76,6 +84,9 @@ pub struct BackendState {
     application_service: Option<ApplicationService>,
     credential_saga: Option<CredentialSaga>,
     startup_failure: Option<StartupFailure>,
+    diagnostics: Option<Diagnostics>,
+    continue_in_background: AtomicBool,
+    scheduler: Mutex<Option<SchedulerHandle>>,
 }
 
 impl BackendState {
@@ -84,13 +95,19 @@ impl BackendState {
             return Self::blocked(StartupFailure::data_directory());
         }
 
+        let diagnostics = Diagnostics::initialize(&data_directory).ok();
         match Database::open(data_directory.join(DATABASE_FILE_NAME)) {
             Ok(database) => {
                 let credentials = match CredentialService::start(LocalCredentialStore::new(
                     data_directory.join(CREDENTIAL_FILE_NAME),
                 )) {
                     Ok(credentials) => credentials,
-                    Err(_) => return Self::blocked(StartupFailure::credential_worker()),
+                    Err(_) => {
+                        return Self::blocked_with_diagnostics(
+                            StartupFailure::credential_worker(),
+                            diagnostics,
+                        )
+                    }
                 };
                 let repository = Repository::new(database.clone());
                 let ids = Arc::new(UuidGenerator);
@@ -108,18 +125,31 @@ impl BackendState {
                     application_service: Some(application_service),
                     credential_saga: Some(credential_saga),
                     startup_failure: None,
+                    diagnostics,
+                    continue_in_background: AtomicBool::new(true),
+                    scheduler: Mutex::new(None),
                 }
             }
-            Err(error) => Self::blocked(StartupFailure::from_database_error(error)),
+            Err(error) => Self::blocked_with_diagnostics(
+                StartupFailure::from_database_error(error),
+                diagnostics,
+            ),
         }
     }
 
     pub fn blocked(failure: StartupFailure) -> Self {
+        Self::blocked_with_diagnostics(failure, None)
+    }
+
+    fn blocked_with_diagnostics(failure: StartupFailure, diagnostics: Option<Diagnostics>) -> Self {
         Self {
             database: None,
             application_service: None,
             credential_saga: None,
             startup_failure: Some(failure),
+            diagnostics,
+            continue_in_background: AtomicBool::new(false),
+            scheduler: Mutex::new(None),
         }
     }
 
@@ -137,6 +167,24 @@ impl BackendState {
 
     pub fn application_service(&self) -> Option<&ApplicationService> {
         self.application_service.as_ref()
+    }
+
+    pub fn diagnostics(&self) -> Option<&Diagnostics> {
+        self.diagnostics.as_ref()
+    }
+
+    pub fn continue_in_background(&self) -> bool {
+        self.continue_in_background.load(Ordering::Relaxed)
+    }
+
+    pub fn set_continue_in_background(&self, value: bool) {
+        self.continue_in_background.store(value, Ordering::Relaxed);
+    }
+
+    pub fn set_scheduler(&self, scheduler: SchedulerHandle) {
+        if let Ok(mut current) = self.scheduler.lock() {
+            *current = Some(scheduler);
+        }
     }
 
     pub fn is_ready(&self) -> bool {
@@ -210,9 +258,12 @@ mod tests {
         let expected_site = env::var("RELAYPULSE_REAL_SITE")
             .expect("RELAYPULSE_REAL_SITE must select one configured site");
         let state = BackendState::initialize(data_directory);
-        let service = state
-            .application_service()
-            .expect("real backend state initializes");
+        let service = state.application_service().unwrap_or_else(|| {
+            panic!(
+                "real backend state initializes: {:?}",
+                state.startup_failure()
+            )
+        });
         let snapshot = service.snapshot().await.expect("real snapshot loads");
         let site = snapshot
             .sites
@@ -256,6 +307,41 @@ mod tests {
             refreshed_site.site.name,
             refreshed_site.models.len(),
             refreshed.revision
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "uses an explicitly selected real app database and its local credential file"]
+    async fn real_snapshot_smoke_test() {
+        let data_directory = env::var_os("RELAYPULSE_REAL_DATA_DIR")
+            .map(PathBuf::from)
+            .expect("RELAYPULSE_REAL_DATA_DIR must select the real app data directory");
+        let state = BackendState::initialize(data_directory);
+        let service = state.application_service().unwrap_or_else(|| {
+            panic!(
+                "real backend state initializes: {:?}",
+                state.startup_failure()
+            )
+        });
+        let snapshot = service.snapshot().await.expect("real snapshot loads");
+
+        assert!(
+            !snapshot.sites.is_empty(),
+            "real snapshot has configured sites"
+        );
+        assert!(
+            snapshot.sites.iter().any(|site| !site.models.is_empty()),
+            "real snapshot has configured models"
+        );
+        eprintln!(
+            "real snapshot loaded: {} sites, {} models, revision {}",
+            snapshot.sites.len(),
+            snapshot
+                .sites
+                .iter()
+                .map(|site| site.models.len())
+                .sum::<usize>(),
+            snapshot.revision
         );
     }
 }

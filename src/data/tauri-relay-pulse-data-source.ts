@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { InvokeArgs } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { RelayPulseDataSource } from './relay-pulse-data-source';
-import type { StateChangedEvent } from './relay-pulse-data-source';
+import type { DiagnosticExportResult, StateChangedEvent } from './relay-pulse-data-source';
 import type {
   AppSnapshot,
   CreateModelInput,
@@ -17,8 +17,12 @@ import type {
   TraySnapshot,
   UpdateSiteInput,
 } from '../domain/types';
+import { formatLocalTime } from '../domain/time';
 
-type AuthoritativeSnapshot = Pick<AppSnapshot, 'revision' | 'sites' | 'generalSettings'>;
+type AuthoritativeSnapshot = Pick<
+  AppSnapshot,
+  'revision' | 'sites' | 'generalSettings' | 'probeRecords'
+>;
 type AuthoritativeModelSyncResult =
   | { status: 'applied'; snapshot: AuthoritativeSnapshot }
   | { status: 'confirmationRequired'; removedModels: ModelSyncRemoval[] };
@@ -141,6 +145,14 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
     return this.call('run_immediate_probe');
   }
 
+  runSiteProbe(siteId: string): Promise<AppSnapshot> {
+    return this.call('run_site_probe', { siteId });
+  }
+
+  runModelProbe(siteId: string, modelId: string): Promise<AppSnapshot> {
+    return this.call('run_model_probe', { siteId, modelId });
+  }
+
   async refreshModels(
     siteId: string,
     confirmedRemovedModelIds: string[] = [],
@@ -170,10 +182,30 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
     return (await this.getSnapshot()).tray;
   }
 
+  openLogDirectory(): Promise<void> {
+    return this.action('open_log_directory');
+  }
+
+  exportDiagnostics(): Promise<DiagnosticExportResult> {
+    return this.action('export_diagnostics');
+  }
+
+  openMainWindow(view: 'sites' | 'general' | 'records' = 'sites'): Promise<void> {
+    return this.action('open_main_window', { view });
+  }
+
   private async call(command: string, args?: InvokeArgs): Promise<AppSnapshot> {
     try {
       const snapshot = await this.invokeCommand<AuthoritativeSnapshot>(command, args);
       return viewSnapshot(snapshot);
+    } catch (cause) {
+      throw backendError(cause);
+    }
+  }
+
+  private async action<T = void>(command: string, args?: InvokeArgs): Promise<T> {
+    try {
+      return await this.invokeCommand<T>(command, args);
     } catch (cause) {
       throw backendError(cause);
     }
@@ -189,19 +221,70 @@ function viewSnapshot(snapshot: AuthoritativeSnapshot): AppSnapshot {
       count + (site.enabled ? site.models.filter((model) => model.enabled).length : 0),
     0,
   );
+  const enabledModels = snapshot.sites
+    .filter((site) => site.enabled)
+    .flatMap((site) =>
+      site.models.filter((model) => model.enabled).map((model) => ({ site, model })),
+    );
+  const alerts = enabledModels
+    .filter(({ model }) => model.status === 'warning' || model.status === 'error')
+    .map(({ site, model }) => ({
+      id: model.latestProbeId ?? `${site.id}:${model.id}`,
+      siteName: site.name,
+      modelName: model.name,
+      sitePriority: site.priority,
+      status: model.status === 'warning' ? ('warning' as const) : ('error' as const),
+      firstToken: model.firstToken,
+      totalTime: model.totalTime,
+    }))
+    .sort(
+      (left, right) =>
+        left.sitePriority - right.sitePriority || left.modelName.localeCompare(right.modelName),
+    )
+    .map((alert) => ({
+      id: alert.id,
+      siteName: alert.siteName,
+      modelName: alert.modelName,
+      status: alert.status,
+      firstToken: alert.firstToken,
+      totalTime: alert.totalTime,
+    }));
+  const completedLabel = snapshot.probeRecords[0]
+    ? `最近完成 ${formatLocalTime(snapshot.probeRecords[0].startedAt)}`
+    : '尚未执行探测';
+  const nextProbeAt = enabledModels
+    .map(({ model }) => model.nextProbeAt)
+    .filter((value): value is string => Boolean(value))
+    .sort()[0];
+  const allHealthy =
+    enabledModels.length > 0 && enabledModels.every(({ model }) => model.status === 'healthy');
   const tray: TraySnapshot = {
-    status: 'healthy',
+    status: alerts.some((alert) => alert.status === 'error')
+      ? 'error'
+      : alerts.length > 0
+        ? 'warning'
+        : allHealthy
+          ? 'healthy'
+          : 'muted',
     activeSites,
     activeModels,
-    alertCount: 0,
-    alerts: [],
-    completedLabel: '尚未执行探测',
-    nextProbeLabel: '等待调度器启动',
+    alertCount: alerts.length,
+    alerts,
+    completedLabel,
+    nextProbeLabel: nextProbeAt
+      ? `下次 ${new Date(nextProbeAt).toLocaleTimeString('zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        })}`
+      : activeModels > 0
+        ? '等待首次调度'
+        : '未启用周期探测',
   };
   return {
     ...snapshot,
     selectedSiteId: snapshot.sites[0]?.id ?? null,
-    probeRecords: [],
+    probeRecords: snapshot.probeRecords,
     tray: { healthy: tray, alerts: tray },
   };
 }

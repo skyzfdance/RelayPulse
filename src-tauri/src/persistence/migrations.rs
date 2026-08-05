@@ -3,10 +3,13 @@ use rusqlite_migration::{Migrations, M};
 
 use super::{DatabaseError, Result};
 
-pub const LATEST_SCHEMA_VERSION: u32 = 1;
+pub const LATEST_SCHEMA_VERSION: u32 = 2;
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(include_str!("migrations/v1.sql"))])
+    Migrations::new(vec![
+        M::up(include_str!("migrations/v1.sql")).foreign_key_check(),
+        M::up(include_str!("migrations/v2.sql")).foreign_key_check(),
+    ])
 }
 
 pub fn schema_version(connection: &Connection) -> Result<u32> {
@@ -61,7 +64,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn migrates_a_new_database_to_the_latest_schema() {
         let database = Database::open_in_memory().expect("database opens");
-        let (version, tables) = database
+        let (version, tables, site_columns, probe_columns) = database
             .call(|connection| {
                 let version = schema_version(connection)?;
                 let mut statement = connection.prepare(
@@ -71,7 +74,9 @@ mod tests {
                 let tables = statement
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok((version, tables))
+                let site_columns = table_columns(connection, "sites")?;
+                let probe_columns = table_columns(connection, "probe_results")?;
+                Ok((version, tables, site_columns, probe_columns))
             })
             .await
             .expect("schema can be inspected");
@@ -84,6 +89,21 @@ mod tests {
                 .map(|table| (*table).to_owned())
                 .collect::<Vec<_>>()
         );
+        assert!(!site_columns.contains(&"first_token_timeout_ms".to_owned()));
+        assert!(!site_columns.contains(&"total_timeout_ms".to_owned()));
+        assert!(site_columns.contains(&"slow_first_token_ms".to_owned()));
+        assert!(site_columns.contains(&"slow_total_ms".to_owned()));
+        assert!(probe_columns.contains(&"request_method".to_owned()));
+        assert!(probe_columns.contains(&"endpoint".to_owned()));
+        assert!(probe_columns.contains(&"probe_mode".to_owned()));
+    }
+
+    fn table_columns(connection: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect();
+        columns
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -94,7 +114,7 @@ mod tests {
                 let foreign_keys =
                     connection.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, bool>(0))?;
                 let settings = connection.query_row(
-                    "SELECT launch_at_startup, continue_in_background, theme, \
+                    "SELECT launch_at_startup, continue_in_background, tray_action, theme, \
                             history_retention_days, diagnostic_capture_enabled \
                      FROM general_settings WHERE singleton = 1",
                     [],
@@ -103,8 +123,9 @@ mod tests {
                             row.get::<_, bool>(0)?,
                             row.get::<_, bool>(1)?,
                             row.get::<_, String>(2)?,
-                            row.get::<_, u16>(3)?,
-                            row.get::<_, bool>(4)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, u16>(4)?,
+                            row.get::<_, bool>(5)?,
                         ))
                     },
                 )?;
@@ -114,7 +135,17 @@ mod tests {
             .expect("schema defaults can be read");
 
         assert!(foreign_keys);
-        assert_eq!(settings, (false, true, "system".to_owned(), 30, true));
+        assert_eq!(
+            settings,
+            (
+                false,
+                true,
+                "panel".to_owned(),
+                "system".to_owned(),
+                30,
+                true
+            )
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -157,6 +188,73 @@ mod tests {
                 "openai-responses".to_owned(),
                 "custom-http".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn upgrades_the_original_v1_tray_constraint_without_losing_settings() {
+        let mut connection = Connection::open_in_memory().expect("database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE general_settings (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   launch_at_startup INTEGER NOT NULL DEFAULT 0 CHECK (launch_at_startup IN (0, 1)),
+                   continue_in_background INTEGER NOT NULL DEFAULT 1 CHECK (continue_in_background IN (0, 1)),
+                   tray_action TEXT NOT NULL DEFAULT 'panel' CHECK (tray_action = 'panel'),
+                   theme TEXT NOT NULL DEFAULT 'system' CHECK (theme IN ('system', 'light', 'dark')),
+                   language TEXT NOT NULL DEFAULT 'zh-CN' CHECK (language = 'zh-CN'),
+                   history_retention_days INTEGER NOT NULL DEFAULT 30 CHECK (history_retention_days BETWEEN 1 AND 3650),
+                   diagnostic_capture_enabled INTEGER NOT NULL DEFAULT 1 CHECK (diagnostic_capture_enabled IN (0, 1)),
+                   updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0)
+                 ) STRICT;
+                 INSERT INTO general_settings (
+                   singleton, launch_at_startup, continue_in_background, tray_action, theme,
+                   language, history_retention_days, diagnostic_capture_enabled, updated_at_ms
+                 ) VALUES (1, 1, 0, 'panel', 'dark', 'zh-CN', 90, 0, 1234);
+                 PRAGMA user_version = 1;",
+            )
+            .expect("legacy schema is created");
+
+        migrate_to_latest(&mut connection).expect("legacy schema migrates");
+        connection
+            .execute(
+                "UPDATE general_settings SET tray_action = 'disabled' WHERE singleton = 1",
+                [],
+            )
+            .expect("disabled tray action is accepted");
+
+        let settings = connection
+            .query_row(
+                "SELECT launch_at_startup, continue_in_background, tray_action, theme,
+                        history_retention_days, diagnostic_capture_enabled, updated_at_ms
+                 FROM general_settings WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, bool>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, u16>(4)?,
+                        row.get::<_, bool>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .expect("migrated settings are readable");
+
+        assert_eq!(schema_version(&connection).expect("version is readable"), 2);
+        assert_eq!(
+            settings,
+            (
+                true,
+                false,
+                "disabled".to_owned(),
+                "dark".to_owned(),
+                90,
+                false,
+                1234,
+            )
         );
     }
 

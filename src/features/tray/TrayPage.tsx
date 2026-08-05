@@ -5,7 +5,6 @@ import { useBackendActionFeedback } from '../../app/use-backend-action-feedback'
 import { BrandMark } from '../../components/BrandMark';
 import { StatusDot } from '../../components/StatusDot';
 import type { TraySnapshot, ViewName } from '../../domain/types';
-import { navigateToView } from '../../app/view';
 import { useRelayPulse } from '../../app/relay-pulse-context';
 
 const trayMetricStatusClass = {
@@ -15,7 +14,15 @@ const trayMetricStatusClass = {
   muted: 'text-rp-secondary',
 } as const;
 
-function TrayHeader({ loading, onRefresh }: { loading: boolean; onRefresh(): void }) {
+function TrayHeader({
+  loading,
+  onRefresh,
+  onOpenSettings,
+}: {
+  loading: boolean;
+  onRefresh(): void;
+  onOpenSettings(): void;
+}) {
   return (
     <header className="flex h-13 items-center justify-between border-b border-rp-line pr-3.5 pl-4">
       <div className="flex items-center gap-2">
@@ -37,7 +44,7 @@ function TrayHeader({ loading, onRefresh }: { loading: boolean; onRefresh(): voi
             shape="circle"
             icon={<SettingOutlined />}
             aria-label="打开设置"
-            onClick={() => navigateToView('sites')}
+            onClick={onOpenSettings}
           />
         </Tooltip>
       </div>
@@ -55,12 +62,12 @@ function TrayFooter({ snapshot }: { snapshot: TraySnapshot }) {
 }
 
 export function TrayPage({ view }: { view: Extract<ViewName, 'tray-healthy' | 'tray-alerts'> }) {
-  const { snapshot, runImmediateProbe } = useRelayPulse();
+  const { snapshot, runImmediateProbe, openMainWindow } = useRelayPulse();
   const runBackendAction = useBackendActionFeedback();
   const [refreshing, setRefreshing] = useState(false);
   if (!snapshot) return null;
-  const healthy = view === 'tray-healthy';
-  const tray = healthy ? snapshot.tray.healthy : snapshot.tray.alerts;
+  const tray = view === 'tray-healthy' ? snapshot.tray.healthy : snapshot.tray.alerts;
+  const compact = tray.alertCount === 0;
 
   async function refreshTray() {
     setRefreshing(true);
@@ -80,18 +87,22 @@ export function TrayPage({ view }: { view: Extract<ViewName, 'tray-healthy' | 't
 
   return (
     <div
-      className={`grid h-screen w-screen place-items-center bg-rp-canvas ${healthy ? 'p-4' : 'p-4.5'}`}
+      className={`grid h-screen w-screen place-items-center bg-transparent ${compact ? 'p-4' : 'p-4.5'}`}
     >
       <main
-        className={`overflow-hidden rounded-[10px] border border-rp-line-strong bg-rp-surface shadow-[0_12px_40px_rgb(0_0_0/16%),0_2px_8px_rgb(0_0_0/8%)] ${healthy ? 'w-92' : 'w-101'}`}
+        className={`overflow-hidden rounded-[10px] border border-rp-line-strong bg-rp-surface shadow-[0_12px_40px_rgb(0_0_0/16%),0_2px_8px_rgb(0_0_0/8%)] ${compact ? 'w-92' : 'w-101'}`}
         data-testid="tray-panel"
       >
-        <TrayHeader loading={refreshing} onRefresh={() => void refreshTray()} />
-        {healthy ? (
+        <TrayHeader
+          loading={refreshing}
+          onRefresh={() => void refreshTray()}
+          onOpenSettings={() => void openMainWindow('sites')}
+        />
+        {compact ? (
           <section className="flex min-h-21.5 items-center gap-3 px-4 py-4.5">
-            <StatusDot status="healthy" halo />
+            <StatusDot status={tray.status} halo />
             <div className="min-w-0 [&_h1]:m-0 [&_h1]:text-base [&_h1]:leading-6 [&_h1]:font-semibold [&_p]:mt-0.5 [&_p]:mb-0 [&_p]:text-xs [&_p]:leading-5 [&_p]:text-rp-tertiary">
-              <h1>全部正常</h1>
+              <h1>{tray.status === 'healthy' ? '全部正常' : '等待首次探测'}</h1>
               <p>
                 {tray.activeSites} 个站点 · {tray.activeModels} 个模型正在探测
               </p>
@@ -102,8 +113,8 @@ export function TrayPage({ view }: { view: Extract<ViewName, 'tray-healthy' | 't
             <section className="px-4 pt-3">
               <div className="flex h-10 items-start justify-between">
                 <div className="flex items-center gap-2.5 [&_h1]:m-0 [&_h1]:text-base [&_h1]:leading-6 [&_h1]:font-semibold">
-                  <StatusDot status="error" halo />
-                  <h1>3 个异常</h1>
+                  <StatusDot status={tray.status} halo />
+                  <h1>{tray.alertCount} 个异常</h1>
                 </div>
                 <span className="pt-1.25 text-xs text-rp-tertiary">按站点优先级排序</span>
               </div>
@@ -140,6 +151,7 @@ export function TrayPage({ view }: { view: Extract<ViewName, 'tray-healthy' | 't
             <button
               className="flex h-9 w-full cursor-pointer items-center justify-center border-0 border-t border-rp-line bg-transparent text-xs text-rp-primary hover:bg-rp-hover"
               type="button"
+              onClick={() => void openMainWindow('records')}
             >
               查看全部 {tray.alertCount} 个异常 ›
             </button>

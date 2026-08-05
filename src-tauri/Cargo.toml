@@ -20,16 +20,24 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+futures-util = "0.3"
+flate2 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 rusqlite_migration = "=2.5.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
-tauri = { version = "2", features = [] }
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-dialog = "2.6.0"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 tempfile = "3"

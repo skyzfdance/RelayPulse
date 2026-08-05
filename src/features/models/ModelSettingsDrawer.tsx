@@ -1,5 +1,5 @@
 import { DeleteOutlined, ExperimentOutlined, PlusOutlined } from '@ant-design/icons';
-import { Alert, Button, Drawer, Input, InputNumber, Segmented, Select, Switch, Tag } from 'antd';
+import { Alert, Button, Drawer, Input, InputNumber, Select, Switch, Tag } from 'antd';
 import { useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
 import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
@@ -8,13 +8,15 @@ import type {
   CustomProbeSettings,
   ParameterType,
   PassThroughParameter,
-  ProbeMode,
   ProbeSettings,
+  SiteProtocol,
 } from '../../domain/types';
 import {
   buildCustomProbeRequest,
   buildProbeRequest,
   customReservedProbeFields,
+  isParameterPathValid,
+  isReservedParameter,
   isParameterValueValid,
   reservedProbeFields,
   resolveCustomProbeEndpoint,
@@ -51,11 +53,12 @@ function endpointIsValid(baseUrl: string, endpoint: string) {
 function requestPreview(
   baseUrl: string,
   modelName: string,
+  protocol: SiteProtocol,
   settings: ProbeSettings,
   customProbe: CustomProbeSettings,
 ) {
   if (!customProbe.enabled) {
-    return JSON.stringify(buildProbeRequest(modelName, settings), null, 2);
+    return JSON.stringify(buildProbeRequest(modelName, protocol, settings), null, 2);
   }
 
   try {
@@ -92,9 +95,15 @@ export function ModelSettingsDrawer() {
 
   const customActive = !siteDefault && customProbe.enabled;
   const parameters = customActive ? customProbe.parameters : settings.parameters;
-  const reservedFields = customActive ? customReservedProbeFields : reservedProbeFields;
+  const reservedFields = customActive
+    ? customReservedProbeFields
+    : reservedProbeFields(site?.protocol ?? 'openai-compatible');
+  const invalidEmptyParameter = parameters.find((parameter) => !parameter.key.trim());
+  const invalidPathParameter = parameters.find(
+    (parameter) => parameter.key.trim() && !isParameterPathValid(parameter.key),
+  );
   const invalidReservedParameter = parameters.find((parameter) =>
-    reservedFields.has(parameter.key.trim()),
+    isReservedParameter(parameter.key, reservedFields),
   );
   const invalidValueParameter = parameters.find(
     (parameter) => parameter.key.trim() && !isParameterValueValid(parameter),
@@ -103,11 +112,16 @@ export function ModelSettingsDrawer() {
     customActive &&
     !endpointIsValid(site?.baseUrl ?? 'https://example.invalid', customProbe.endpoint);
   const hasValidationError = Boolean(
-    invalidReservedParameter || invalidValueParameter || invalidEndpoint,
+    invalidEmptyParameter ||
+    invalidPathParameter ||
+    invalidReservedParameter ||
+    invalidValueParameter ||
+    invalidEndpoint,
   );
   const preview = requestPreview(
     site?.baseUrl ?? 'https://example.invalid',
     siteDefault ? '<模型名称>' : (model?.name ?? 'model'),
+    site?.protocol ?? 'openai-compatible',
     settings,
     customActive ? customProbe : customDefaults,
   );
@@ -167,7 +181,11 @@ export function ModelSettingsDrawer() {
   }
 
   function restoreDefaults() {
-    setSettings(siteDefault ? economicalDefaults : { ...economicalDefaults, mode: 'inherit' });
+    setSettings(
+      siteDefault
+        ? economicalDefaults
+        : { ...currentSite.defaultProbeSettings, mode: 'disabled-thinking' },
+    );
     if (!siteDefault) setCustomProbe(customDefaults);
     setMockValidated(false);
   }
@@ -179,13 +197,19 @@ export function ModelSettingsDrawer() {
   async function saveSettings() {
     setSaving(true);
     try {
+      const normalizedSettings: ProbeSettings = { ...settings, mode: 'disabled-thinking' };
       const saved = await runBackendAction(
         async () => {
           if (siteDefault) {
-            await updateSiteProbeSettings(currentSite.id, settings);
+            await updateSiteProbeSettings(currentSite.id, normalizedSettings);
           } else if (currentModel) {
-            await updateModelProbeSettings(currentSite.id, currentModel.id, settings);
-            await updateModelCustomProbeSettings(currentSite.id, currentModel.id, customProbe);
+            await updateModelProbeSettings(currentSite.id, currentModel.id, normalizedSettings);
+            await updateModelCustomProbeSettings(currentSite.id, currentModel.id, {
+              ...customProbe,
+              parameters: customProbe.enabled
+                ? customProbe.parameters
+                : normalizedSettings.parameters,
+            });
           }
         },
         {
@@ -195,7 +219,7 @@ export function ModelSettingsDrawer() {
           successTitle: siteDefault ? '站点默认策略已保存' : '模型探针设置已保存',
           successDescription: siteDefault
             ? `“${currentSite.name}”的新启用模型将使用当前默认策略。`
-            : `“${currentModel?.name}”的推理策略、端点和请求参数已更新。`,
+            : `“${currentModel?.name}”的探针端点和请求参数已更新。`,
           errorTitle: siteDefault ? '站点默认策略保存失败' : '模型探针设置保存失败',
           errorDescription: '设置没有保存，当前编辑内容已保留，请检查后重试。',
         },
@@ -228,7 +252,7 @@ export function ModelSettingsDrawer() {
       }}
       footer={
         <div className="grid grid-cols-[auto_1fr_auto_auto] gap-2">
-          <Button onClick={restoreDefaults}>{siteDefault ? '恢复极省模式' : '恢复继承'}</Button>
+          <Button onClick={restoreDefaults}>{siteDefault ? '恢复默认值' : '恢复站点默认'}</Button>
           <span />
           <Button onClick={closeDrawer}>取消</Button>
           <Button
@@ -291,39 +315,10 @@ export function ModelSettingsDrawer() {
         </section>
       ) : null}
 
-      {!siteDefault && !customActive ? (
-        <section className={drawerSectionClass}>
-          <h3>推理能力</h3>
-          <p>用于判断可发送的推理参数</p>
-          <div className="mt-2 flex flex-wrap gap-1">
-            <Tag color="blue">自动识别</Tag>
-            <Tag color="green">支持关闭思考</Tag>
-            <Tag>支持 low / medium / high</Tag>
-          </div>
-        </section>
-      ) : null}
-
       {siteDefault || !customActive ? (
         <section className={drawerSectionClass}>
-          <h3>{siteDefault ? '站点默认探针策略' : '本模型探针策略'}</h3>
-          <p>{siteDefault ? '新启用模型默认继承；单个模型仍可覆盖' : '覆盖站点默认的“极省模式”'}</p>
-          <label className={fieldLabelClass}>推理模式</label>
-          <Segmented<ProbeMode>
-            value={settings.mode}
-            options={
-              siteDefault
-                ? [
-                    { value: 'disabled-thinking', label: '优先关闭思考' },
-                    { value: 'minimum-reasoning', label: '自定义策略' },
-                  ]
-                : [
-                    { value: 'inherit', label: '继承默认' },
-                    { value: 'disabled-thinking', label: '关闭思考' },
-                    { value: 'minimum-reasoning', label: '最低推理' },
-                  ]
-            }
-            onChange={(mode) => setSettings((current) => ({ ...current, mode }))}
-          />
+          <h3>{siteDefault ? '站点默认探针请求' : '本模型探针请求'}</h3>
+          <p>默认推理强度为 low；透传参数可覆盖默认业务字段</p>
           <div className="mt-2.5 grid grid-cols-2 gap-x-5">
             <label>
               <span className={fieldLabelClass}>最大输出</span>
@@ -380,7 +375,13 @@ export function ModelSettingsDrawer() {
             >
               <Input
                 className={monoInputClass}
-                status={reservedFields.has(parameter.key.trim()) ? 'error' : undefined}
+                status={
+                  !parameter.key.trim() ||
+                  !isParameterPathValid(parameter.key) ||
+                  isReservedParameter(parameter.key, reservedFields)
+                    ? 'error'
+                    : undefined
+                }
                 value={parameter.key}
                 onChange={(event) => updateParameter(index, { key: event.target.value })}
               />
@@ -411,18 +412,25 @@ export function ModelSettingsDrawer() {
         </div>
         <p
           className={`mt-1.75! text-xs! ${
-            invalidReservedParameter || invalidValueParameter
+            invalidEmptyParameter ||
+            invalidPathParameter ||
+            invalidReservedParameter ||
+            invalidValueParameter
               ? 'text-rp-error!'
               : 'text-rp-tertiary!'
           }`}
         >
-          {invalidReservedParameter
-            ? `保留字段 ${invalidReservedParameter.key.trim()} 由 RelayPulse 管理，不能覆盖。`
-            : invalidValueParameter
-              ? `参数 ${invalidValueParameter.key.trim()} 的 ${invalidValueParameter.type} 值无效。`
-              : customActive
-                ? 'model 由 RelayPulse 自动注入；JSON 类型可填写数组或对象。'
-                : '保留字段 model、messages、stream 由 RelayPulse 管理，不能覆盖。'}
+          {invalidEmptyParameter
+            ? '请输入参数字段。'
+            : invalidPathParameter
+              ? `参数路径 ${invalidPathParameter.key.trim()} 无效，请使用 reasoning.effort 这类对象路径。`
+              : invalidReservedParameter
+                ? `保留字段 ${invalidReservedParameter.key.trim()} 由 RelayPulse 管理，不能覆盖。`
+                : invalidValueParameter
+                  ? `参数 ${invalidValueParameter.key.trim()} 的 ${invalidValueParameter.type} 值无效。`
+                  : customActive
+                    ? '支持对象路径；model 由 RelayPulse 自动注入。'
+                    : `支持 reasoning.effort 这类对象路径；${[...reservedFields].join('、')} 由 RelayPulse 管理。`}
         </p>
       </section>
 

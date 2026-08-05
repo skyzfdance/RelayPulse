@@ -83,6 +83,7 @@ impl ProbeExecutor {
         secret: Option<&SecretValue>,
     ) -> ProbeExecution {
         let started = Instant::now();
+        let custom_probe = policy.custom_endpoint.is_some();
         let endpoint = match resolve_probe_endpoint(site, policy) {
             Ok(endpoint) => endpoint,
             Err(_) => {
@@ -264,23 +265,30 @@ impl ProbeExecutor {
                         raw: captured_raw,
                     });
                 }
-                if !parse_sse_chunk(&bytes, &mut sse_buffer, &mut parsed) {
+                if !custom_probe && !parse_sse_chunk(&bytes, &mut sse_buffer, &mut parsed) {
                     break;
                 }
-                if first_token_ms.is_none() && parsed.first_output_seen {
+                if !custom_probe && first_token_ms.is_none() && parsed.first_output_seen {
                     first_token_ms = Some(received_after_ms);
                 }
             }
         }
 
-        if response_mode == ResponseMode::Stream && !sse_buffer.is_empty() {
+        if !custom_probe && response_mode == ResponseMode::Stream && !sse_buffer.is_empty() {
             parse_sse_text(&String::from_utf8_lossy(&sse_buffer), &mut parsed);
         }
 
         let response_body_raw = String::from_utf8_lossy(&body).into_owned();
         if response_mode == ResponseMode::Synchronous {
-            parse_json_text(&response_body_raw, &mut parsed);
-            if site.protocol == SiteProtocol::CustomHttp
+            if custom_probe {
+                if let Ok(value) = serde_json::from_str::<Value>(&response_body_raw) {
+                    parse_value(&value, &mut parsed);
+                }
+            } else {
+                parse_json_text(&response_body_raw, &mut parsed);
+            }
+            if !custom_probe
+                && site.protocol == SiteProtocol::CustomHttp
                 && !response_body_raw.trim().is_empty()
                 && parsed
                     .error
@@ -292,14 +300,15 @@ impl ProbeExecutor {
             }
         }
         let response_body = redact_capture_text(&response_body_raw, secret);
-        if status_code.is_success() && !parsed.has_text && parsed.error.is_none() {
+        if !custom_probe && status_code.is_success() && !parsed.has_text && parsed.error.is_none() {
             parsed.error = Some((
                 ProbeStatus::ProtocolError,
                 "missing_output",
                 "模型服务没有返回有效输出。",
             ));
         }
-        if response_mode == ResponseMode::Stream
+        if !custom_probe
+            && response_mode == ResponseMode::Stream
             && status_code.is_success()
             && parsed.has_text
             && !parsed.ended_normally
@@ -313,6 +322,7 @@ impl ProbeExecutor {
         }
         let total_time_ms = elapsed_ms(started);
         let response_truncated = response_total_bytes > response_limit;
+        let response_captured_bytes = byte_count(&response_body);
         let (probe_status, error_code, error_message) = classify_result(status_code, parsed.error);
         let status = if probe_status == ProbeStatus::Healthy
             && (first_token_ms.is_some_and(|value| value >= site.timing.slow_first_token_ms)
@@ -323,6 +333,7 @@ impl ProbeExecutor {
             probe_status
         };
 
+        let succeeded = matches!(status, ProbeStatus::Healthy | ProbeStatus::Slow);
         ProbeExecution {
             status,
             response_headers_ms: Some(headers_elapsed),
@@ -334,8 +345,10 @@ impl ProbeExecutor {
             error_code: error_code.map(ToOwned::to_owned),
             error_message: error_message.map(ToOwned::to_owned),
             token_usage: parsed.usage.unwrap_or_else(empty_usage),
-            ended_normally: matches!(status, ProbeStatus::Healthy | ProbeStatus::Slow)
-                && (response_mode == ResponseMode::Synchronous || parsed.ended_normally),
+            ended_normally: succeeded
+                && (custom_probe
+                    || response_mode == ResponseMode::Synchronous
+                    || parsed.ended_normally),
             request_id,
             endpoint: endpoint.to_string(),
             capture: ProbeCapture {
@@ -351,7 +364,7 @@ impl ProbeExecutor {
                 response_body,
                 response_chunks_json: serde_json::to_string(&chunks)
                     .unwrap_or_else(|_| "[]".to_owned()),
-                response_captured_bytes: u32::try_from(body.len()).unwrap_or(u32::MAX),
+                response_captured_bytes,
                 response_limit_bytes: RESPONSE_CAPTURE_LIMIT_BYTES,
                 response_truncated,
             },
@@ -402,30 +415,37 @@ fn request_body(
     policy: &ProbePolicy,
     parameters: &[ProbeParameter],
 ) -> Result<String, ()> {
-    let mut object = match site.protocol {
-        SiteProtocol::OpenAiCompatible => json!({
-            "model": model.model_key,
-            "messages": [{"role": "user", "content": policy.prompt}],
-            "stream": probe_stream_enabled(policy),
-            "max_tokens": policy.max_output_tokens,
-        }),
-        SiteProtocol::OpenAiResponses => json!({
-            "model": model.model_key,
-            "input": policy.prompt,
-            "stream": probe_stream_enabled(policy),
-            "max_output_tokens": policy.max_output_tokens,
-        }),
-        SiteProtocol::Anthropic => json!({
-            "model": model.model_key,
-            "messages": [{"role": "user", "content": policy.prompt}],
-            "stream": probe_stream_enabled(policy),
-            "max_tokens": policy.max_output_tokens,
-        }),
-        SiteProtocol::CustomHttp => json!({"model": model.model_key}),
+    let custom_probe = policy.custom_endpoint.is_some();
+    let mut object = if custom_probe {
+        json!({"model": model.model_key})
+    } else {
+        match site.protocol {
+            SiteProtocol::OpenAiCompatible => json!({
+                "model": model.model_key,
+                "messages": [{"role": "user", "content": policy.prompt}],
+                "stream": true,
+                "max_tokens": policy.max_output_tokens,
+            }),
+            SiteProtocol::OpenAiResponses => json!({
+                "model": model.model_key,
+                "input": policy.prompt,
+                "stream": true,
+                "max_output_tokens": policy.max_output_tokens,
+            }),
+            SiteProtocol::Anthropic => json!({
+                "model": model.model_key,
+                "messages": [{"role": "user", "content": policy.prompt}],
+                "stream": true,
+                "max_tokens": policy.max_output_tokens,
+            }),
+            SiteProtocol::CustomHttp => json!({"model": model.model_key}),
+        }
     };
     let object = object.as_object_mut().ok_or(())?;
-    apply_default_reasoning(object, site.protocol);
-    let reserved = reserved_parameter_names(site.protocol);
+    if !custom_probe {
+        apply_default_reasoning(object, site.protocol);
+    }
+    let reserved = reserved_parameter_names(site.protocol, custom_probe);
     for parameter in parameters {
         let key = parameter.key.trim();
         let path = parameter_path(key)?;
@@ -436,10 +456,6 @@ fn request_body(
         insert_parameter_path(object, &path, parameter_value(parameter)?)?;
     }
     serde_json::to_string(&object).map_err(|_| ())
-}
-
-fn probe_stream_enabled(_policy: &ProbePolicy) -> bool {
-    true
 }
 
 fn parameter_value(parameter: &ProbeParameter) -> Result<Value, ()> {
@@ -499,7 +515,10 @@ fn insert_parameter_path(
     Ok(())
 }
 
-fn reserved_parameter_names(protocol: SiteProtocol) -> &'static [&'static str] {
+fn reserved_parameter_names(protocol: SiteProtocol, custom_probe: bool) -> &'static [&'static str] {
+    if custom_probe {
+        return &["model"];
+    }
     match protocol {
         SiteProtocol::OpenAiCompatible | SiteProtocol::Anthropic => {
             &["model", "messages", "stream"]
@@ -902,7 +921,11 @@ fn truncate_text(value: &str, limit: usize) -> (String, bool) {
 
 fn redact_json_body(value: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<Value>(value) else {
-        return value.to_owned();
+        return if contains_binary_payload_marker(value) {
+            r#"{"binaryPayload":"[BINARY OMITTED]"}"#.to_owned()
+        } else {
+            value.to_owned()
+        };
     };
     redact_json_value(&mut value);
     serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_owned())
@@ -922,6 +945,8 @@ fn redact_json_value(value: &mut Value) {
             for (key, value) in object {
                 if is_sensitive_key(key) {
                     *value = Value::String("[REDACTED]".to_owned());
+                } else if is_binary_payload_key(key) {
+                    *value = Value::String("[BINARY OMITTED]".to_owned());
                 } else {
                     redact_json_value(value);
                 }
@@ -930,6 +955,19 @@ fn redact_json_value(value: &mut Value) {
         Value::Array(values) => values.iter_mut().for_each(redact_json_value),
         _ => {}
     }
+}
+
+fn contains_binary_payload_marker(value: &str) -> bool {
+    ["b64_json", "base64_json", "image_base64", "audio_base64"]
+        .iter()
+        .any(|key| value.contains(&format!(r#""{key}""#)))
+}
+
+fn is_binary_payload_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().replace('-', "_").as_str(),
+        "b64_json" | "base64_json" | "image_base64" | "audio_base64"
+    )
 }
 
 fn is_sensitive_key(key: &str) -> bool {
@@ -1148,6 +1186,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn custom_image_probe_sends_only_configured_fields_and_accepts_a_2xx_response() {
+        let body = r#"{"created":1700000000,"data":[{"b64_json":"QUJDREVGRw=="}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let (base_url, request, server) = serve(vec![response.into_bytes()]);
+        let (mut site, model, mut policy) = target(base_url, false);
+        site.protocol = SiteProtocol::OpenAiResponses;
+        policy.custom_endpoint = Some("/v1/images/generations".to_owned());
+        policy.custom_method = Some(HttpMethod::Post);
+        policy.custom_stream_enabled = Some(false);
+        let parameters = [
+            ProbeParameter {
+                id: id("parameter-prompt"),
+                policy_id: policy.id.clone(),
+                key: "prompt".to_owned(),
+                value_type: ParameterType::String,
+                value_json: "A blue circle on white".to_owned(),
+                sort_order: 0,
+            },
+            ProbeParameter {
+                id: id("parameter-size"),
+                policy_id: policy.id.clone(),
+                key: "size".to_owned(),
+                value_type: ParameterType::String,
+                value_json: "1024x1024".to_owned(),
+                sort_order: 1,
+            },
+            ProbeParameter {
+                id: id("parameter-quality"),
+                policy_id: policy.id.clone(),
+                key: "quality".to_owned(),
+                value_type: ParameterType::String,
+                value_json: "low".to_owned(),
+                sort_order: 2,
+            },
+            ProbeParameter {
+                id: id("parameter-count"),
+                policy_id: policy.id.clone(),
+                key: "n".to_owned(),
+                value_type: ParameterType::Number,
+                value_json: "1".to_owned(),
+                sort_order: 3,
+            },
+        ];
+        let secret = SecretValue::new("fixture-secret").expect("secret is valid");
+
+        let execution = ProbeExecutor::default()
+            .execute(&site, &model, &policy, &parameters, &[], Some(&secret))
+            .await;
+
+        let captured_request = request
+            .recv_timeout(StdDuration::from_secs(1))
+            .expect("request was captured");
+        let request_body = captured_request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("request contains a body");
+        let request_json: Value =
+            serde_json::from_str(request_body).expect("request body is valid JSON");
+        assert_eq!(
+            request_json,
+            json!({
+                "model": "test-model",
+                "prompt": "A blue circle on white",
+                "size": "1024x1024",
+                "quality": "low",
+                "n": 1,
+            })
+        );
+        assert!(request_json.get("input").is_none());
+        assert!(request_json.get("stream").is_none());
+        assert!(request_json.get("max_output_tokens").is_none());
+        assert!(request_json.get("reasoning").is_none());
+        assert_eq!(execution.status, ProbeStatus::Healthy);
+        assert_eq!(execution.first_token_ms, None);
+        assert!(execution.ended_normally);
+        assert!(execution.capture.response_body.contains("[BINARY OMITTED]"));
+        assert!(!execution.capture.response_body.contains("QUJDREVGRw=="));
+        assert_eq!(
+            execution.capture.response_captured_bytes,
+            byte_count(&execution.capture.response_body)
+        );
+        server.join().expect("test server stops");
+    }
+
+    #[tokio::test]
     async fn streaming_probe_assembles_split_events_and_validates_real_text() {
         let headers =
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
@@ -1300,5 +1426,16 @@ mod tests {
 
         assert!(!capture.contains("fixture-sensitive-value"));
         assert!(capture.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn truncated_binary_json_is_replaced_instead_of_stored() {
+        let capture = redact_capture_text(
+            r#"{"data":[{"b64_json":"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=""#,
+            None,
+        );
+
+        assert_eq!(capture, r#"{"binaryPayload":"[BINARY OMITTED]"}"#);
+        assert!(!capture.contains("QUJDREVGR0hJ"));
     }
 }

@@ -74,6 +74,7 @@ describe('TauriRelayPulseDataSource', () => {
       input: expect.objectContaining({
         credential: { action: 'replace', secret: 'fixture-secret' },
       }),
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
     });
   });
 
@@ -123,11 +124,17 @@ describe('TauriRelayPulseDataSource', () => {
     await dataSource.runSiteProbe('site-a');
     await dataSource.runModelProbe('site-a', 'model-disabled');
 
-    expect(invoke).toHaveBeenCalledWith('run_immediate_probe', undefined);
-    expect(invoke).toHaveBeenCalledWith('run_site_probe', { siteId: 'site-a' });
+    expect(invoke).toHaveBeenCalledWith('run_immediate_probe', {
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
+    expect(invoke).toHaveBeenCalledWith('run_site_probe', {
+      siteId: 'site-a',
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
     expect(invoke).toHaveBeenCalledWith('run_model_probe', {
       siteId: 'site-a',
       modelId: 'model-disabled',
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
     });
   });
 
@@ -145,6 +152,7 @@ describe('TauriRelayPulseDataSource', () => {
     expect(invoke).toHaveBeenCalledWith('refresh_models', {
       siteId: 'site-a',
       confirmedRemovedModelIds: [],
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
     });
   });
 
@@ -164,6 +172,7 @@ describe('TauriRelayPulseDataSource', () => {
     expect(invoke).toHaveBeenCalledWith('refresh_models', {
       siteId: 'site-a',
       confirmedRemovedModelIds: ['model-a'],
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
     });
   });
 
@@ -176,6 +185,7 @@ describe('TauriRelayPulseDataSource', () => {
     expect(invoke).toHaveBeenCalledWith('delete_model', {
       siteId: 'site-a',
       modelId: 'model-a',
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
     });
   });
 
@@ -183,19 +193,71 @@ describe('TauriRelayPulseDataSource', () => {
     const invoke = vi
       .fn()
       .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        totalBytes: 2048,
+        fileCount: 1,
+        maxTotalBytes: 10 * 1024 * 1024,
+        configuredMaxTotalBytes: 10 * 1024 * 1024,
+      })
+      .mockResolvedValueOnce({
+        totalBytes: 2048,
+        fileCount: 1,
+        maxTotalBytes: 10 * 1024 * 1024,
+        configuredMaxTotalBytes: 36 * 1024 * 1024,
+      })
+      .mockResolvedValueOnce({
+        deletedFiles: 1,
+        reclaimedBytes: 2048,
+        statistics: {
+          totalBytes: 192,
+          fileCount: 1,
+          maxTotalBytes: 10 * 1024 * 1024,
+          configuredMaxTotalBytes: 36 * 1024 * 1024,
+        },
+      })
       .mockResolvedValueOnce({ status: 'exported', path: '/tmp/diagnostics.json.gz' })
       .mockResolvedValueOnce(undefined);
     const dataSource = new TauriRelayPulseDataSource(invoke);
 
     await dataSource.openLogDirectory();
+    await expect(dataSource.getLogStatistics()).resolves.toEqual({
+      totalBytes: 2048,
+      fileCount: 1,
+      maxTotalBytes: 10 * 1024 * 1024,
+      configuredMaxTotalBytes: 10 * 1024 * 1024,
+    });
+    await expect(dataSource.setDiagnosticLogLimit(36)).resolves.toMatchObject({
+      maxTotalBytes: 10 * 1024 * 1024,
+      configuredMaxTotalBytes: 36 * 1024 * 1024,
+    });
+    await expect(dataSource.clearDiagnosticLogs()).resolves.toMatchObject({
+      deletedFiles: 1,
+      reclaimedBytes: 2048,
+      statistics: { totalBytes: 192 },
+    });
     await expect(dataSource.exportDiagnostics()).resolves.toEqual({
       status: 'exported',
       path: '/tmp/diagnostics.json.gz',
     });
     await dataSource.openMainWindow('records');
 
-    expect(invoke).toHaveBeenNthCalledWith(1, 'open_log_directory', undefined);
-    expect(invoke).toHaveBeenNthCalledWith(2, 'export_diagnostics', undefined);
-    expect(invoke).toHaveBeenNthCalledWith(3, 'open_main_window', { view: 'records' });
+    expect(invoke).toHaveBeenNthCalledWith(1, 'open_log_directory', {
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, 'get_log_statistics', undefined);
+    expect(invoke).toHaveBeenNthCalledWith(3, 'set_diagnostic_log_limit', {
+      maxTotalMegabytes: 36,
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, 'clear_diagnostic_logs', {
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, 'export_diagnostics', {
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
+    expect(invoke).toHaveBeenNthCalledWith(6, 'open_main_window', {
+      view: 'records',
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
   });
 });

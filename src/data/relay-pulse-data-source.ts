@@ -20,6 +20,19 @@ export interface StateChangedEvent {
 export type DiagnosticExportResult =
   { status: 'exported'; path: string } | { status: 'cancelled'; path: null };
 
+export interface LogStatistics {
+  totalBytes: number;
+  fileCount: number;
+  maxTotalBytes: number;
+  configuredMaxTotalBytes: number;
+}
+
+export interface LogCleanupResult {
+  deletedFiles: number;
+  reclaimedBytes: number;
+  statistics: LogStatistics;
+}
+
 export interface RelayPulseDataSource {
   subscribeToChanges?(listener: (event: StateChangedEvent) => void): Promise<() => void>;
   getSnapshot(): Promise<AppSnapshot>;
@@ -53,6 +66,9 @@ export interface RelayPulseDataSource {
   clearProbeRecords(): Promise<AppSnapshot>;
   getTraySnapshot(): Promise<{ healthy: TraySnapshot; alerts: TraySnapshot }>;
   openLogDirectory(): Promise<void>;
+  getLogStatistics(): Promise<LogStatistics>;
+  setDiagnosticLogLimit(maxTotalMegabytes: number): Promise<LogStatistics>;
+  clearDiagnosticLogs(): Promise<LogCleanupResult>;
   exportDiagnostics(): Promise<DiagnosticExportResult>;
   openMainWindow(view?: 'sites' | 'general' | 'records'): Promise<void>;
 }

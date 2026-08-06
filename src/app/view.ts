@@ -1,4 +1,5 @@
 import { viewNames, type ViewName } from '../domain/types';
+import { recordFrontendAction } from './frontend-diagnostics';
 
 const trayViews = new Set<ViewName>(['tray-healthy', 'tray-alerts']);
 
@@ -8,6 +9,14 @@ export function parseView(search: string): ViewName {
 }
 
 export function navigateToView(view: ViewName) {
+  const currentView = parseView(window.location.search);
+  if (currentView !== view) {
+    recordFrontendAction('navigate', {
+      destinationView: view,
+      targetType: 'view',
+      targetId: view,
+    });
+  }
   const url = new URL(window.location.href);
   url.searchParams.set('view', view);
   window.history.pushState({ view }, '', url);

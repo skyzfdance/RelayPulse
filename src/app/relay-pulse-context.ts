@@ -10,7 +10,11 @@ import type {
   SiteAdvancedInput,
   UpdateSiteInput,
 } from '../domain/types';
-import type { DiagnosticExportResult } from '../data/relay-pulse-data-source';
+import type {
+  DiagnosticExportResult,
+  LogCleanupResult,
+  LogStatistics,
+} from '../data/relay-pulse-data-source';
 
 export interface RelayPulseContextValue {
   snapshot: AppSnapshot | null;
@@ -41,6 +45,9 @@ export interface RelayPulseContextValue {
   refreshProbeRecords(): Promise<void>;
   clearProbeRecords(): Promise<void>;
   openLogDirectory(): Promise<void>;
+  getLogStatistics(): Promise<LogStatistics>;
+  setDiagnosticLogLimit(maxTotalMegabytes: number): Promise<LogStatistics>;
+  clearDiagnosticLogs(): Promise<LogCleanupResult>;
   exportDiagnostics(): Promise<DiagnosticExportResult>;
   openMainWindow(view?: 'sites' | 'general' | 'records'): Promise<void>;
 }

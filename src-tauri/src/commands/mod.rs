@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, future::Future, time::Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -13,12 +13,17 @@ use crate::{
         SiteAggregate, UpdateSite,
     },
     desktop,
+    diagnostics::{
+        Diagnostics, FrontendErrorRecord, LogCleanupResult, LogStatistics, OperationAudit,
+        MAX_LOG_TOTAL_MEGABYTES, MIN_LOG_TOTAL_MEGABYTES,
+    },
     domain::{
         CredentialIntent, EntityId, HttpMethod, ParameterType, ProbeMode, ProbeResult, ProbeStatus,
         ResponseMode, SecretValue, SiteProtocol, ThemeMode, TimestampMs, TrayAction,
     },
     startup::BackendState,
 };
+use uuid::Uuid;
 
 type CommandResult<T> = std::result::Result<T, CommandError>;
 
@@ -157,6 +162,17 @@ impl CommandError {
             code: "diagnostics_unavailable",
             category: "platform",
             message: "RelayPulse diagnostics are unavailable.",
+            field: None,
+            retryable: true,
+            operation_id: None,
+        }
+    }
+
+    fn diagnostics_io_failed() -> Self {
+        Self {
+            code: "diagnostics_io_failed",
+            category: "platform",
+            message: "RelayPulse could not read or update its diagnostic logs.",
             field: None,
             retryable: true,
             operation_id: None,
@@ -573,6 +589,100 @@ pub struct DiagnosticExportDto {
     path: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendActionInputDto {
+    action_id: String,
+    action: String,
+    view: String,
+    destination_view: Option<String>,
+    target_type: Option<String>,
+    target_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendErrorInputDto {
+    error_id: String,
+    source: String,
+    view: String,
+    error_name: String,
+    fingerprint: String,
+    stack_frames: Vec<String>,
+    last_action_id: Option<String>,
+}
+
+#[tauri::command]
+pub fn record_frontend_action(
+    state: State<'_, BackendState>,
+    input: FrontendActionInputDto,
+) -> CommandResult<()> {
+    let diagnostics = state
+        .diagnostics()
+        .ok_or_else(CommandError::diagnostics_unavailable)?;
+    validate_diagnostic_id(&input.action_id, "action_id", "ui_")?;
+    validate_frontend_action(&input.action)?;
+    validate_view(&input.view, "view")?;
+    if let Some(destination) = input.destination_view.as_deref() {
+        validate_view(destination, "destination_view")?;
+    }
+    if let Some(target_type) = input.target_type.as_deref() {
+        validate_frontend_target_type(target_type)?;
+    }
+    if let Some(target_id) = input.target_id.as_deref() {
+        validate_safe_identifier(target_id, "target_id")?;
+    }
+    if input.target_type.is_some() != input.target_id.is_some() {
+        return Err(invalid_field("target_id"));
+    }
+    diagnostics.record_frontend_action(
+        &input.action_id,
+        &input.action,
+        &input.view,
+        input.destination_view.as_deref(),
+        input.target_type.as_deref(),
+        input.target_id.as_deref(),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub fn record_frontend_error(
+    state: State<'_, BackendState>,
+    input: FrontendErrorInputDto,
+) -> CommandResult<()> {
+    let diagnostics = state
+        .diagnostics()
+        .ok_or_else(CommandError::diagnostics_unavailable)?;
+    validate_diagnostic_id(&input.error_id, "error_id", "fe_")?;
+    validate_frontend_error_source(&input.source)?;
+    validate_view(&input.view, "view")?;
+    validate_runtime_token(&input.error_name, "error_name", 64)?;
+    validate_fingerprint(&input.fingerprint)?;
+    if input.stack_frames.len() > 12 {
+        return Err(invalid_field("stack_frames"));
+    }
+    for frame in &input.stack_frames {
+        validate_stack_frame(frame)?;
+    }
+    if let Some(action_id) = input.last_action_id.as_deref() {
+        if !(action_id.starts_with("ui_") || action_id.starts_with("op_")) {
+            return Err(invalid_field("last_action_id"));
+        }
+        validate_safe_identifier(action_id, "last_action_id")?;
+    }
+    diagnostics.record_frontend_error(FrontendErrorRecord {
+        error_id: &input.error_id,
+        source: &input.source,
+        view: &input.view,
+        error_name: &input.error_name,
+        fingerprint: &input.fingerprint,
+        stack_frames: &input.stack_frames,
+        last_action_id: input.last_action_id.as_deref(),
+    });
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, BackendState>) -> CommandResult<SnapshotDto> {
     let value = service(&state)?.snapshot().await?;
@@ -602,21 +712,38 @@ pub async fn create_site(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
     input: CreateSiteInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let CredentialIntentDto::Replace { secret } = input.credential else {
-        return Err(invalid_field("credential"));
-    };
-    let secret = SecretValue::new(secret).map_err(|_| invalid_field("secret"))?;
-    let result = service(&state)?
-        .create_site(CreateSite {
-            name: input.name,
-            protocol: input.protocol.into(),
-            base_url: input.base_url,
-            enabled: input.enabled,
-            secret,
-        })
-        .await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "create-site",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "site",
+            target_id: None,
+            parent_id: None,
+            change_kind: "create",
+            field_scope: &["name", "protocol", "baseUrl", "credential", "enabled"],
+        }),
+        |operation_id| async move {
+            let CredentialIntentDto::Replace { secret } = input.credential else {
+                return Err(invalid_field("credential"));
+            };
+            let secret = SecretValue::new(secret).map_err(|_| invalid_field("secret"))?;
+            let result = service(&state)?
+                .create_site(CreateSite {
+                    name: input.name,
+                    protocol: input.protocol.into(),
+                    base_url: input.base_url,
+                    enabled: input.enabled,
+                    secret,
+                })
+                .await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -625,17 +752,35 @@ pub async fn update_site(
     state: State<'_, BackendState>,
     id: String,
     input: UpdateSiteInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .update_site(UpdateSite {
-            site_id: entity_id(id, "id")?,
-            name: input.name,
-            protocol: input.protocol.into(),
-            base_url: input.base_url,
-            credential: input.credential.try_into()?,
-        })
-        .await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "site",
+        target_id: Some(id.clone()),
+        parent_id: None,
+        change_kind: "update",
+        field_scope: &["name", "protocol", "baseUrl", "credential"],
+    };
+    observed_user_command(
+        diagnostics,
+        "update-site",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?
+                .update_site(UpdateSite {
+                    site_id: entity_id(id, "id")?,
+                    name: input.name,
+                    protocol: input.protocol.into(),
+                    base_url: input.base_url,
+                    credential: input.credential.try_into()?,
+                })
+                .await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -643,9 +788,27 @@ pub async fn delete_site(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
     id: String,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?.delete_site(entity_id(id, "id")?).await?;
-    changed(&app, &result, &["sites", "records"])
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "site",
+        target_id: Some(id.clone()),
+        parent_id: None,
+        change_kind: "delete",
+        field_scope: &[],
+    };
+    observed_user_command(
+        diagnostics,
+        "delete-site",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?.delete_site(entity_id(id, "id")?).await?;
+            changed(&app, &result, Some(&operation_id), &["sites", "records"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -653,13 +816,30 @@ pub async fn reorder_sites(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
     site_ids: Vec<String>,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let site_ids = site_ids
-        .into_iter()
-        .map(|id| entity_id(id, "site_ids"))
-        .collect::<CommandResult<Vec<_>>>()?;
-    let result = service(&state)?.reorder_sites(site_ids).await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "reorder-sites",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "site",
+            target_id: None,
+            parent_id: None,
+            change_kind: "reorder",
+            field_scope: &["priority"],
+        }),
+        |operation_id| async move {
+            let site_ids = site_ids
+                .into_iter()
+                .map(|id| entity_id(id, "site_ids"))
+                .collect::<CommandResult<Vec<_>>>()?;
+            let result = service(&state)?.reorder_sites(site_ids).await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -668,11 +848,29 @@ pub async fn set_site_enabled(
     state: State<'_, BackendState>,
     id: String,
     enabled: bool,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .set_site_enabled(entity_id(id, "id")?, enabled)
-        .await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "site",
+        target_id: Some(id.clone()),
+        parent_id: None,
+        change_kind: "toggle",
+        field_scope: &["enabled"],
+    };
+    observed_user_command(
+        diagnostics,
+        "set-site-enabled",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?
+                .set_site_enabled(entity_id(id, "id")?, enabled)
+                .await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -681,15 +879,33 @@ pub async fn create_model(
     state: State<'_, BackendState>,
     site_id: String,
     input: CreateModelInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .create_model(CreateModel {
-            site_id: entity_id(site_id, "site_id")?,
-            model_key: input.name,
-            enabled: input.enabled,
-        })
-        .await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "model",
+        target_id: None,
+        parent_id: Some(site_id.clone()),
+        change_kind: "create",
+        field_scope: &["name", "enabled"],
+    };
+    observed_user_command(
+        diagnostics,
+        "create-model",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?
+                .create_model(CreateModel {
+                    site_id: entity_id(site_id, "site_id")?,
+                    model_key: input.name,
+                    enabled: input.enabled,
+                })
+                .await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -698,14 +914,37 @@ pub async fn delete_model(
     state: State<'_, BackendState>,
     site_id: String,
     model_id: String,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .delete_model(
-            entity_id(site_id, "site_id")?,
-            entity_id(model_id, "model_id")?,
-        )
-        .await?;
-    changed(&app, &result, &["models", "sites", "records"])
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "model",
+        target_id: Some(model_id.clone()),
+        parent_id: Some(site_id.clone()),
+        change_kind: "delete",
+        field_scope: &[],
+    };
+    observed_user_command(
+        diagnostics,
+        "delete-model",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?
+                .delete_model(
+                    entity_id(site_id, "site_id")?,
+                    entity_id(model_id, "model_id")?,
+                )
+                .await?;
+            changed(
+                &app,
+                &result,
+                Some(&operation_id),
+                &["models", "sites", "records"],
+            )
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -715,15 +954,33 @@ pub async fn set_model_enabled(
     site_id: String,
     model_id: String,
     enabled: bool,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .set_model_enabled(
-            entity_id(site_id, "site_id")?,
-            entity_id(model_id, "model_id")?,
-            enabled,
-        )
-        .await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "model",
+        target_id: Some(model_id.clone()),
+        parent_id: Some(site_id.clone()),
+        change_kind: "toggle",
+        field_scope: &["enabled"],
+    };
+    observed_user_command(
+        diagnostics,
+        "set-model-enabled",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?
+                .set_model_enabled(
+                    entity_id(site_id, "site_id")?,
+                    entity_id(model_id, "model_id")?,
+                    enabled,
+                )
+                .await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -732,31 +989,58 @@ pub async fn update_site_advanced(
     state: State<'_, BackendState>,
     id: String,
     input: SiteAdvancedInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .update_site_advanced(SiteAdvancedUpdate {
-            site_id: entity_id(id, "id")?,
-            models_endpoint: input.models_endpoint,
-            probe_endpoint: input.probe_endpoint,
-            interval_minutes: input.probe_interval_minutes,
-            slow_first_token_ms: input
-                .slow_first_token_seconds
-                .checked_mul(1_000)
-                .ok_or_else(|| invalid_field("slow_first_token_seconds"))?,
-            slow_total_ms: input
-                .slow_total_seconds
-                .checked_mul(1_000)
-                .ok_or_else(|| invalid_field("slow_total_seconds"))?,
-            failure_threshold: input.failure_threshold,
-            recovery_threshold: input.recovery_threshold,
-            headers: input
-                .headers
-                .into_iter()
-                .map(|header| (header.key, header.value))
-                .collect(),
-        })
-        .await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "site",
+        target_id: Some(id.clone()),
+        parent_id: None,
+        change_kind: "update",
+        field_scope: &[
+            "modelsEndpoint",
+            "probeEndpoint",
+            "probeIntervalMinutes",
+            "slowFirstTokenSeconds",
+            "slowTotalSeconds",
+            "failureThreshold",
+            "recoveryThreshold",
+            "headers",
+        ],
+    };
+    observed_user_command(
+        diagnostics,
+        "update-site-advanced",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?
+                .update_site_advanced(SiteAdvancedUpdate {
+                    site_id: entity_id(id, "id")?,
+                    models_endpoint: input.models_endpoint,
+                    probe_endpoint: input.probe_endpoint,
+                    interval_minutes: input.probe_interval_minutes,
+                    slow_first_token_ms: input
+                        .slow_first_token_seconds
+                        .checked_mul(1_000)
+                        .ok_or_else(|| invalid_field("slow_first_token_seconds"))?,
+                    slow_total_ms: input
+                        .slow_total_seconds
+                        .checked_mul(1_000)
+                        .ok_or_else(|| invalid_field("slow_total_seconds"))?,
+                    failure_threshold: input.failure_threshold,
+                    recovery_threshold: input.recovery_threshold,
+                    headers: input
+                        .headers
+                        .into_iter()
+                        .map(|header| (header.key, header.value))
+                        .collect(),
+                })
+                .await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -765,8 +1049,9 @@ pub async fn update_site_probe_settings(
     state: State<'_, BackendState>,
     site_id: String,
     settings: ProbeSettingsInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    update_probe_settings(app, state, site_id, None, settings).await
+    update_probe_settings(app, state, site_id, None, settings, operation_id).await
 }
 
 #[tauri::command]
@@ -776,8 +1061,9 @@ pub async fn update_model_probe_settings(
     site_id: String,
     model_id: String,
     settings: ProbeSettingsInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    update_probe_settings(app, state, site_id, Some(model_id), settings).await
+    update_probe_settings(app, state, site_id, Some(model_id), settings, operation_id).await
 }
 
 async fn update_probe_settings(
@@ -786,18 +1072,46 @@ async fn update_probe_settings(
     site_id: String,
     model_id: Option<String>,
     settings: ProbeSettingsInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .update_probe_settings(ProbeSettingsUpdate {
-            site_id: entity_id(site_id, "site_id")?,
-            model_id: model_id.map(|id| entity_id(id, "model_id")).transpose()?,
-            mode: settings.mode.into(),
-            max_output_tokens: settings.max_output_tokens,
-            prompt: settings.prompt,
-            parameters: settings.parameters.into_iter().map(Into::into).collect(),
-        })
-        .await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    let operation = if model_id.is_some() {
+        "update-model-probe-settings"
+    } else {
+        "update-site-probe-settings"
+    };
+    let field_scope = if model_id.is_some() {
+        &["probeSettings"][..]
+    } else {
+        &["defaultProbeSettings"][..]
+    };
+    let audit = OperationAudit {
+        target_type: if model_id.is_some() { "model" } else { "site" },
+        target_id: model_id.clone().or_else(|| Some(site_id.clone())),
+        parent_id: model_id.as_ref().map(|_| site_id.clone()),
+        change_kind: "update",
+        field_scope,
+    };
+    observed_user_command(
+        diagnostics,
+        operation,
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?
+                .update_probe_settings(ProbeSettingsUpdate {
+                    site_id: entity_id(site_id, "site_id")?,
+                    model_id: model_id.map(|id| entity_id(id, "model_id")).transpose()?,
+                    mode: settings.mode.into(),
+                    max_output_tokens: settings.max_output_tokens,
+                    prompt: settings.prompt,
+                    parameters: settings.parameters.into_iter().map(Into::into).collect(),
+                })
+                .await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -807,17 +1121,35 @@ pub async fn update_model_custom_probe_settings(
     site_id: String,
     model_id: String,
     settings: CustomProbeInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .update_custom_probe(CustomProbeUpdate {
-            site_id: entity_id(site_id, "site_id")?,
-            model_id: entity_id(model_id, "model_id")?,
-            enabled: settings.enabled,
-            endpoint: settings.endpoint,
-            parameters: settings.parameters.into_iter().map(Into::into).collect(),
-        })
-        .await?;
-    changed(&app, &result, &["sites"])
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "model",
+        target_id: Some(model_id.clone()),
+        parent_id: Some(site_id.clone()),
+        change_kind: "update",
+        field_scope: &["customProbe"],
+    };
+    observed_user_command(
+        diagnostics,
+        "update-model-custom-probe-settings",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let result = service(&state)?
+                .update_custom_probe(CustomProbeUpdate {
+                    site_id: entity_id(site_id, "site_id")?,
+                    model_id: entity_id(model_id, "model_id")?,
+                    enabled: settings.enabled,
+                    endpoint: settings.endpoint,
+                    parameters: settings.parameters.into_iter().map(Into::into).collect(),
+                })
+                .await?;
+            changed(&app, &result, Some(&operation_id), &["sites"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -825,39 +1157,65 @@ pub async fn update_general_settings(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
     settings: GeneralSettingsInputDto,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let service = service(&state)?;
-    let previous = service.snapshot().await?;
-    let tray_action: TrayAction = settings.tray_action.into();
-    desktop::set_autostart(&app, settings.launch_at_startup)
-        .map_err(|_| CommandError::desktop_operation_failed())?;
-    if desktop::set_tray_enabled(&app, tray_action == TrayAction::Panel).is_err() {
-        let _ = desktop::set_autostart(&app, previous.general_settings.launch_at_startup);
-        return Err(CommandError::desktop_operation_failed());
-    }
-    let result = match service
-        .update_general_settings(
-            settings.launch_at_startup,
-            settings.continue_in_background,
-            tray_action,
-            settings.theme.into(),
-            settings.history_retention_days,
-            settings.diagnostic_capture_enabled,
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            let _ = desktop::set_autostart(&app, previous.general_settings.launch_at_startup);
-            let _ = desktop::set_tray_enabled(
-                &app,
-                previous.general_settings.tray_action == TrayAction::Panel,
-            );
-            return Err(error.into());
-        }
-    };
-    state.set_continue_in_background(result.general_settings.continue_in_background);
-    changed(&app, &result, &["settings"])
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "update-general-settings",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "settings",
+            target_id: None,
+            parent_id: None,
+            change_kind: "update",
+            field_scope: &[
+                "launchAtStartup",
+                "continueInBackground",
+                "trayAction",
+                "theme",
+                "language",
+                "historyRetentionDays",
+                "diagnosticCaptureEnabled",
+            ],
+        }),
+        |operation_id| async move {
+            let service = service(&state)?;
+            let previous = service.snapshot().await?;
+            let tray_action: TrayAction = settings.tray_action.into();
+            desktop::set_autostart(&app, settings.launch_at_startup)
+                .map_err(|_| CommandError::desktop_operation_failed())?;
+            if desktop::set_tray_enabled(&app, tray_action == TrayAction::Panel).is_err() {
+                let _ = desktop::set_autostart(&app, previous.general_settings.launch_at_startup);
+                return Err(CommandError::desktop_operation_failed());
+            }
+            let result = match service
+                .update_general_settings(
+                    settings.launch_at_startup,
+                    settings.continue_in_background,
+                    tray_action,
+                    settings.theme.into(),
+                    settings.history_retention_days,
+                    settings.diagnostic_capture_enabled,
+                )
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    let _ =
+                        desktop::set_autostart(&app, previous.general_settings.launch_at_startup);
+                    let _ = desktop::set_tray_enabled(
+                        &app,
+                        previous.general_settings.tray_action == TrayAction::Panel,
+                    );
+                    return Err(error.into());
+                }
+            };
+            state.set_continue_in_background(result.general_settings.continue_in_background);
+            changed(&app, &result, Some(&operation_id), &["settings"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -869,70 +1227,216 @@ pub async fn refresh_probe_records(state: State<'_, BackendState>) -> CommandRes
 pub async fn clear_probe_records(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let (cleanup, result) = service(&state)?.clear_probe_records().await?;
-    if let Some(diagnostics) = state.diagnostics() {
-        diagnostics.record_records_cleared(cleanup.deleted, cleanup.revision);
-    }
-    changed(&app, &result, &["records", "status"])
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "clear-probe-records",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "probe-records",
+            target_id: None,
+            parent_id: None,
+            change_kind: "clear",
+            field_scope: &["records"],
+        }),
+        |operation_id| async move {
+            let (cleanup, result) = service(&state)?.clear_probe_records().await?;
+            if let Some(diagnostics) = state.diagnostics() {
+                diagnostics.record_records_cleared(
+                    Some(&operation_id),
+                    cleanup.deleted,
+                    cleanup.revision,
+                );
+            }
+            changed(&app, &result, Some(&operation_id), &["records", "status"])
+        },
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn open_log_directory(state: State<'_, BackendState>) -> CommandResult<()> {
+pub async fn open_log_directory(
+    state: State<'_, BackendState>,
+    operation_id: Option<String>,
+) -> CommandResult<()> {
     let diagnostics = state
         .diagnostics()
+        .cloned()
         .ok_or_else(CommandError::diagnostics_unavailable)?;
-    desktop::open_directory(diagnostics.log_directory())
-        .map_err(|_| CommandError::desktop_operation_failed())?;
-    diagnostics.record_log_directory_opened();
-    Ok(())
+    let operation_id = resolve_operation_id(operation_id)?;
+    let event_operation_id = operation_id.clone();
+    let action_diagnostics = diagnostics.clone();
+    observed_command_with_id(
+        Some(diagnostics),
+        "open-log-directory",
+        operation_id,
+        None,
+        async move {
+            desktop::open_directory(action_diagnostics.log_directory())
+                .map_err(|_| CommandError::desktop_operation_failed())?;
+            action_diagnostics.record_log_directory_opened(Some(&event_operation_id));
+            Ok(())
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn get_log_statistics(state: State<'_, BackendState>) -> CommandResult<LogStatistics> {
+    state
+        .diagnostics()
+        .ok_or_else(CommandError::diagnostics_unavailable)?
+        .statistics()
+        .map_err(|_| CommandError::diagnostics_io_failed())
+}
+
+#[tauri::command]
+pub async fn set_diagnostic_log_limit(
+    state: State<'_, BackendState>,
+    max_total_megabytes: u16,
+    operation_id: Option<String>,
+) -> CommandResult<LogStatistics> {
+    let diagnostics = state
+        .diagnostics()
+        .cloned()
+        .ok_or_else(CommandError::diagnostics_unavailable)?;
+    let action_diagnostics = diagnostics.clone();
+    observed_user_command(
+        Some(diagnostics),
+        "set-diagnostic-log-limit",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "settings",
+            target_id: None,
+            parent_id: None,
+            change_kind: "update",
+            field_scope: &["diagnosticLogMaxMegabytes"],
+        }),
+        |operation_id| async move {
+            if !(MIN_LOG_TOTAL_MEGABYTES..=MAX_LOG_TOTAL_MEGABYTES).contains(&max_total_megabytes) {
+                return Err(invalid_field("max_total_megabytes"));
+            }
+            let statistics = action_diagnostics
+                .configure_max_total_megabytes(max_total_megabytes)
+                .map_err(|_| CommandError::diagnostics_io_failed())?;
+            action_diagnostics
+                .record_log_limit_configured(&operation_id, statistics.configured_max_total_bytes);
+            action_diagnostics
+                .statistics()
+                .map_err(|_| CommandError::diagnostics_io_failed())
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_diagnostic_logs(
+    state: State<'_, BackendState>,
+    operation_id: Option<String>,
+) -> CommandResult<LogCleanupResult> {
+    let diagnostics = state
+        .diagnostics()
+        .cloned()
+        .ok_or_else(CommandError::diagnostics_unavailable)?;
+    let operation_id = resolve_operation_id(operation_id)?;
+    let event_operation_id = operation_id.clone();
+    let action_diagnostics = diagnostics.clone();
+    observed_command_with_id(
+        Some(diagnostics),
+        "clear-diagnostic-logs",
+        operation_id,
+        None,
+        async move {
+            let mut result = action_diagnostics
+                .clear_logs()
+                .map_err(|_| CommandError::diagnostics_io_failed())?;
+            action_diagnostics.record_logs_cleared(
+                Some(&event_operation_id),
+                result.deleted_files,
+                result.reclaimed_bytes,
+            );
+            result.statistics = action_diagnostics
+                .statistics()
+                .map_err(|_| CommandError::diagnostics_io_failed())?;
+            Ok(result)
+        },
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn export_diagnostics(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
+    operation_id: Option<String>,
 ) -> CommandResult<DiagnosticExportDto> {
     let diagnostics = state
         .diagnostics()
         .cloned()
         .ok_or_else(CommandError::diagnostics_unavailable)?;
-    let file_name = format!(
-        "RelayPulse-diagnostics-{}.json.gz",
-        OffsetDateTime::now_utc().unix_timestamp()
-    );
-    let selected = app
-        .dialog()
-        .file()
-        .set_title("导出 RelayPulse 诊断包")
-        .set_file_name(file_name)
-        .add_filter("压缩诊断包", &["gz"])
-        .blocking_save_file();
-    let Some(selected) = selected else {
-        return Ok(DiagnosticExportDto {
-            status: "cancelled",
-            path: None,
-        });
-    };
-    let path = selected
-        .into_path()
-        .map_err(|_| CommandError::desktop_operation_failed())?;
-    let value = service(&state)?.snapshot().await?;
-    diagnostics
-        .export(&path, &value)
-        .map_err(|_| CommandError::desktop_operation_failed())?;
-    diagnostics.record_diagnostics_exported();
-    Ok(DiagnosticExportDto {
-        status: "exported",
-        path: Some(path.to_string_lossy().into_owned()),
-    })
+    let operation_id = resolve_operation_id(operation_id)?;
+    let event_operation_id = operation_id.clone();
+    let action_diagnostics = diagnostics.clone();
+    observed_command_with_id(
+        Some(diagnostics),
+        "export-diagnostics",
+        operation_id,
+        None,
+        async move {
+            let file_name = format!(
+                "RelayPulse-diagnostics-{}.json.gz",
+                OffsetDateTime::now_utc().unix_timestamp()
+            );
+            let selected = app
+                .dialog()
+                .file()
+                .set_title("导出 RelayPulse 诊断包")
+                .set_file_name(file_name)
+                .add_filter("压缩诊断包", &["gz"])
+                .blocking_save_file();
+            let Some(selected) = selected else {
+                return Ok(DiagnosticExportDto {
+                    status: "cancelled",
+                    path: None,
+                });
+            };
+            let path = selected
+                .into_path()
+                .map_err(|_| CommandError::desktop_operation_failed())?;
+            let value = match state.application_service() {
+                Some(service) => match service.snapshot().await {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        action_diagnostics.record_background_error(
+                            "diagnostics-snapshot",
+                            "snapshot_unavailable",
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
+            action_diagnostics
+                .export(&path, value.as_ref(), state.startup_failure())
+                .map_err(|_| CommandError::desktop_operation_failed())?;
+            action_diagnostics.record_diagnostics_exported(Some(&event_operation_id));
+            Ok(DiagnosticExportDto {
+                status: "exported",
+                path: Some(path.to_string_lossy().into_owned()),
+            })
+        },
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn open_main_window(
+pub async fn open_main_window(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
     view: Option<String>,
+    operation_id: Option<String>,
 ) -> CommandResult<()> {
     let view = match view.as_deref().unwrap_or("sites") {
         "sites" => "sites",
@@ -940,11 +1444,25 @@ pub fn open_main_window(
         "records" => "records",
         _ => return Err(invalid_field("view")),
     };
-    desktop::show_main_window(&app, view).map_err(|_| CommandError::desktop_operation_failed())?;
-    if let Some(diagnostics) = state.diagnostics() {
-        diagnostics.record_window_opened("main");
-    }
-    Ok(())
+    let diagnostics = state.diagnostics().cloned();
+    let operation_id = resolve_operation_id(operation_id)?;
+    let event_operation_id = operation_id.clone();
+    let action_diagnostics = diagnostics.clone();
+    observed_command_with_id(
+        diagnostics,
+        "open-main-window",
+        operation_id,
+        None,
+        async move {
+            desktop::show_main_window_at(&app, view)
+                .map_err(|_| CommandError::desktop_operation_failed())?;
+            if let Some(diagnostics) = action_diagnostics {
+                diagnostics.record_window_opened(Some(&event_operation_id), "main");
+            }
+            Ok(())
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -953,40 +1471,81 @@ pub async fn refresh_models(
     state: State<'_, BackendState>,
     site_id: String,
     confirmed_removed_model_ids: Option<Vec<String>>,
+    operation_id: Option<String>,
 ) -> CommandResult<ModelSyncResultDto> {
-    let confirmed_removed_model_ids = confirmed_removed_model_ids
-        .unwrap_or_default()
-        .into_iter()
-        .map(|id| entity_id(id, "confirmed_removed_model_ids"))
-        .collect::<CommandResult<Vec<_>>>()?;
-    let result = service(&state)?
-        .refresh_models(entity_id(site_id, "site_id")?, confirmed_removed_model_ids)
-        .await?;
-    match result {
-        ModelSyncOutcome::Applied(snapshot) => Ok(ModelSyncResultDto::Applied {
-            snapshot: changed(&app, &snapshot, &["models", "sites", "records"])?,
-        }),
-        ModelSyncOutcome::ConfirmationRequired { removed_models } => {
-            Ok(ModelSyncResultDto::ConfirmationRequired {
-                removed_models: removed_models
-                    .into_iter()
-                    .map(|model| ModelSyncRemovalDto {
-                        id: model.id.to_string(),
-                        name: model.name,
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "site",
+        target_id: Some(site_id.clone()),
+        parent_id: None,
+        change_kind: "sync",
+        field_scope: &["catalog"],
+    };
+    observed_user_command(
+        diagnostics,
+        "refresh-models",
+        operation_id,
+        Some(audit),
+        |operation_id| async move {
+            let confirmed_removed_model_ids = confirmed_removed_model_ids
+                .unwrap_or_default()
+                .into_iter()
+                .map(|id| entity_id(id, "confirmed_removed_model_ids"))
+                .collect::<CommandResult<Vec<_>>>()?;
+            let result = service(&state)?
+                .refresh_models(entity_id(site_id, "site_id")?, confirmed_removed_model_ids)
+                .await?;
+            match result {
+                ModelSyncOutcome::Applied(snapshot) => Ok(ModelSyncResultDto::Applied {
+                    snapshot: changed(
+                        &app,
+                        &snapshot,
+                        Some(&operation_id),
+                        &["models", "sites", "records"],
+                    )?,
+                }),
+                ModelSyncOutcome::ConfirmationRequired { removed_models } => {
+                    Ok(ModelSyncResultDto::ConfirmationRequired {
+                        removed_models: removed_models
+                            .into_iter()
+                            .map(|model| ModelSyncRemovalDto {
+                                id: model.id.to_string(),
+                                name: model.name,
+                            })
+                            .collect(),
                     })
-                    .collect(),
-            })
-        }
-    }
+                }
+            }
+        },
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn run_immediate_probe(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?.probe_all_enabled().await?;
-    changed(&app, &result, &["records", "status", "sites"])
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "run-immediate-probe",
+        operation_id,
+        None,
+        |operation_id| async move {
+            let result = service(&state)?
+                .probe_all_enabled_with_operation(Some(&operation_id))
+                .await?;
+            changed(
+                &app,
+                &result,
+                Some(&operation_id),
+                &["records", "status", "sites"],
+            )
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -994,11 +1553,27 @@ pub async fn run_site_probe(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
     site_id: String,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .probe_site(entity_id(site_id, "site_id")?)
-        .await?;
-    changed(&app, &result, &["records", "status", "sites"])
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "run-site-probe",
+        operation_id,
+        None,
+        |operation_id| async move {
+            let result = service(&state)?
+                .probe_site_with_operation(entity_id(site_id, "site_id")?, Some(&operation_id))
+                .await?;
+            changed(
+                &app,
+                &result,
+                Some(&operation_id),
+                &["records", "status", "sites"],
+            )
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1007,14 +1582,31 @@ pub async fn run_model_probe(
     state: State<'_, BackendState>,
     site_id: String,
     model_id: String,
+    operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
-    let result = service(&state)?
-        .probe_model(
-            entity_id(site_id, "site_id")?,
-            entity_id(model_id, "model_id")?,
-        )
-        .await?;
-    changed(&app, &result, &["records", "status", "sites"])
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "run-model-probe",
+        operation_id,
+        None,
+        |operation_id| async move {
+            let result = service(&state)?
+                .probe_model_with_operation(
+                    entity_id(site_id, "site_id")?,
+                    entity_id(model_id, "model_id")?,
+                    Some(&operation_id),
+                )
+                .await?;
+            changed(
+                &app,
+                &result,
+                Some(&operation_id),
+                &["records", "status", "sites"],
+            )
+        },
+    )
+    .await
 }
 
 fn service(state: &State<'_, BackendState>) -> CommandResult<ApplicationService> {
@@ -1024,8 +1616,220 @@ fn service(state: &State<'_, BackendState>) -> CommandResult<ApplicationService>
         .ok_or_else(CommandError::database_unavailable)
 }
 
+#[cfg(test)]
+async fn observed_command<T, F>(
+    diagnostics: Option<Diagnostics>,
+    operation: &'static str,
+    future: F,
+) -> CommandResult<T>
+where
+    F: Future<Output = CommandResult<T>>,
+{
+    let operation_id = format!("op_{}", Uuid::new_v4().simple());
+    observed_command_with_id(diagnostics, operation, operation_id, None, future).await
+}
+
+async fn observed_user_command<T, W, F>(
+    diagnostics: Option<Diagnostics>,
+    operation: &'static str,
+    requested_operation_id: Option<String>,
+    audit: Option<OperationAudit>,
+    work: W,
+) -> CommandResult<T>
+where
+    W: FnOnce(String) -> F,
+    F: Future<Output = CommandResult<T>>,
+{
+    let operation_id = resolve_operation_id(requested_operation_id)?;
+    let future = work(operation_id.clone());
+    observed_command_with_id(diagnostics, operation, operation_id, audit, future).await
+}
+
+async fn observed_command_with_id<T, F>(
+    diagnostics: Option<Diagnostics>,
+    operation: &'static str,
+    operation_id: String,
+    audit: Option<OperationAudit>,
+    future: F,
+) -> CommandResult<T>
+where
+    F: Future<Output = CommandResult<T>>,
+{
+    let started = Instant::now();
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.record_operation_started(&operation_id, operation, audit.as_ref());
+    }
+    match future.await {
+        Ok(value) => {
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.record_operation_finished(
+                    &operation_id,
+                    operation,
+                    elapsed_millis(started),
+                    None,
+                );
+            }
+            Ok(value)
+        }
+        Err(mut error) => {
+            error.operation_id = Some(operation_id.clone());
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.record_operation_finished(
+                    &operation_id,
+                    operation,
+                    elapsed_millis(started),
+                    Some(error.code),
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 fn entity_id(value: String, field: &'static str) -> CommandResult<EntityId> {
     EntityId::parse(value).map_err(|_| invalid_field(field))
+}
+
+fn validate_diagnostic_id(value: &str, field: &'static str, prefix: &str) -> CommandResult<()> {
+    if !value.starts_with(prefix) {
+        return Err(invalid_field(field));
+    }
+    validate_safe_identifier(value, field)
+}
+
+fn resolve_operation_id(requested_operation_id: Option<String>) -> CommandResult<String> {
+    match requested_operation_id {
+        Some(value) => {
+            validate_diagnostic_id(&value, "operation_id", "op_")?;
+            Ok(value)
+        }
+        None => Ok(format!("op_{}", Uuid::new_v4().simple())),
+    }
+}
+
+fn validate_safe_identifier(value: &str, field: &'static str) -> CommandResult<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        return Err(invalid_field(field));
+    }
+    Ok(())
+}
+
+fn validate_runtime_token(value: &str, field: &'static str, max: usize) -> CommandResult<()> {
+    if value.is_empty()
+        || value.len() > max
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        })
+    {
+        return Err(invalid_field(field));
+    }
+    Ok(())
+}
+
+fn validate_view(value: &str, field: &'static str) -> CommandResult<()> {
+    if !matches!(
+        value,
+        "sites"
+            | "add-site"
+            | "site-advanced"
+            | "model-settings"
+            | "general"
+            | "records"
+            | "delete-confirm"
+            | "empty"
+            | "tray-healthy"
+            | "tray-alerts"
+    ) {
+        return Err(invalid_field(field));
+    }
+    Ok(())
+}
+
+fn validate_frontend_action(value: &str) -> CommandResult<()> {
+    if !matches!(
+        value,
+        "navigate"
+            | "select-site"
+            | "open-add-model"
+            | "close-add-model"
+            | "open-probe-record"
+            | "close-probe-record"
+            | "records-mode-changed"
+            | "records-period-changed"
+            | "records-site-filter-changed"
+            | "records-model-filter-changed"
+            | "records-status-filter-changed"
+            | "records-search-changed"
+            | "records-table-changed"
+            | "refresh-probe-records"
+            | "open-clear-probe-records"
+            | "control-activated"
+            | "field-focused"
+            | "form-submitted"
+            | "invoke-backend-operation"
+            | "setting-changed"
+            | "form-became-dirty"
+            | "form-reset"
+            | "modal-cancelled"
+            | "retry-load"
+    ) {
+        return Err(invalid_field("action"));
+    }
+    Ok(())
+}
+
+fn validate_frontend_target_type(value: &str) -> CommandResult<()> {
+    if !matches!(
+        value,
+        "site" | "model" | "probe-record" | "view" | "form" | "control" | "operation"
+    ) {
+        return Err(invalid_field("target_type"));
+    }
+    Ok(())
+}
+
+fn validate_frontend_error_source(value: &str) -> CommandResult<()> {
+    if !matches!(
+        value,
+        "react-render" | "window-error" | "unhandled-rejection"
+    ) {
+        return Err(invalid_field("source"));
+    }
+    Ok(())
+}
+
+fn validate_fingerprint(value: &str) -> CommandResult<()> {
+    if value.len() != 16 || !value.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(invalid_field("fingerprint"));
+    }
+    Ok(())
+}
+
+fn validate_stack_frame(value: &str) -> CommandResult<()> {
+    let lower = value.to_ascii_lowercase();
+    if value.is_empty()
+        || value.len() > 240
+        || value
+            .chars()
+            .any(|character| matches!(character, '\n' | '\r' | '?' | '#'))
+        || value.contains("://")
+        || lower.contains("bearer ")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("sk-")
+    {
+        return Err(invalid_field("stack_frames"));
+    }
+    Ok(())
 }
 
 fn invalid_field(field: &'static str) -> CommandError {
@@ -1042,13 +1846,14 @@ fn invalid_field(field: &'static str) -> CommandError {
 fn changed(
     app: &tauri::AppHandle,
     value: &ApplicationSnapshot,
+    operation_id: Option<&str>,
     domains: &[&'static str],
 ) -> CommandResult<SnapshotDto> {
     let _ = desktop::update_status_projection(app, value);
     let value = snapshot(value)?;
     if let Some(state) = app.try_state::<BackendState>() {
         if let Some(diagnostics) = state.diagnostics() {
-            diagnostics.record_state_change(value.revision, domains);
+            diagnostics.record_state_change(operation_id, value.revision, domains);
         }
     }
     let _ = app.emit(
@@ -1062,7 +1867,7 @@ fn changed(
 }
 
 pub(crate) fn publish_background_snapshot(app: &tauri::AppHandle, value: &ApplicationSnapshot) {
-    let _ = changed(app, value, &["records", "status", "sites"]);
+    let _ = changed(app, value, None, &["records", "status", "sites"]);
 }
 
 fn snapshot(value: &ApplicationSnapshot) -> CommandResult<SnapshotDto> {
@@ -1563,5 +2368,36 @@ mod tests {
                 "removedModels": [{ "id": "model-a", "name": "Model A" }]
             })
         );
+    }
+
+    #[test]
+    fn diagnostic_inputs_accept_only_safe_correlatable_metadata() {
+        assert!(resolve_operation_id(Some("op_fixture-123".to_owned())).is_ok());
+        assert!(resolve_operation_id(Some("wrong_fixture".to_owned())).is_err());
+        assert!(validate_frontend_action("open-probe-record").is_ok());
+        assert!(validate_frontend_action("clicked secret button").is_err());
+        assert!(validate_stack_frame("render@src/App.tsx:42:7").is_ok());
+        assert!(validate_stack_frame("https://example.test/App.tsx?token=secret:42:7").is_err());
+        assert!(validate_fingerprint("0123456789abcdef").is_ok());
+        assert!(validate_fingerprint("not-a-fingerprint").is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn observed_failures_return_a_searchable_operation_id() {
+        let directory = tempfile::tempdir().expect("temporary directory created");
+        let diagnostics = Diagnostics::initialize(directory.path()).expect("diagnostics starts");
+
+        let error = observed_command(Some(diagnostics), "fixture-operation", async {
+            Err::<(), _>(invalid_field("fixture"))
+        })
+        .await
+        .expect_err("fixture operation fails");
+
+        let operation_id = error.operation_id.expect("operation id returned");
+        let log = std::fs::read_to_string(directory.path().join("logs/relaypulse.log"))
+            .expect("diagnostic log reads");
+        assert!(log.contains(&operation_id));
+        assert!(log.contains(r#""operation":"fixture-operation""#));
+        assert!(log.contains(r#""outcome":"failed""#));
     }
 }

@@ -119,7 +119,8 @@ impl BackendState {
                     clock.clone(),
                 );
                 let application_service =
-                    ApplicationService::new(repository, credential_saga.clone(), ids, clock);
+                    ApplicationService::new(repository, credential_saga.clone(), ids, clock)
+                        .with_diagnostics(diagnostics.clone());
                 Self {
                     database: Some(database),
                     application_service: Some(application_service),
@@ -142,6 +143,9 @@ impl BackendState {
     }
 
     fn blocked_with_diagnostics(failure: StartupFailure, diagnostics: Option<Diagnostics>) -> Self {
+        if let Some(diagnostics) = &diagnostics {
+            diagnostics.record_startup_failed(&failure);
+        }
         Self {
             database: None,
             application_service: None,

@@ -2,7 +2,12 @@ import { invoke } from '@tauri-apps/api/core';
 import type { InvokeArgs } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { RelayPulseDataSource } from './relay-pulse-data-source';
-import type { DiagnosticExportResult, StateChangedEvent } from './relay-pulse-data-source';
+import type {
+  DiagnosticExportResult,
+  LogCleanupResult,
+  LogStatistics,
+  StateChangedEvent,
+} from './relay-pulse-data-source';
 import type {
   AppSnapshot,
   CreateModelInput,
@@ -17,6 +22,7 @@ import type {
   TraySnapshot,
   UpdateSiteInput,
 } from '../domain/types';
+import { beginBackendOperation } from '../app/frontend-diagnostics';
 import { formatLocalTime } from '../domain/time';
 
 type AuthoritativeSnapshot = Pick<
@@ -27,6 +33,7 @@ type AuthoritativeModelSyncResult =
   | { status: 'applied'; snapshot: AuthoritativeSnapshot }
   | { status: 'confirmationRequired'; removedModels: ModelSyncRemoval[] };
 type InvokeCommand = <T>(command: string, args?: InvokeArgs) => Promise<T>;
+type CommandArgs = Record<string, unknown>;
 type SubscribeToChanges = (listener: (event: StateChangedEvent) => void) => Promise<() => void>;
 
 const subscribeToTauriChanges: SubscribeToChanges = (listener) =>
@@ -82,43 +89,43 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   createSite(input: CreateSiteInput): Promise<AppSnapshot> {
-    return this.call('create_site', { input });
+    return this.mutate('create_site', { input });
   }
 
   createModel(siteId: string, input: CreateModelInput): Promise<AppSnapshot> {
-    return this.call('create_model', { siteId, input });
+    return this.mutate('create_model', { siteId, input });
   }
 
   deleteModel(siteId: string, modelId: string): Promise<AppSnapshot> {
-    return this.call('delete_model', { siteId, modelId });
+    return this.mutate('delete_model', { siteId, modelId });
   }
 
   updateSite(id: string, input: UpdateSiteInput): Promise<AppSnapshot> {
-    return this.call('update_site', { id, input });
+    return this.mutate('update_site', { id, input });
   }
 
   deleteSite(id: string): Promise<AppSnapshot> {
-    return this.call('delete_site', { id });
+    return this.mutate('delete_site', { id });
   }
 
   reorderSites(siteIds: string[]): Promise<AppSnapshot> {
-    return this.call('reorder_sites', { siteIds });
+    return this.mutate('reorder_sites', { siteIds });
   }
 
   setSiteEnabled(id: string, enabled: boolean): Promise<AppSnapshot> {
-    return this.call('set_site_enabled', { id, enabled });
+    return this.mutate('set_site_enabled', { id, enabled });
   }
 
   setModelEnabled(siteId: string, modelId: string, enabled: boolean): Promise<AppSnapshot> {
-    return this.call('set_model_enabled', { siteId, modelId, enabled });
+    return this.mutate('set_model_enabled', { siteId, modelId, enabled });
   }
 
   updateSiteAdvanced(id: string, input: SiteAdvancedInput): Promise<AppSnapshot> {
-    return this.call('update_site_advanced', { id, input });
+    return this.mutate('update_site_advanced', { id, input });
   }
 
   updateSiteProbeSettings(siteId: string, settings: ProbeSettings): Promise<AppSnapshot> {
-    return this.call('update_site_probe_settings', { siteId, settings });
+    return this.mutate('update_site_probe_settings', { siteId, settings });
   }
 
   updateModelProbeSettings(
@@ -126,7 +133,7 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
     modelId: string,
     settings: ProbeSettings,
   ): Promise<AppSnapshot> {
-    return this.call('update_model_probe_settings', { siteId, modelId, settings });
+    return this.mutate('update_model_probe_settings', { siteId, modelId, settings });
   }
 
   updateModelCustomProbeSettings(
@@ -134,23 +141,23 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
     modelId: string,
     settings: CustomProbeSettings,
   ): Promise<AppSnapshot> {
-    return this.call('update_model_custom_probe_settings', { siteId, modelId, settings });
+    return this.mutate('update_model_custom_probe_settings', { siteId, modelId, settings });
   }
 
   updateGeneralSettings(settings: GeneralSettings): Promise<AppSnapshot> {
-    return this.call('update_general_settings', { settings });
+    return this.mutate('update_general_settings', { settings });
   }
 
   runImmediateProbe(): Promise<AppSnapshot> {
-    return this.call('run_immediate_probe');
+    return this.mutate('run_immediate_probe');
   }
 
   runSiteProbe(siteId: string): Promise<AppSnapshot> {
-    return this.call('run_site_probe', { siteId });
+    return this.mutate('run_site_probe', { siteId });
   }
 
   runModelProbe(siteId: string, modelId: string): Promise<AppSnapshot> {
-    return this.call('run_model_probe', { siteId, modelId });
+    return this.mutate('run_model_probe', { siteId, modelId });
   }
 
   async refreshModels(
@@ -158,9 +165,11 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
     confirmedRemovedModelIds: string[] = [],
   ): Promise<ModelSyncResult> {
     try {
+      const operationId = beginBackendOperation();
       const result = await this.invokeCommand<AuthoritativeModelSyncResult>('refresh_models', {
         siteId,
         confirmedRemovedModelIds,
+        operationId,
       });
       return result.status === 'applied'
         ? { status: 'applied', snapshot: viewSnapshot(result.snapshot) }
@@ -175,7 +184,7 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   clearProbeRecords(): Promise<AppSnapshot> {
-    return this.call('clear_probe_records');
+    return this.mutate('clear_probe_records');
   }
 
   async getTraySnapshot(): Promise<{ healthy: TraySnapshot; alerts: TraySnapshot }> {
@@ -183,18 +192,34 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
   }
 
   openLogDirectory(): Promise<void> {
-    return this.action('open_log_directory');
+    return this.observedAction('open_log_directory');
+  }
+
+  getLogStatistics(): Promise<LogStatistics> {
+    return this.action('get_log_statistics');
+  }
+
+  setDiagnosticLogLimit(maxTotalMegabytes: number): Promise<LogStatistics> {
+    return this.observedAction('set_diagnostic_log_limit', { maxTotalMegabytes });
+  }
+
+  clearDiagnosticLogs(): Promise<LogCleanupResult> {
+    return this.observedAction('clear_diagnostic_logs');
   }
 
   exportDiagnostics(): Promise<DiagnosticExportResult> {
-    return this.action('export_diagnostics');
+    return this.observedAction('export_diagnostics');
   }
 
   openMainWindow(view: 'sites' | 'general' | 'records' = 'sites'): Promise<void> {
-    return this.action('open_main_window', { view });
+    return this.observedAction('open_main_window', { view });
   }
 
-  private async call(command: string, args?: InvokeArgs): Promise<AppSnapshot> {
+  private mutate(command: string, args?: CommandArgs): Promise<AppSnapshot> {
+    return this.call(command, { ...(args ?? {}), operationId: beginBackendOperation() });
+  }
+
+  private async call(command: string, args?: CommandArgs): Promise<AppSnapshot> {
     try {
       const snapshot = await this.invokeCommand<AuthoritativeSnapshot>(command, args);
       return viewSnapshot(snapshot);
@@ -203,12 +228,16 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
     }
   }
 
-  private async action<T = void>(command: string, args?: InvokeArgs): Promise<T> {
+  private async action<T = void>(command: string, args?: CommandArgs): Promise<T> {
     try {
       return await this.invokeCommand<T>(command, args);
     } catch (cause) {
       throw backendError(cause);
     }
+  }
+
+  private observedAction<T = void>(command: string, args?: CommandArgs): Promise<T> {
+    return this.action(command, { ...(args ?? {}), operationId: beginBackendOperation() });
   }
 }
 

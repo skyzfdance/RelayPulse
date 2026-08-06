@@ -7,6 +7,7 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { CSSProperties, PropsWithChildren } from 'react';
 import { MainShell } from './app/MainShell';
 import { RelayPulseProvider } from './app/RelayPulseProvider';
+import { recordFrontendAction } from './app/frontend-diagnostics';
 import { useRelayPulse } from './app/relay-pulse-context';
 import {
   defaultViewForWindow,
@@ -168,6 +169,7 @@ function RelayPulseApplication() {
   const isTrayView = view === 'tray-healthy' || view === 'tray-alerts';
 
   function retryMockLoad() {
+    recordFrontendAction('retry-load');
     const url = new URL(window.location.href);
     url.searchParams.delete('scenario');
     window.location.assign(url);

@@ -20,8 +20,9 @@ import {
   Tooltip,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
+import { recordFrontendAction } from '../../app/frontend-diagnostics';
 import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
 import { FirstTokenColumnTitle } from '../../components/FirstTokenColumnTitle';
 import { StatusDot } from '../../components/StatusDot';
@@ -54,6 +55,49 @@ const statusMeta: Record<ProbeRecordStatus, { label: string; color?: string }> =
   warning: { label: '偏慢', color: 'gold' },
   error: { label: '失败', color: 'red' },
 };
+
+function useTableBodyHeight(enabled: boolean) {
+  const regionRef = useRef<HTMLDivElement>(null);
+  const [bodyHeight, setBodyHeight] = useState(240);
+
+  useLayoutEffect(() => {
+    const region = regionRef.current;
+    if (!enabled || !region) return;
+
+    const resize = () => {
+      const regionStyle = window.getComputedStyle(region);
+      const header = region.querySelector<HTMLElement>('.ant-table-header');
+      const pagination = region.querySelector<HTMLElement>('.ant-pagination');
+      const paginationStyle = pagination ? window.getComputedStyle(pagination) : null;
+      const occupiedHeight =
+        Number.parseFloat(regionStyle.paddingTop) +
+        Number.parseFloat(regionStyle.paddingBottom) +
+        (header?.getBoundingClientRect().height ?? 0) +
+        (pagination?.getBoundingClientRect().height ?? 0) +
+        (paginationStyle ? Number.parseFloat(paginationStyle.marginTop) : 0) +
+        (paginationStyle ? Number.parseFloat(paginationStyle.marginBottom) : 0);
+      const nextBodyHeight = Math.max(96, Math.floor(region.clientHeight - occupiedHeight));
+      setBodyHeight((currentHeight) =>
+        currentHeight === nextBodyHeight ? currentHeight : nextBodyHeight,
+      );
+    };
+
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(region);
+    const header = region.querySelector<HTMLElement>('.ant-table-header');
+    const pagination = region.querySelector<HTMLElement>('.ant-pagination');
+    if (header) resizeObserver.observe(header);
+    if (pagination) resizeObserver.observe(pagination);
+    const frame = window.requestAnimationFrame(resize);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+    };
+  }, [enabled]);
+
+  return { bodyHeight, regionRef };
+}
 
 function formatTokens(value: number | null) {
   return value === null ? '—' : new Intl.NumberFormat('zh-CN').format(value);
@@ -362,6 +406,11 @@ export function RecordsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const { bodyHeight: recordsTableBodyHeight, regionRef: recordsTableRegionRef } =
+    useTableBodyHeight(mode === 'records');
+  const { bodyHeight: usageTableBodyHeight, regionRef: usageTableRegionRef } = useTableBodyHeight(
+    mode === 'usage',
+  );
 
   const allRecords = useMemo(() => snapshot?.probeRecords ?? [], [snapshot?.probeRecords]);
   const periodRecords = useMemo(() => {
@@ -497,6 +546,7 @@ export function RecordsPage() {
       key: 'action',
       width: 60,
       align: 'center',
+      fixed: 'right',
       render: (_, record) => (
         <Tooltip title="查看探测详情">
           <Button
@@ -505,7 +555,13 @@ export function RecordsPage() {
             icon={<FileSearchOutlined />}
             aria-label={`查看 ${record.modelName} 探测详情`}
             className="text-rp-primary!"
-            onClick={() => setSelectedRecord(record)}
+            onClick={() => {
+              recordFrontendAction('open-probe-record', {
+                targetType: 'probe-record',
+                targetId: record.id,
+              });
+              setSelectedRecord(record);
+            }}
           />
         </Tooltip>
       ),
@@ -565,6 +621,7 @@ export function RecordsPage() {
   if (!snapshot) return null;
 
   async function refresh() {
+    recordFrontendAction('refresh-probe-records');
     setRefreshing(true);
     try {
       await runBackendAction(() => refreshProbeRecords(), {
@@ -629,7 +686,10 @@ export function RecordsPage() {
                 },
               ],
               onClick: ({ key }) => {
-                if (key === 'clear') setClearConfirmOpen(true);
+                if (key === 'clear') {
+                  recordFrontendAction('open-clear-probe-records');
+                  setClearConfirmOpen(true);
+                }
               },
             }}
           >
@@ -647,7 +707,13 @@ export function RecordsPage() {
                 { value: 'records', label: '探测记录' },
                 { value: 'usage', label: 'Token 统计' },
               ]}
-              onChange={(value) => setMode(value as RecordsMode)}
+              onChange={(value) => {
+                recordFrontendAction('records-mode-changed', {
+                  targetType: 'form',
+                  targetId: `records-mode-${value}`,
+                });
+                setMode(value as RecordsMode);
+              }}
             />
             {mode === 'usage' ? (
               <Tooltip title="仅汇总供应商响应中明确返回的 usage 字段。未上报请求不参与 Token 合计与平均值，RelayPulse 也不会根据文本长度估算用量。">
@@ -675,7 +741,13 @@ export function RecordsPage() {
               { value: '7d', label: '最近 7 天' },
               { value: '30d', label: '最近 30 天' },
             ]}
-            onChange={setPeriod}
+            onChange={(value) => {
+              recordFrontendAction('records-period-changed', {
+                targetType: 'form',
+                targetId: `records-period-${value}`,
+              });
+              setPeriod(value);
+            }}
           />
           <Select
             className="w-36"
@@ -683,6 +755,10 @@ export function RecordsPage() {
             aria-label="站点筛选"
             options={siteOptions}
             onChange={(value) => {
+              recordFrontendAction('records-site-filter-changed', {
+                targetType: value === 'all' ? 'form' : 'site',
+                targetId: value === 'all' ? 'records-site-all' : value,
+              });
               setSiteFilter(value);
               setModelFilter('all');
             }}
@@ -694,7 +770,13 @@ export function RecordsPage() {
                 value={modelFilter}
                 aria-label="模型筛选"
                 options={modelOptions}
-                onChange={setModelFilter}
+                onChange={(value) => {
+                  recordFrontendAction('records-model-filter-changed', {
+                    targetType: value === 'all' ? 'form' : 'model',
+                    targetId: value === 'all' ? 'records-model-all' : value,
+                  });
+                  setModelFilter(value);
+                }}
               />
               <Select<StatusFilter>
                 className="w-36"
@@ -706,7 +788,13 @@ export function RecordsPage() {
                   { value: 'warning', label: '偏慢' },
                   { value: 'error', label: '失败' },
                 ]}
-                onChange={setStatusFilter}
+                onChange={(value) => {
+                  recordFrontendAction('records-status-filter-changed', {
+                    targetType: 'form',
+                    targetId: `records-status-${value}`,
+                  });
+                  setStatusFilter(value);
+                }}
               />
               <Input
                 className="ml-auto w-55"
@@ -715,22 +803,31 @@ export function RecordsPage() {
                 value={query}
                 aria-label="搜索探测记录"
                 placeholder="搜索模型或错误"
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  if (Boolean(query.trim()) !== Boolean(next.trim())) {
+                    recordFrontendAction('records-search-changed', {
+                      targetType: 'form',
+                      targetId: next.trim() ? 'records-search-active' : 'records-search-cleared',
+                    });
+                  }
+                  setQuery(next);
+                }}
               />
             </>
           ) : null}
         </div>
 
         {mode === 'records' ? (
-          <div className="min-h-0 flex-1 overflow-y-auto py-3">
+          <div ref={recordsTableRegionRef} className="min-h-0 flex-1 overflow-hidden py-3">
             <Table<ProbeRecord>
               rowKey="id"
               columns={recordColumns}
               dataSource={filteredRecords}
               size="small"
               tableLayout="fixed"
-              classNames={{ content: 'rp-table-scrollbar' }}
-              scroll={{ x: 1134 }}
+              className="rp-table-scrollbar"
+              scroll={{ x: 1134, y: recordsTableBodyHeight }}
               showSorterTooltip={{ target: 'sorter-icon' }}
               pagination={{
                 defaultPageSize: 10,
@@ -741,6 +838,7 @@ export function RecordsPage() {
                 showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条，共 ${total} 条`,
               }}
               locale={{ emptyText: '没有符合条件的探测记录' }}
+              onChange={() => recordFrontendAction('records-table-changed')}
             />
           </div>
         ) : (
@@ -759,15 +857,15 @@ export function RecordsPage() {
                 <strong>{unavailableCount}</strong> 次未上报
               </span>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto py-3">
+            <div ref={usageTableRegionRef} className="min-h-0 flex-1 overflow-hidden py-3">
               <Table<SiteUsageSummary>
                 rowKey="siteId"
                 columns={usageColumns}
                 dataSource={usageSummary}
                 size="small"
                 tableLayout="fixed"
-                classNames={{ content: 'rp-table-scrollbar' }}
-                scroll={{ x: 1050 }}
+                className="rp-table-scrollbar"
+                scroll={{ x: 1050, y: usageTableBodyHeight }}
                 pagination={false}
                 showSorterTooltip={{ target: 'sorter-icon' }}
                 locale={{ emptyText: '当前周期没有可统计的探测记录' }}
@@ -778,7 +876,16 @@ export function RecordsPage() {
       </main>
 
       {selectedRecord ? (
-        <RecordDetailDrawer record={selectedRecord} onClose={() => setSelectedRecord(null)} />
+        <RecordDetailDrawer
+          record={selectedRecord}
+          onClose={() => {
+            recordFrontendAction('close-probe-record', {
+              targetType: 'probe-record',
+              targetId: selectedRecord.id,
+            });
+            setSelectedRecord(null);
+          }}
+        />
       ) : null}
 
       {clearConfirmOpen ? (
@@ -794,7 +901,13 @@ export function RecordsPage() {
           okButtonProps={{ danger: true }}
           confirmLoading={clearing}
           cancelText="取消"
-          onCancel={() => setClearConfirmOpen(false)}
+          onCancel={() => {
+            recordFrontendAction('modal-cancelled', {
+              targetType: 'form',
+              targetId: 'clear-probe-records',
+            });
+            setClearConfirmOpen(false);
+          }}
           onOk={() => void clearRecords()}
         >
           <p className="m-0 leading-5.5 text-rp-secondary">

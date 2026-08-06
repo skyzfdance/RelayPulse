@@ -1,9 +1,29 @@
-import { ExportOutlined, FolderOpenOutlined } from '@ant-design/icons';
-import { App as AntdApp, Button, Segmented, Select, Switch } from 'antd';
-import { useState } from 'react';
+import {
+  DeleteOutlined,
+  ExportOutlined,
+  FolderOpenOutlined,
+  SaveOutlined,
+} from '@ant-design/icons';
+import {
+  App as AntdApp,
+  Button,
+  InputNumber,
+  Popconfirm,
+  Segmented,
+  Select,
+  Switch,
+  Tooltip,
+} from 'antd';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRelayPulse } from '../../app/relay-pulse-context';
-import { useBackendActionFeedback } from '../../app/use-backend-action-feedback';
+import { recordFrontendAction } from '../../app/frontend-diagnostics';
+import {
+  backendActionErrorDescription,
+  useBackendActionFeedback,
+} from '../../app/use-backend-action-feedback';
+import type { LogStatistics } from '../../data/relay-pulse-data-source';
 import type { GeneralSettings, ThemeMode } from '../../domain/types';
+import { formatBytes } from '../../domain/time';
 import { pageHeaderClass } from '../../styles/tailwind';
 
 function SettingsRow({
@@ -27,12 +47,49 @@ function SettingsRow({
 }
 
 export function GeneralPage() {
-  const { snapshot, updateGeneralSettings, openLogDirectory, exportDiagnostics } = useRelayPulse();
+  const {
+    snapshot,
+    updateGeneralSettings,
+    openLogDirectory,
+    getLogStatistics,
+    setDiagnosticLogLimit,
+    clearDiagnosticLogs,
+    exportDiagnostics,
+  } = useRelayPulse();
   const { message, notification } = AntdApp.useApp();
   const runBackendAction = useBackendActionFeedback();
   const [pendingSetting, setPendingSetting] = useState<keyof GeneralSettings | null>(null);
-  const [pendingDesktopAction, setPendingDesktopAction] = useState<'logs' | 'export' | null>(null);
+  const [pendingDesktopAction, setPendingDesktopAction] = useState<
+    'logs' | 'limit' | 'clear' | 'export' | null
+  >(null);
+  const [logStatistics, setLogStatistics] = useState<LogStatistics | null>(null);
+  const [logStatisticsError, setLogStatisticsError] = useState(false);
+  const [draftLogLimitMegabytes, setDraftLogLimitMegabytes] = useState<number | null>(null);
+  const logLimitDirty = useRef(false);
   const settings = snapshot?.generalSettings;
+
+  const refreshLogStatistics = useCallback(async () => {
+    setLogStatisticsError(false);
+    try {
+      const next = await getLogStatistics();
+      setLogStatistics(next);
+      if (!logLimitDirty.current) {
+        setDraftLogLimitMegabytes(bytesToMegabytes(next.configuredMaxTotalBytes));
+      }
+    } catch {
+      setLogStatisticsError(true);
+    }
+  }, [getLogStatistics]);
+
+  useEffect(() => {
+    const initial = window.setTimeout(() => void refreshLogStatistics(), 0);
+    const interval = window.setInterval(() => void refreshLogStatistics(), 10_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [refreshLogStatistics]);
+
   if (!settings) return null;
 
   async function applySetting<K extends keyof GeneralSettings>(
@@ -41,6 +98,10 @@ export function GeneralPage() {
     label: string,
   ) {
     if (pendingSetting) return;
+    recordFrontendAction('setting-changed', {
+      targetType: 'form',
+      targetId: `setting-${key}`,
+    });
     setPendingSetting(key);
     try {
       const nextSettings = { ...settings, [key]: value } as GeneralSettings;
@@ -72,6 +133,7 @@ export function GeneralPage() {
         errorDescription: '无法调用系统文件管理器，请稍后重试。',
       });
     } finally {
+      await refreshLogStatistics();
       setPendingDesktopAction(null);
     }
   }
@@ -100,9 +162,104 @@ export function GeneralPage() {
         role: 'alert',
       });
     } finally {
+      await refreshLogStatistics();
       setPendingDesktopAction(null);
     }
   }
+
+  async function clearLogs() {
+    if (pendingDesktopAction) return;
+    setPendingDesktopAction('clear');
+    try {
+      const result = await clearDiagnosticLogs();
+      setLogStatistics(result.statistics);
+      message.success({
+        key: 'clear-diagnostic-logs',
+        content: `已清理 ${formatBytes(result.reclaimedBytes)} 日志`,
+        duration: 3,
+      });
+    } catch (error) {
+      notification.error({
+        key: 'clear-diagnostic-logs',
+        title: '日志清理失败',
+        description: backendActionErrorDescription(error, '没有删除日志文件，请稍后重试。'),
+        placement: 'topRight',
+        duration: 6,
+        pauseOnHover: true,
+        showProgress: true,
+        role: 'alert',
+      });
+    } finally {
+      await refreshLogStatistics();
+      setPendingDesktopAction(null);
+    }
+  }
+
+  async function saveLogLimit() {
+    if (
+      pendingDesktopAction ||
+      draftLogLimitMegabytes === null ||
+      !Number.isInteger(draftLogLimitMegabytes) ||
+      draftLogLimitMegabytes < 10 ||
+      draftLogLimitMegabytes > 100
+    ) {
+      return;
+    }
+    recordFrontendAction('setting-changed', {
+      targetType: 'form',
+      targetId: 'setting-diagnostic-log-limit',
+    });
+    setPendingDesktopAction('limit');
+    const result: { statistics?: LogStatistics } = {};
+    try {
+      const succeeded = await runBackendAction(
+        async () => {
+          result.statistics = await setDiagnosticLogLimit(draftLogLimitMegabytes);
+        },
+        {
+          key: 'set-diagnostic-log-limit',
+          presentation: 'message',
+          successTitle: '日志容量上限已保存，重启后生效',
+          successDescription: '新的日志容量上限将在下次启动时生效。',
+          errorTitle: '日志容量上限保存失败',
+          errorDescription: '没有更改日志容量上限，请稍后重试。',
+        },
+      );
+      if (succeeded && result.statistics) {
+        logLimitDirty.current = false;
+        setLogStatistics(result.statistics);
+        setDraftLogLimitMegabytes(bytesToMegabytes(result.statistics.configuredMaxTotalBytes));
+      }
+    } finally {
+      setPendingDesktopAction(null);
+    }
+  }
+
+  const activeLogLimitMegabytes = logStatistics
+    ? bytesToMegabytes(logStatistics.maxTotalBytes)
+    : null;
+  const configuredLogLimitMegabytes = logStatistics
+    ? bytesToMegabytes(logStatistics.configuredMaxTotalBytes)
+    : null;
+  const logLimitRestartRequired =
+    activeLogLimitMegabytes !== null &&
+    configuredLogLimitMegabytes !== null &&
+    activeLogLimitMegabytes !== configuredLogLimitMegabytes;
+  const logLimitInputValid =
+    draftLogLimitMegabytes !== null &&
+    Number.isInteger(draftLogLimitMegabytes) &&
+    draftLogLimitMegabytes >= 10 &&
+    draftLogLimitMegabytes <= 100;
+
+  const logDescription = logStatisticsError
+    ? '当前无法读取日志大小'
+    : logStatistics
+      ? `${logStatistics.fileCount} 个文件 · ${formatBytes(logStatistics.totalBytes)} / ${formatBytes(logStatistics.maxTotalBytes)}`
+      : '正在读取日志大小';
+
+  const logLimitDescription = logLimitRestartRequired
+    ? `当前进程使用 ${activeLogLimitMegabytes} MB，重启后使用 ${configuredLogLimitMegabytes} MB`
+    : '可设置 10–100 MB；保存后在下次启动时生效';
 
   return (
     <>
@@ -197,7 +354,39 @@ export function GeneralPage() {
                 }
               />
             </SettingsRow>
-            <SettingsRow title="诊断日志" description="日志保存在本机，不包含 API Key 明文">
+            <SettingsRow title="日志容量上限" description={logLimitDescription}>
+              <div className="flex items-center gap-2">
+                <InputNumber<number>
+                  className="w-32"
+                  min={10}
+                  max={100}
+                  step={1}
+                  precision={0}
+                  suffix="MB"
+                  value={draftLogLimitMegabytes}
+                  disabled={pendingDesktopAction !== null}
+                  onChange={(value) => {
+                    const nextValue = typeof value === 'number' ? value : null;
+                    setDraftLogLimitMegabytes(nextValue);
+                    logLimitDirty.current = nextValue !== configuredLogLimitMegabytes;
+                  }}
+                />
+                <Tooltip title="保存日志容量上限">
+                  <Button
+                    aria-label="保存日志容量上限"
+                    icon={<SaveOutlined />}
+                    loading={pendingDesktopAction === 'limit'}
+                    disabled={
+                      pendingDesktopAction !== null ||
+                      !logLimitInputValid ||
+                      draftLogLimitMegabytes === configuredLogLimitMegabytes
+                    }
+                    onClick={() => void saveLogLimit()}
+                  />
+                </Tooltip>
+              </div>
+            </SettingsRow>
+            <SettingsRow title="诊断日志" description={logDescription}>
               <div className="flex gap-2">
                 <Button
                   icon={<FolderOpenOutlined />}
@@ -207,19 +396,45 @@ export function GeneralPage() {
                 >
                   打开日志目录
                 </Button>
-                <Button
-                  icon={<ExportOutlined />}
-                  loading={pendingDesktopAction === 'export'}
-                  disabled={pendingDesktopAction !== null && pendingDesktopAction !== 'export'}
-                  onClick={() => void exportPackage()}
+                <Popconfirm
+                  title="清理本地诊断日志？"
+                  description="只会删除日志文件，不会删除探测记录或站点配置。"
+                  okText="清理"
+                  cancelText="取消"
+                  okType="danger"
+                  onConfirm={clearLogs}
+                  disabled={pendingDesktopAction !== null && pendingDesktopAction !== 'clear'}
                 >
-                  导出诊断包
-                </Button>
+                  <Button
+                    danger
+                    aria-label="清理日志"
+                    icon={<DeleteOutlined />}
+                    loading={pendingDesktopAction === 'clear'}
+                    disabled={pendingDesktopAction !== null && pendingDesktopAction !== 'clear'}
+                  />
+                </Popconfirm>
               </div>
+            </SettingsRow>
+            <SettingsRow
+              title="诊断包"
+              description="包含错误链路、失败探测摘要和日志容量信息，不包含请求响应正文"
+            >
+              <Button
+                icon={<ExportOutlined />}
+                loading={pendingDesktopAction === 'export'}
+                disabled={pendingDesktopAction !== null && pendingDesktopAction !== 'export'}
+                onClick={() => void exportPackage()}
+              >
+                导出诊断包
+              </Button>
             </SettingsRow>
           </section>
         </div>
       </div>
     </>
   );
+}
+
+function bytesToMegabytes(bytes: number) {
+  return Math.round(bytes / (1024 * 1024));
 }

@@ -1,6 +1,10 @@
 import { createFixtureSnapshot } from './fixtures';
 import type { RelayPulseDataSource } from './relay-pulse-data-source';
-import type { DiagnosticExportResult } from './relay-pulse-data-source';
+import type {
+  DiagnosticExportResult,
+  LogCleanupResult,
+  LogStatistics,
+} from './relay-pulse-data-source';
 import type {
   AppSnapshot,
   CreateModelInput,
@@ -19,6 +23,12 @@ export type MockScenario = 'default' | 'loading' | 'empty' | 'error' | 'action-e
 
 export class MockRelayPulseDataSource implements RelayPulseDataSource {
   private snapshot = createFixtureSnapshot();
+  private logStatistics: LogStatistics = {
+    totalBytes: 1_835_008,
+    fileCount: 2,
+    maxTotalBytes: 10 * 1024 * 1024,
+    configuredMaxTotalBytes: 10 * 1024 * 1024,
+  };
 
   constructor(
     private readonly scenario: MockScenario = 'default',
@@ -295,6 +305,34 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
 
   async openLogDirectory(): Promise<void> {
     this.assertActionAvailable();
+  }
+
+  async getLogStatistics(): Promise<LogStatistics> {
+    this.assertActionAvailable();
+    return clone(this.logStatistics);
+  }
+
+  async setDiagnosticLogLimit(maxTotalMegabytes: number): Promise<LogStatistics> {
+    this.assertActionAvailable();
+    if (!Number.isInteger(maxTotalMegabytes) || maxTotalMegabytes < 10 || maxTotalMegabytes > 100) {
+      throw new Error('日志容量上限必须是 10 到 100 之间的整数。');
+    }
+    this.logStatistics = {
+      ...this.logStatistics,
+      configuredMaxTotalBytes: maxTotalMegabytes * 1024 * 1024,
+    };
+    return clone(this.logStatistics);
+  }
+
+  async clearDiagnosticLogs(): Promise<LogCleanupResult> {
+    this.assertActionAvailable();
+    const before = this.logStatistics;
+    this.logStatistics = { ...before, totalBytes: 192, fileCount: 1 };
+    return {
+      deletedFiles: before.fileCount,
+      reclaimedBytes: before.totalBytes,
+      statistics: clone(this.logStatistics),
+    };
   }
 
   async exportDiagnostics(): Promise<DiagnosticExportResult> {

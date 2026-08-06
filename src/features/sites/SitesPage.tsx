@@ -10,6 +10,7 @@ import {
   Alert,
   App as AntdApp,
   Button,
+  Drawer,
   Form,
   Input,
   InputNumber,
@@ -25,6 +26,7 @@ import {
   useBackendActionFeedback,
 } from '../../app/use-backend-action-feedback';
 import { navigateToView } from '../../app/view';
+import { recordFrontendAction } from '../../app/frontend-diagnostics';
 import { StatusDot } from '../../components/StatusDot';
 import type {
   RequestHeader,
@@ -216,7 +218,7 @@ function AdvancedFields({
   initialHeaders: RequestHeader[];
   onHeadersChange(headers: RequestHeader[]): void;
 }) {
-  const [headers, setHeaders] = useState<RequestHeader[]>(initialHeaders);
+  const [headers, setHeaders] = useState<RequestHeader[]>(initialHeaders ?? []);
 
   function updateHeaders(next: RequestHeader[]) {
     setHeaders(next);
@@ -370,23 +372,116 @@ function HeaderSync({ headers }: { headers: RequestHeader[] }) {
   return null;
 }
 
+function SiteAdvancedDrawer({ site }: { site: Site }) {
+  const { updateSiteAdvanced } = useRelayPulse();
+  const runBackendAction = useBackendActionFeedback();
+  const [form] = Form.useForm<SiteAdvancedInput>();
+  const [open, setOpen] = useState(true);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const initialValues = useMemo<SiteAdvancedInput>(
+    () => ({
+      modelsEndpoint: site.modelsEndpoint,
+      probeEndpoint: site.probeEndpoint,
+      probeIntervalMinutes: site.probeIntervalMinutes,
+      slowFirstTokenSeconds: site.slowFirstTokenSeconds,
+      slowTotalSeconds: site.slowTotalSeconds,
+      failureThreshold: site.failureThreshold,
+      recoveryThreshold: site.recoveryThreshold,
+      headers: site.headers,
+    }),
+    [site],
+  );
+
+  async function saveAdvancedSettings() {
+    let values: SiteAdvancedInput;
+    try {
+      values = await form.validateFields();
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'errorFields' in error) return;
+      throw error;
+    }
+
+    setSaving(true);
+    try {
+      const saved = await runBackendAction(() => updateSiteAdvanced(site.id, values), {
+        key: `save-site-advanced-${site.id}`,
+        successTitle: '站点高级设置已保存',
+        successDescription: `“${site.name}”的端点、探测频率、状态判定和请求头已更新。`,
+        errorTitle: '站点高级设置保存失败',
+        errorDescription: '更改没有保存，当前编辑内容已保留，请检查后重试。',
+      });
+      if (saved) setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Drawer
+      open={open}
+      size={620}
+      closable={{ placement: 'end', disabled: saving }}
+      title={
+        <div>
+          <strong>站点高级设置</strong>
+          <div className="mt-0.5 text-xs font-normal text-rp-tertiary">{site.name}</div>
+        </div>
+      }
+      getContainer={overlayContainer}
+      rootStyle={{ position: 'absolute' }}
+      mask={{ closable: false }}
+      onClose={() => setOpen(false)}
+      afterOpenChange={(nextOpen) => {
+        if (!nextOpen) navigateToView('sites');
+      }}
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button disabled={saving} onClick={() => setOpen(false)}>
+            取消
+          </Button>
+          <Button
+            type="primary"
+            disabled={!dirty}
+            loading={saving}
+            onClick={() => void saveAdvancedSettings()}
+          >
+            保存更改
+          </Button>
+        </div>
+      }
+    >
+      <Alert
+        className="mb-4 py-1.75!"
+        type="warning"
+        showIcon
+        title="高级设置仅在代理协议或网关字段不兼容时修改；常规 OpenAI 兼容站点保持默认即可。"
+      />
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={initialValues}
+        requiredMark={false}
+        onValuesChange={() => setDirty(true)}
+      >
+        <AdvancedFields
+          initialHeaders={initialValues.headers}
+          onHeadersChange={() => setDirty(true)}
+        />
+      </Form>
+    </Drawer>
+  );
+}
+
 const SiteDetail = forwardRef<
   SiteDetailHandle,
-  { site: Site; advanced: boolean; onDirtyChange(dirty: boolean): void }
->(function SiteDetail({ site, advanced, onDirtyChange }, ref) {
-  const {
-    updateSite,
-    updateSiteAdvanced,
-    setModelEnabled,
-    deleteModel,
-    refreshModels,
-    runSiteProbe,
-    runModelProbe,
-  } = useRelayPulse();
+  { site: Site; onDirtyChange(dirty: boolean): void }
+>(function SiteDetail({ site, onDirtyChange }, ref) {
+  const { updateSite, setModelEnabled, deleteModel, refreshModels, runSiteProbe, runModelProbe } =
+    useRelayPulse();
   const runBackendAction = useBackendActionFeedback();
   const { message, notification } = AntdApp.useApp();
   const [form] = Form.useForm<SiteFormValues>();
-  const [advancedDraftVersion, setAdvancedDraftVersion] = useState(0);
   const [addModelOpen, setAddModelOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -410,13 +505,18 @@ const SiteDetail = forwardRef<
   }`;
 
   function updateDirty(next: boolean) {
+    if (dirty !== next) {
+      recordFrontendAction(next ? 'form-became-dirty' : 'form-reset', {
+        targetType: 'form',
+        targetId: 'site-basic',
+      });
+    }
     setDirty(next);
     onDirtyChange(next);
   }
 
   function discard() {
     form.setFieldsValue(baseline);
-    setAdvancedDraftVersion((current) => current + 1);
     updateDirty(false);
   }
 
@@ -443,31 +543,18 @@ const SiteDetail = forwardRef<
             baseUrl: values.baseUrl,
             credential,
           });
-          if (advanced) {
-            await updateSiteAdvanced(site.id, {
-              modelsEndpoint: values.modelsEndpoint,
-              probeEndpoint: values.probeEndpoint,
-              probeIntervalMinutes: values.probeIntervalMinutes,
-              slowFirstTokenSeconds: values.slowFirstTokenSeconds,
-              slowTotalSeconds: values.slowTotalSeconds,
-              failureThreshold: values.failureThreshold,
-              recoveryThreshold: values.recoveryThreshold,
-              headers: values.headers,
-            });
-          }
         },
         {
           key: `save-site-${site.id}`,
-          successTitle: advanced ? '站点高级设置已保存' : '站点配置已保存',
-          successDescription: advanced
-            ? `“${values.name}”的端点、探测频率、状态判定和请求头已更新。`
-            : `“${values.name}”的基本信息已更新。`,
-          errorTitle: advanced ? '站点高级设置保存失败' : '站点配置保存失败',
+          successTitle: '站点配置已保存',
+          successDescription: `“${values.name}”的基本信息已更新。`,
+          errorTitle: '站点配置保存失败',
           errorDescription: '更改没有保存，当前编辑内容已保留，请检查后重试。',
         },
       );
       if (!saved) return false;
       const nextBaseline = {
+        ...baseline,
         ...values,
         credentialAction: 'keep' as const,
         credentialSecret: '',
@@ -617,24 +704,13 @@ const SiteDetail = forwardRef<
             </Button>
           </div>
 
-          {advanced ? (
-            <Alert
-              className="mb-4 py-1.75!"
-              type="warning"
-              showIcon
-              title="高级设置仅在代理协议或网关字段不兼容时修改；常规 OpenAI 兼容站点保持默认即可。"
-            />
-          ) : null}
-
           <section className={detailSectionClass}>
             <div className={sectionHeaderClass}>
               <div>
                 <h3>基本信息</h3>
                 <p>站点名称、协议和访问凭据</p>
               </div>
-              <Button onClick={() => navigateToView(advanced ? 'sites' : 'site-advanced')}>
-                {advanced ? '收起高级设置' : '高级设置'}
-              </Button>
+              <Button onClick={() => navigateToView('site-advanced')}>高级设置</Button>
             </div>
             <BasicFields
               credential={site.credential}
@@ -644,100 +720,93 @@ const SiteDetail = forwardRef<
             />
           </section>
 
-          {advanced ? (
-            <AdvancedFields
-              key={`${site.id}-${advancedDraftVersion}`}
-              initialHeaders={baseline.headers}
-              onHeadersChange={(headers) => {
-                const values = { ...form.getFieldsValue(true), headers };
-                updateDirty(hasFormChanges(values, baseline));
-              }}
-            />
-          ) : (
-            <>
-              <section className={detailSectionClass}>
-                <div className={sectionHeaderClass}>
-                  <div>
-                    <h3>默认探针策略</h3>
-                    <p>新启用模型默认继承；单个模型可覆盖</p>
-                  </div>
-                  <Button
-                    onClick={() => {
-                      const url = new URL(window.location.href);
-                      url.searchParams.set('scope', 'site-default');
-                      url.searchParams.delete('model');
-                      window.history.replaceState({}, '', url);
-                      navigateToView('model-settings');
-                    }}
-                  >
-                    编辑默认值
-                  </Button>
-                </div>
-                <div className="flex min-h-16.5 items-center gap-3 rounded-md border border-rp-line bg-rp-subtle px-3.5 py-3">
-                  <span className="grid size-8.5 flex-none place-items-center rounded-md bg-rp-active text-rp-primary">
-                    <ApiOutlined />
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5 [&>span]:truncate [&>span]:text-xs [&>span]:text-rp-tertiary">
-                    <strong>{defaultStrategyIsEconomical ? '极省模式' : '自定义策略'}</strong>
-                    <span>{defaultStrategySummary}</span>
-                  </div>
-                  {defaultStrategyIsEconomical ? <Tag color="green">推荐</Tag> : null}
-                </div>
-              </section>
+          <section className={detailSectionClass}>
+            <div className={sectionHeaderClass}>
+              <div>
+                <h3>默认探针策略</h3>
+                <p>新启用模型默认继承；单个模型可覆盖</p>
+              </div>
+              <Button
+                onClick={() => {
+                  const url = new URL(window.location.href);
+                  url.searchParams.set('scope', 'site-default');
+                  url.searchParams.delete('model');
+                  window.history.replaceState({}, '', url);
+                  navigateToView('model-settings');
+                }}
+              >
+                编辑默认值
+              </Button>
+            </div>
+            <div className="flex min-h-16.5 items-center gap-3 rounded-md border border-rp-line bg-rp-subtle px-3.5 py-3">
+              <span className="grid size-8.5 flex-none place-items-center rounded-md bg-rp-active text-rp-primary">
+                <ApiOutlined />
+              </span>
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5 [&>span]:truncate [&>span]:text-xs [&>span]:text-rp-tertiary">
+                <strong>{defaultStrategyIsEconomical ? '极省模式' : '自定义策略'}</strong>
+                <span>{defaultStrategySummary}</span>
+              </div>
+              {defaultStrategyIsEconomical ? <Tag color="green">推荐</Tag> : null}
+            </div>
+          </section>
 
-              <section className={detailSectionClass}>
-                <div className={sectionHeaderClass}>
-                  <div>
-                    <h3>模型探针</h3>
-                    <p>
-                      {site.models.filter((model) => model.enabled).length} / {site.models.length}{' '}
-                      个模型已启用
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      icon={<ExperimentOutlined />}
-                      loading={siteProbeRunning}
-                      disabled={
-                        site.models.every((model) => !model.enabled) ||
-                        syncingModels ||
-                        Boolean(probingModelId)
-                      }
-                      onClick={() => void probeEnabledModels()}
-                    >
-                      探测已启用模型
-                    </Button>
-                    <Button
-                      icon={<SyncOutlined />}
-                      loading={syncingModels}
-                      disabled={siteProbeRunning || Boolean(probingModelId)}
-                      onClick={() => void syncModels()}
-                    >
-                      同步模型
-                    </Button>
-                    <Button
-                      type="primary"
-                      icon={<PlusOutlined />}
-                      disabled={siteProbeRunning || syncingModels || Boolean(probingModelId)}
-                      onClick={() => setAddModelOpen(true)}
-                    >
-                      添加模型
-                    </Button>
-                  </div>
-                </div>
-                <ModelTable
-                  site={site}
-                  loadingModelId={loadingModelId}
-                  deletingModelId={deletingModelId}
-                  probingModelId={probingModelId}
-                  siteProbeRunning={siteProbeRunning}
-                  onEnabledChange={(modelId, enabled) => void changeModelEnabled(modelId, enabled)}
-                  onProbe={probeModel}
-                  onDelete={removeModel}
-                />
-              </section>
-            </>
-          )}
+          <section className={detailSectionClass}>
+            <div className={sectionHeaderClass}>
+              <div>
+                <h3>模型探针</h3>
+                <p>
+                  {site.models.filter((model) => model.enabled).length} / {site.models.length}{' '}
+                  个模型已启用
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  icon={<ExperimentOutlined />}
+                  loading={siteProbeRunning}
+                  disabled={
+                    site.models.every((model) => !model.enabled) ||
+                    syncingModels ||
+                    Boolean(probingModelId)
+                  }
+                  onClick={() => void probeEnabledModels()}
+                >
+                  探测已启用模型
+                </Button>
+                <Button
+                  icon={<SyncOutlined />}
+                  loading={syncingModels}
+                  disabled={siteProbeRunning || Boolean(probingModelId)}
+                  onClick={() => void syncModels()}
+                >
+                  同步模型
+                </Button>
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  disabled={siteProbeRunning || syncingModels || Boolean(probingModelId)}
+                  onClick={() => {
+                    recordFrontendAction('open-add-model', {
+                      targetType: 'site',
+                      targetId: site.id,
+                    });
+                    setAddModelOpen(true);
+                  }}
+                >
+                  添加模型
+                </Button>
+              </div>
+            </div>
+            <ModelTable
+              site={site}
+              loadingModelId={loadingModelId}
+              deletingModelId={deletingModelId}
+              probingModelId={probingModelId}
+              siteProbeRunning={siteProbeRunning}
+              onEnabledChange={(modelId, enabled) => void changeModelEnabled(modelId, enabled)}
+              onProbe={probeModel}
+              onDelete={removeModel}
+            />
+          </section>
         </div>
         {dirty ? (
           <footer className="absolute inset-x-0 bottom-0 z-3 flex min-h-14.5 flex-none items-center justify-end gap-2 border-t border-rp-line bg-rp-surface px-6 py-3 shadow-[0_-4px_12px_rgb(0_0_0/6%)]">
@@ -755,7 +824,17 @@ const SiteDetail = forwardRef<
           </footer>
         ) : null}
       </Form>
-      <AddModelModal open={addModelOpen} site={site} onClose={() => setAddModelOpen(false)} />
+      <AddModelModal
+        open={addModelOpen}
+        site={site}
+        onClose={() => {
+          recordFrontendAction('close-add-model', {
+            targetType: 'site',
+            targetId: site.id,
+          });
+          setAddModelOpen(false);
+        }}
+      />
       {pendingModelRemovals ? (
         <Modal
           open
@@ -883,11 +962,13 @@ export function SitesPage({ view }: { view: ViewName }) {
             key={selectedSite.id}
             ref={detailRef}
             site={selectedSite}
-            advanced={view === 'site-advanced'}
             onDirtyChange={setSiteDirty}
           />
         ) : null}
       </div>
+      {selectedSite && view === 'site-advanced' ? (
+        <SiteAdvancedDrawer key={selectedSite.id} site={selectedSite} />
+      ) : null}
       {pendingSiteId !== null ? (
         <Modal
           open

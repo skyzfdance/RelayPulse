@@ -12,9 +12,10 @@ use tauri_plugin_autostart::MacosLauncher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    diagnostics::install_panic_hook();
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = desktop::show_main_window(app, "sites");
+            let _ = desktop::show_main_window(app);
         }))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -50,10 +51,12 @@ pub fn run() {
                             state.set_continue_in_background(
                                 snapshot.general_settings.continue_in_background,
                             );
-                            let _ = desktop::set_tray_enabled(
-                                &app_handle,
-                                snapshot.general_settings.tray_action == domain::TrayAction::Panel,
-                            );
+                            let tray_enabled =
+                                snapshot.general_settings.tray_action == domain::TrayAction::Panel;
+                            if tray_enabled {
+                                let _ = desktop::prewarm_status_panel(&app_handle, &snapshot);
+                            }
+                            let _ = desktop::set_tray_enabled(&app_handle, tray_enabled);
                             let succeeded = desktop::set_autostart(
                                 &app_handle,
                                 snapshot.general_settings.launch_at_startup,
@@ -92,6 +95,8 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            commands::record_frontend_action,
+            commands::record_frontend_error,
             commands::get_snapshot,
             commands::get_site,
             commands::create_site,
@@ -114,9 +119,30 @@ pub fn run() {
             commands::run_site_probe,
             commands::run_model_probe,
             commands::open_log_directory,
+            commands::get_log_statistics,
+            commands::set_diagnostic_log_limit,
+            commands::clear_diagnostic_logs,
             commands::export_diagnostics,
             commands::open_main_window,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running RelayPulse");
+        .build(tauri::generate_context!())
+        .expect("error while building RelayPulse");
+
+    app.run(|app, event| {
+        if matches!(&event, tauri::RunEvent::Exit) {
+            if let Some(state) = app.try_state::<startup::BackendState>() {
+                if let Some(diagnostics) = state.diagnostics() {
+                    diagnostics.mark_clean_exit();
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = &event {
+            let _ = desktop::show_main_window(app);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app, event);
+    });
 }

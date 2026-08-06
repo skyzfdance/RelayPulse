@@ -8,6 +8,7 @@ import { TauriRelayPulseDataSource } from '../data/tauri-relay-pulse-data-source
 import { isNewerRevision } from '../data/revision';
 import type { AppSnapshot } from '../domain/types';
 import type { ThemeMode } from '../domain/types';
+import { recordFrontendAction } from './frontend-diagnostics';
 import { RelayPulseContext } from './relay-pulse-context';
 import type { RelayPulseContextValue } from './relay-pulse-context';
 
@@ -98,6 +99,7 @@ export function RelayPulseProvider({
       loading,
       error,
       selectSite(id) {
+        recordFrontendAction('select-site', { targetType: 'site', targetId: id });
         setSnapshot((current) => (current ? { ...current, selectedSiteId: id } : current));
       },
       createSite: (input) => run(() => dataSource.createSite(input)),
@@ -140,6 +142,10 @@ export function RelayPulseProvider({
       refreshProbeRecords: () => run(() => dataSource.refreshProbeRecords()),
       clearProbeRecords: () => run(() => dataSource.clearProbeRecords()),
       openLogDirectory: () => dataSource.openLogDirectory(),
+      getLogStatistics: () => dataSource.getLogStatistics(),
+      setDiagnosticLogLimit: (maxTotalMegabytes) =>
+        dataSource.setDiagnosticLogLimit(maxTotalMegabytes),
+      clearDiagnosticLogs: () => dataSource.clearDiagnosticLogs(),
       exportDiagnostics: () => dataSource.exportDiagnostics(),
       openMainWindow: (view) => dataSource.openMainWindow(view),
     }),

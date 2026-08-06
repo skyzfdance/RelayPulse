@@ -134,7 +134,7 @@ export function ModelTable({
       pagination={false}
       size="small"
       tableLayout="fixed"
-      classNames={{ content: 'rp-table-scrollbar' }}
+      className="rp-table-scrollbar"
       scroll={{ x: 900 }}
     />
   );

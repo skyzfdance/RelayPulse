@@ -175,6 +175,41 @@ describe('MockRelayPulseDataSource', () => {
     expect(reset.probeRecords).toHaveLength(14);
   });
 
+  it('reports bounded log storage and returns the post-cleanup size', async () => {
+    await expect(dataSource.getLogStatistics()).resolves.toEqual({
+      totalBytes: 1_835_008,
+      fileCount: 2,
+      maxTotalBytes: 10 * 1024 * 1024,
+      configuredMaxTotalBytes: 10 * 1024 * 1024,
+    });
+
+    await expect(dataSource.setDiagnosticLogLimit(36)).resolves.toMatchObject({
+      maxTotalBytes: 10 * 1024 * 1024,
+      configuredMaxTotalBytes: 36 * 1024 * 1024,
+    });
+
+    await expect(dataSource.clearDiagnosticLogs()).resolves.toEqual({
+      deletedFiles: 2,
+      reclaimedBytes: 1_835_008,
+      statistics: {
+        totalBytes: 192,
+        fileCount: 1,
+        maxTotalBytes: 10 * 1024 * 1024,
+        configuredMaxTotalBytes: 36 * 1024 * 1024,
+      },
+    });
+    await expect(dataSource.getLogStatistics()).resolves.toMatchObject({
+      totalBytes: 192,
+      fileCount: 1,
+    });
+  });
+
+  it('rejects diagnostic log limits outside the supported range', async () => {
+    await expect(dataSource.setDiagnosticLogLimit(9)).rejects.toThrow('10 到 100');
+    await expect(dataSource.setDiagnosticLogLimit(101)).rejects.toThrow('10 到 100');
+    await expect(dataSource.setDiagnosticLogLimit(10.5)).rejects.toThrow('10 到 100');
+  });
+
   it('updates site defaults without changing individual model overrides', async () => {
     const before = await dataSource.getSnapshot();
     const site = before.sites[0];

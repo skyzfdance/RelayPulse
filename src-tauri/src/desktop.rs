@@ -2,7 +2,7 @@ use std::{
     io,
     path::Path,
     process::Command,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -30,6 +30,7 @@ const STATUS_PANEL_CLOSE_DELAY: Duration = Duration::from_millis(110);
 static STATUS_PANEL_MOTION_GENERATION: AtomicU64 = AtomicU64::new(0);
 static STATUS_PANEL_CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
 static STATUS_PANEL_OPEN_PENDING: AtomicBool = AtomicBool::new(false);
+static STATUS_PANEL_ALERT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy)]
 struct StatusPanelAnchor {
@@ -100,7 +101,7 @@ pub fn set_tray_enabled(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
             MAIN_WINDOW_MENU_ID => {
-                let _ = show_main_window(app, "sites");
+                let _ = show_main_window(app);
             }
             QUIT_MENU_ID => app.exit(0),
             _ => {}
@@ -113,11 +114,13 @@ pub fn update_status_projection(
     app: &AppHandle,
     snapshot: &ApplicationSnapshot,
 ) -> tauri::Result<()> {
+    let alert_count = snapshot_alert_count(snapshot);
+    STATUS_PANEL_ALERT_COUNT.store(alert_count, Ordering::Release);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         tray.set_icon(Some(status_icon(tray_icon_state(snapshot))))?;
     }
     if let Some(window) = app.get_webview_window(STATUS_WINDOW_LABEL) {
-        let (view, width, height) = status_panel_layout(snapshot_alert_count(snapshot));
+        let (view, width, height) = status_panel_layout(alert_count);
         window.set_size(LogicalSize::new(width, height))?;
         app.emit_to(
             STATUS_WINDOW_LABEL,
@@ -128,6 +131,12 @@ pub fn update_status_projection(
     Ok(())
 }
 
+pub fn prewarm_status_panel(app: &AppHandle, snapshot: &ApplicationSnapshot) -> tauri::Result<()> {
+    let alert_count = snapshot_alert_count(snapshot);
+    STATUS_PANEL_ALERT_COUNT.store(alert_count, Ordering::Release);
+    status_panel_window(app, alert_count).map(|_| ())
+}
+
 fn show_status_panel(
     app: &AppHandle,
     alert_count: usize,
@@ -135,20 +144,26 @@ fn show_status_panel(
 ) -> tauri::Result<()> {
     let (view, width, height) = status_panel_layout(alert_count);
     let position = status_panel_position(app, anchor, width, height)?;
+    let window = status_panel_window(app, alert_count)?;
+    window.set_size(LogicalSize::new(width, height))?;
+    window.set_position(position)?;
+    app.emit_to(
+        STATUS_WINDOW_LABEL,
+        "relaypulse://navigate",
+        NavigateEvent { view },
+    )?;
+    begin_status_panel_opening(&window)?;
+    window.show()?;
+    window.set_focus()?;
+    Ok(())
+}
+
+fn status_panel_window(app: &AppHandle, alert_count: usize) -> tauri::Result<WebviewWindow> {
     if let Some(window) = app.get_webview_window(STATUS_WINDOW_LABEL) {
-        window.set_size(LogicalSize::new(width, height))?;
-        window.set_position(position)?;
-        app.emit_to(
-            STATUS_WINDOW_LABEL,
-            "relaypulse://navigate",
-            NavigateEvent { view },
-        )?;
-        begin_status_panel_opening(&window)?;
-        window.show()?;
-        window.set_focus()?;
-        return Ok(());
+        return Ok(window);
     }
 
+    let (view, width, height) = status_panel_layout(alert_count);
     let window = WebviewWindowBuilder::new(
         app,
         STATUS_WINDOW_LABEL,
@@ -171,11 +186,7 @@ fn show_status_panel(
     .skip_taskbar(true)
     .visible(false)
     .build()?;
-    window.set_position(position)?;
-    begin_status_panel_opening(&window)?;
-    window.show()?;
-    window.set_focus()?;
-    Ok(())
+    Ok(window)
 }
 
 fn status_panel_layout(alert_count: usize) -> (&'static str, f64, f64) {
@@ -270,13 +281,8 @@ fn status_panel_position(
     Ok(PhysicalPosition::new(x.round() as i32, y.round() as i32))
 }
 
-pub fn show_main_window(app: &AppHandle, view: &str) -> tauri::Result<()> {
+pub fn show_main_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        app.emit_to(
-            MAIN_WINDOW_LABEL,
-            "relaypulse://navigate",
-            NavigateEvent { view },
-        )?;
         window.show()?;
         window.set_focus()?;
     }
@@ -284,6 +290,15 @@ pub fn show_main_window(app: &AppHandle, view: &str) -> tauri::Result<()> {
         schedule_status_panel_hide(&status_panel, true)?;
     }
     Ok(())
+}
+
+pub fn show_main_window_at(app: &AppHandle, view: &str) -> tauri::Result<()> {
+    app.emit_to(
+        MAIN_WINDOW_LABEL,
+        "relaypulse://navigate",
+        NavigateEvent { view },
+    )?;
+    show_main_window(app)
 }
 
 pub fn open_directory(path: &Path) -> io::Result<()> {
@@ -391,29 +406,17 @@ fn open_current_status_panel(app: AppHandle, anchor: StatusPanelAnchor) {
     }
     let generation = STATUS_PANEL_MOTION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
 
-    tauri::async_runtime::spawn(async move {
-        let service = app
-            .try_state::<BackendState>()
-            .and_then(|state| state.application_service().cloned());
-        let alert_count = match service {
-            Some(service) => service
-                .snapshot()
-                .await
-                .map(|snapshot| snapshot_alert_count(&snapshot))
-                .unwrap_or(0),
-            None => 0,
-        };
-        let opened = STATUS_PANEL_MOTION_GENERATION.load(Ordering::Acquire) == generation
-            && show_status_panel(&app, alert_count, anchor).is_ok();
-        STATUS_PANEL_OPEN_PENDING.store(false, Ordering::Release);
-        if opened {
-            if let Some(state) = app.try_state::<BackendState>() {
-                if let Some(diagnostics) = state.diagnostics() {
-                    diagnostics.record_window_opened("status-panel");
-                }
+    let alert_count = STATUS_PANEL_ALERT_COUNT.load(Ordering::Acquire);
+    let opened = STATUS_PANEL_MOTION_GENERATION.load(Ordering::Acquire) == generation
+        && show_status_panel(&app, alert_count, anchor).is_ok();
+    STATUS_PANEL_OPEN_PENDING.store(false, Ordering::Release);
+    if opened {
+        if let Some(state) = app.try_state::<BackendState>() {
+            if let Some(diagnostics) = state.diagnostics() {
+                diagnostics.record_window_opened(None, "status-panel");
             }
         }
-    });
+    }
 }
 
 #[cfg(test)]

@@ -81,8 +81,17 @@ async fn run_scheduler(
                 }
             }
             _ = ticker.tick() => {
-                let Ok(snapshot) = service.schedule_snapshot().await else {
-                    continue;
+                let snapshot = match service.schedule_snapshot().await {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => {
+                        if let Some(diagnostics) = service.diagnostics() {
+                            diagnostics.record_background_error(
+                                "scheduler-snapshot",
+                                "schedule_snapshot_failed",
+                            );
+                        }
+                        continue;
+                    }
                 };
                 let resumed = last_tick.is_some_and(|previous: TimestampMs| {
                     snapshot.now.as_i64().saturating_sub(previous.as_i64()) > RESUME_GAP_MS
@@ -129,8 +138,16 @@ async fn run_scheduler(
                 if let Some((model_id, Ok(Some(snapshot)))) = completed {
                     active.remove(&model_id);
                     on_snapshot(snapshot);
-                } else if let Some((model_id, _)) = completed {
+                } else if let Some((model_id, result)) = completed {
                     active.remove(&model_id);
+                    if result.is_err() {
+                        if let Some(diagnostics) = service.diagnostics() {
+                            diagnostics.record_background_error(
+                                "scheduled-probe",
+                                "scheduled_probe_failed",
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -150,16 +167,17 @@ fn reconcile_plans(
     plans.retain(|model_id, _| configured.contains(model_id));
 
     for model in &snapshot.models {
-        let needs_recompute = resumed
-            || plans
-                .get(&model.model_id)
-                .is_some_and(|plan| plan.interval_minutes != model.interval_minutes);
+        let interval_changed = plans
+            .get(&model.model_id)
+            .is_some_and(|plan| plan.interval_minutes != model.interval_minutes);
+        let needs_recompute = resumed || interval_changed;
         if needs_recompute {
             plans.remove(&model.model_id);
         }
         plans.entry(model.model_id.clone()).or_insert_with(|| {
-            let due_at = model
-                .persisted_next_probe_at
+            let due_at = (!interval_changed)
+                .then_some(model.persisted_next_probe_at)
+                .flatten()
                 .filter(|due_at| *due_at > snapshot.now)
                 .unwrap_or_else(|| {
                     stable_next_probe_at(
@@ -316,6 +334,38 @@ mod tests {
         );
 
         assert!(plans[&id("model-a")].due_at > now);
+    }
+
+    #[test]
+    fn interval_change_discards_the_persisted_schedule() {
+        let now = timestamp(1_700_000_000_000);
+        let model = ScheduledModel {
+            site_id: id("site-a"),
+            model_id: id("model-a"),
+            interval_minutes: 1,
+            persisted_next_probe_at: Some(timestamp(now.as_i64() + 600_000)),
+        };
+        let mut plans = HashMap::from([(
+            model.model_id.clone(),
+            Plan {
+                site_id: model.site_id.clone(),
+                interval_minutes: 10,
+                due_at: timestamp(now.as_i64() + 600_000),
+            },
+        )]);
+
+        reconcile_plans(
+            &mut plans,
+            &ScheduleSnapshot {
+                now,
+                models: vec![model],
+            },
+            false,
+        );
+
+        let due_at = plans[&id("model-a")].due_at;
+        assert!(due_at > now);
+        assert!(due_at.as_i64() - now.as_i64() <= 60_000);
     }
 
     #[test]

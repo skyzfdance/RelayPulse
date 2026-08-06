@@ -7,12 +7,13 @@ use thiserror::Error;
 
 use crate::{
     credentials::CredentialError,
+    diagnostics::Diagnostics,
     domain::{
         AuthPreset, Clock, CredentialIntent, DiscoveryStatus, EntityId, GeneralSettings,
         HttpMethod, IdGenerator, LatestModelStatus, LifecycleState, Model, ModelSource,
         ParameterType, ProbeCapture, ProbeMode, ProbeParameter, ProbePolicy, ProbeResult,
-        ProbeRunKind, ProbeTimingPolicy, RequestHeader, SecretValue, Site, SiteProtocol, ThemeMode,
-        TrayAction,
+        ProbeRunKind, ProbeStatus, ProbeTimingPolicy, RequestHeader, SecretValue, Site,
+        SiteProtocol, ThemeMode, TrayAction,
     },
     persistence::{CleanupResult, DatabaseError, ProbePageRequest, Repository},
 };
@@ -99,6 +100,23 @@ impl From<ModelCatalogError> for ApplicationError {
 }
 
 pub type Result<T> = std::result::Result<T, ApplicationError>;
+
+fn application_error_code(error: &ApplicationError) -> &'static str {
+    match error {
+        ApplicationError::InvalidInput { .. } => "invalid_input",
+        ApplicationError::NotFound { .. } => "not_found",
+        ApplicationError::CredentialUnavailable => "credential_unavailable",
+        ApplicationError::DatabaseUnavailable => "database_unavailable",
+        ApplicationError::Network => "network_error",
+        ApplicationError::Timeout => "timeout",
+        ApplicationError::Authentication => "authentication_failed",
+        ApplicationError::RateLimited => "rate_limited",
+        ApplicationError::Upstream => "upstream_error",
+        ApplicationError::Protocol => "protocol_error",
+        ApplicationError::Conflict => "probe_conflict",
+        ApplicationError::Internal => "internal",
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelAggregate {
@@ -217,6 +235,7 @@ pub struct ApplicationService {
     active_probes: Arc<Mutex<HashSet<EntityId>>>,
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
+    diagnostics: Option<Diagnostics>,
 }
 
 impl ApplicationService {
@@ -234,7 +253,17 @@ impl ApplicationService {
             active_probes: Arc::new(Mutex::new(HashSet::new())),
             ids,
             clock,
+            diagnostics: None,
         }
+    }
+
+    pub fn with_diagnostics(mut self, diagnostics: Option<Diagnostics>) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    pub(crate) fn diagnostics(&self) -> Option<&Diagnostics> {
+        self.diagnostics.as_ref()
     }
 
     pub async fn snapshot(&self) -> Result<ApplicationSnapshot> {
@@ -315,10 +344,17 @@ impl ApplicationService {
     }
 
     pub async fn probe_all_enabled(&self) -> Result<ApplicationSnapshot> {
+        self.probe_all_enabled_with_operation(None).await
+    }
+
+    pub(crate) async fn probe_all_enabled_with_operation(
+        &self,
+        operation_id: Option<&str>,
+    ) -> Result<ApplicationSnapshot> {
         let sites = self.snapshot().await?.sites;
         for site in sites.iter().filter(|site| site.site.enabled) {
             for model in site.models.iter().filter(|model| model.model.enabled) {
-                self.execute_probe(site, model, ProbeRunKind::Manual)
+                self.execute_probe(site, model, ProbeRunKind::Manual, operation_id)
                     .await?;
             }
         }
@@ -326,12 +362,20 @@ impl ApplicationService {
     }
 
     pub async fn probe_site(&self, site_id: EntityId) -> Result<ApplicationSnapshot> {
+        self.probe_site_with_operation(site_id, None).await
+    }
+
+    pub(crate) async fn probe_site_with_operation(
+        &self,
+        site_id: EntityId,
+        operation_id: Option<&str>,
+    ) -> Result<ApplicationSnapshot> {
         let site = self
             .site(site_id)
             .await?
             .ok_or(ApplicationError::NotFound { entity: "site" })?;
         for model in site.models.iter().filter(|model| model.model.enabled) {
-            self.execute_probe(&site, model, ProbeRunKind::Manual)
+            self.execute_probe(&site, model, ProbeRunKind::Manual, operation_id)
                 .await?;
         }
         self.snapshot().await
@@ -342,6 +386,16 @@ impl ApplicationService {
         site_id: EntityId,
         model_id: EntityId,
     ) -> Result<ApplicationSnapshot> {
+        self.probe_model_with_operation(site_id, model_id, None)
+            .await
+    }
+
+    pub(crate) async fn probe_model_with_operation(
+        &self,
+        site_id: EntityId,
+        model_id: EntityId,
+        operation_id: Option<&str>,
+    ) -> Result<ApplicationSnapshot> {
         let site = self
             .site(site_id)
             .await?
@@ -351,7 +405,7 @@ impl ApplicationService {
             .iter()
             .find(|model| model.model.id == model_id)
             .ok_or(ApplicationError::NotFound { entity: "model" })?;
-        self.execute_probe(&site, model, ProbeRunKind::Manual)
+        self.execute_probe(&site, model, ProbeRunKind::Manual, operation_id)
             .await?;
         self.snapshot().await
     }
@@ -374,7 +428,7 @@ impl ApplicationService {
         else {
             return Ok(None);
         };
-        self.execute_probe(&site, model, ProbeRunKind::Scheduled)
+        self.execute_probe(&site, model, ProbeRunKind::Scheduled, None)
             .await?;
         self.snapshot().await.map(Some)
     }
@@ -384,102 +438,158 @@ impl ApplicationService {
         site: &SiteAggregate,
         model: &ModelAggregate,
         run_kind: ProbeRunKind,
+        operation_id: Option<&str>,
     ) -> Result<()> {
-        let _active_probe = self.begin_probe(&model.model.id)?;
-        let secret = match site.site.credential_ref.as_ref() {
-            Some(reference) => Some(self.credentials.read_secret(reference.clone()).await?),
-            None => None,
-        };
-        let effective_policy = effective_probe_policy(&site.default_policy, model.policy.as_ref());
-        let parameters = if model.policy.is_some() {
-            &model.parameters
-        } else {
-            &site.default_parameters
-        };
-        let started_at = self.clock.now();
-        let execution = self
-            .probe_executor
-            .execute(
-                &site.site,
-                &model.model,
-                &effective_policy,
-                parameters,
-                &site.headers,
-                secret.as_ref(),
-            )
-            .await;
-        let finished_at = self.clock.now();
         let result_id = self.ids.next_id();
-        let result = ProbeResult {
-            id: result_id.clone(),
-            site_id: site.site.id.clone(),
-            model_id: model.model.id.clone(),
-            run_kind,
-            request_method: effective_policy
-                .custom_method
-                .unwrap_or(site.site.probe_method),
-            endpoint: execution.endpoint.clone(),
-            probe_mode: effective_policy.mode,
-            started_at,
-            finished_at: Some(finished_at),
-            status: execution.status,
-            response_headers_ms: execution.response_headers_ms,
-            first_token_ms: execution.first_token_ms,
-            total_time_ms: Some(execution.total_time_ms),
-            http_status: execution.http_status,
-            provider_model: execution.provider_model,
-            finish_reason: execution.finish_reason,
-            error_code: execution.error_code,
-            error_message: execution.error_message,
-            token_usage: execution.token_usage,
-            ended_normally: execution.ended_normally,
-            retry_count: 0,
-            request_id: execution.request_id,
-            revision: 0,
-        };
-        let previous = self
-            .repository
-            .list_latest_model_statuses()
-            .await?
-            .into_iter()
-            .find(|status| status.model_id == model.model.id);
-        let next_probe_at = site.site.timing.interval_minutes.map(|interval_minutes| {
-            stable_next_probe_at(
-                finished_at,
-                &site.site.id,
-                &model.model.id,
-                interval_minutes,
-            )
-        });
-        let latest = aggregate_latest_status(
-            previous.as_ref(),
-            execution.status,
-            &site.site.timing,
-            model.model.id.clone(),
-            result_id.clone(),
-            finished_at,
-            next_probe_at,
-        );
-        let general_settings = self.repository.load_general_settings().await?;
-        let mut capture = execution.capture;
-        capture.probe_result_id = result_id;
-        if !general_settings.diagnostic_capture_enabled {
-            capture.request_headers_json = "[]".to_owned();
-            capture.request_body.clear();
-            capture.request_captured_bytes = 0;
-            capture.request_truncated = false;
-            capture.response_headers_json = "[]".to_owned();
-            capture.response_body.clear();
-            capture.response_chunks_json = "[]".to_owned();
-            capture.response_captured_bytes = 0;
-            capture.response_truncated = false;
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.record_probe_started(
+                result_id.as_str(),
+                operation_id,
+                run_kind,
+                site.site.protocol,
+            );
         }
-        self.repository
-            .record_probe(result, capture, latest)
-            .await?;
-        self.clear_expired_probe_records(general_settings.history_retention_days, finished_at)
-            .await?;
-        Ok(())
+        let mut observation = None;
+        let outcome: Result<()> = async {
+            let _active_probe = self.begin_probe(&model.model.id)?;
+            let secret = match site.site.credential_ref.as_ref() {
+                Some(reference) => Some(self.credentials.read_secret(reference.clone()).await?),
+                None => None,
+            };
+            let effective_policy =
+                effective_probe_policy(&site.default_policy, model.policy.as_ref());
+            let parameters = if model.policy.is_some() {
+                &model.parameters
+            } else {
+                &site.default_parameters
+            };
+            let started_at = self.clock.now();
+            let execution = self
+                .probe_executor
+                .execute(
+                    &site.site,
+                    &model.model,
+                    &effective_policy,
+                    parameters,
+                    &site.headers,
+                    secret.as_ref(),
+                )
+                .await;
+            let finished_at = self.clock.now();
+            observation = Some((
+                execution.status,
+                execution.http_status,
+                execution.total_time_ms,
+                execution.error_code.clone(),
+            ));
+            let result = ProbeResult {
+                id: result_id.clone(),
+                site_id: site.site.id.clone(),
+                model_id: model.model.id.clone(),
+                run_kind,
+                request_method: effective_policy
+                    .custom_method
+                    .unwrap_or(site.site.probe_method),
+                endpoint: execution.endpoint.clone(),
+                probe_mode: effective_policy.mode,
+                started_at,
+                finished_at: Some(finished_at),
+                status: execution.status,
+                response_headers_ms: execution.response_headers_ms,
+                first_token_ms: execution.first_token_ms,
+                total_time_ms: Some(execution.total_time_ms),
+                http_status: execution.http_status,
+                provider_model: execution.provider_model,
+                finish_reason: execution.finish_reason,
+                error_code: execution.error_code,
+                error_message: execution.error_message,
+                token_usage: execution.token_usage,
+                ended_normally: execution.ended_normally,
+                retry_count: 0,
+                request_id: execution.request_id,
+                revision: 0,
+            };
+            let previous = self
+                .repository
+                .list_latest_model_statuses()
+                .await?
+                .into_iter()
+                .find(|status| status.model_id == model.model.id);
+            let next_probe_at = site.site.timing.interval_minutes.map(|interval_minutes| {
+                stable_next_probe_at(
+                    finished_at,
+                    &site.site.id,
+                    &model.model.id,
+                    interval_minutes,
+                )
+            });
+            let latest = aggregate_latest_status(
+                previous.as_ref(),
+                execution.status,
+                &site.site.timing,
+                model.model.id.clone(),
+                result_id.clone(),
+                finished_at,
+                next_probe_at,
+            );
+            let general_settings = self.repository.load_general_settings().await?;
+            let mut capture = execution.capture;
+            capture.probe_result_id = result_id.clone();
+            if !general_settings.diagnostic_capture_enabled {
+                capture.request_headers_json = "[]".to_owned();
+                capture.request_body.clear();
+                capture.request_captured_bytes = 0;
+                capture.request_truncated = false;
+                capture.response_headers_json = "[]".to_owned();
+                capture.response_body.clear();
+                capture.response_chunks_json = "[]".to_owned();
+                capture.response_captured_bytes = 0;
+                capture.response_truncated = false;
+            }
+            self.repository
+                .record_probe(result, capture, latest)
+                .await?;
+            self.clear_expired_probe_records(general_settings.history_retention_days, finished_at)
+                .await?;
+            Ok(())
+        }
+        .await;
+
+        match outcome {
+            Ok(()) => {
+                if let (Some(diagnostics), Some((status, http_status, duration_ms, error_code))) =
+                    (&self.diagnostics, observation)
+                {
+                    diagnostics.record_probe_finished(
+                        result_id.as_str(),
+                        operation_id,
+                        status,
+                        http_status,
+                        duration_ms,
+                        error_code.as_deref(),
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    let (status, http_status, duration_ms) = observation
+                        .as_ref()
+                        .map_or((ProbeStatus::Unknown, None, 0), |value| {
+                            (value.0, value.1, value.2)
+                        });
+                    diagnostics.record_probe_finished(
+                        result_id.as_str(),
+                        operation_id,
+                        status,
+                        http_status,
+                        duration_ms,
+                        Some(application_error_code(&error)),
+                    );
+                }
+                Err(error)
+            }
+        }
     }
 
     fn begin_probe(&self, model_id: &EntityId) -> Result<ActiveProbeGuard> {
@@ -1111,6 +1221,7 @@ fn effective_probe_policy(
 mod tests {
     use std::{
         collections::VecDeque,
+        fs,
         io::{Read, Write},
         net::TcpListener,
         sync::Mutex,
@@ -1209,6 +1320,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn single_model_probe_ignores_enabled_state_and_returns_persisted_usage() {
         let (base_url, server) = serve_probe();
+        let diagnostics_directory = tempfile::tempdir().expect("temporary directory created");
+        let diagnostics =
+            Diagnostics::initialize(diagnostics_directory.path()).expect("diagnostics initialized");
         let repository = Repository::new(Database::open_in_memory().expect("database opens"));
         let store = InMemoryCredentialStore::default();
         let ids: Arc<dyn IdGenerator> = Arc::new(SequenceIds::new(&[
@@ -1228,7 +1342,8 @@ mod tests {
             ids.clone(),
             clock.clone(),
         );
-        let service = ApplicationService::new(repository, saga, ids, clock);
+        let service = ApplicationService::new(repository, saga, ids, clock)
+            .with_diagnostics(Some(diagnostics));
 
         service
             .create_site(CreateSite {
@@ -1250,9 +1365,10 @@ mod tests {
             .expect("disabled model is created");
 
         let snapshot = service
-            .probe_model(
+            .probe_model_with_operation(
                 EntityId::parse("site-a").expect("site id is valid"),
                 EntityId::parse("model-a").expect("model id is valid"),
+                Some("op_fixture"),
             )
             .await
             .expect("manual probe succeeds for a disabled model");
@@ -1275,6 +1391,12 @@ mod tests {
         assert!(snapshot.latest_model_statuses[0].next_probe_at.is_some());
         assert_eq!(snapshot.latest_model_results.len(), 1);
         assert!(!snapshot.sites[0].models[0].model.enabled);
+        let log = fs::read_to_string(diagnostics_directory.path().join("logs/relaypulse.log"))
+            .expect("diagnostic log reads");
+        assert!(log.contains(r#""event":"probe-started""#));
+        assert!(log.contains(r#""probeId":"result-a""#));
+        assert!(log.contains(r#""operationId":"op_fixture""#));
+        assert!(log.contains(r#""event":"probe-finished""#));
         server.join().expect("probe server stops");
     }
 

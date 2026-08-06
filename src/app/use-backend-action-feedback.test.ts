@@ -21,4 +21,18 @@ describe('backendActionErrorDescription', () => {
       '请稍后重试。',
     );
   });
+
+  it('includes the searchable operation id when the backend provides one', () => {
+    const error = new RelayPulseBackendError({
+      code: 'network_error',
+      category: 'network',
+      message: 'Network failed.',
+      retryable: true,
+      operationId: 'op_fixture',
+    });
+
+    expect(backendActionErrorDescription(error, '探测失败。')).toBe(
+      '探测失败。 错误代码：network_error。 错误编号：op_fixture。',
+    );
+  });
 });

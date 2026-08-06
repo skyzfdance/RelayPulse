@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatLocalTime, formatLocalTimestamp } from './time';
+import { formatBytes, formatLocalTime, formatLocalTimestamp } from './time';
 
 describe('local time formatting', () => {
   it('converts an ISO timestamp using the operating-system timezone', () => {
@@ -19,5 +19,18 @@ describe('local time formatting', () => {
   it('uses a placeholder for an invalid timestamp', () => {
     expect(formatLocalTime('invalid')).toBe('—');
     expect(formatLocalTimestamp('invalid')).toBe('—');
+  });
+});
+
+describe('byte formatting', () => {
+  it('uses compact binary units for diagnostic storage', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(1536)).toBe('1.50 KB');
+    expect(formatBytes(10 * 1024 * 1024)).toBe('10 MB');
+  });
+
+  it('rejects invalid sizes', () => {
+    expect(formatBytes(-1)).toBe('—');
+    expect(formatBytes(Number.NaN)).toBe('—');
   });
 });

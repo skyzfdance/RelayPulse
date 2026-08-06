@@ -65,5 +65,6 @@ export function useBackendActionFeedback() {
 
 export function backendActionErrorDescription(error: unknown, fallback: string) {
   if (!(error instanceof RelayPulseBackendError)) return fallback;
-  return `${fallback} 错误代码：${error.code}。`;
+  const operation = error.operationId ? ` 错误编号：${error.operationId}。` : '';
+  return `${fallback} 错误代码：${error.code}。${operation}`;
 }

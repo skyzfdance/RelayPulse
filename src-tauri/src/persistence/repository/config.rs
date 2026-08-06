@@ -53,6 +53,14 @@ impl Repository {
         self.database
             .call(move |connection| {
                 let transaction = connection.transaction()?;
+                let previous_interval = transaction
+                    .query_row(
+                        "SELECT probe_interval_minutes FROM sites WHERE id = ?1",
+                        [&site.id],
+                        |row| row.get::<_, Option<u16>>(0),
+                    )
+                    .optional()?
+                    .ok_or(DatabaseError::NotFound { entity: "site" })?;
                 let changed = transaction.execute(
                     "UPDATE sites SET
                        name = ?2, protocol = ?3, base_url = ?4, credential_ref = ?5,
@@ -88,6 +96,14 @@ impl Repository {
                     ],
                 )?;
                 require_changed(changed, "site")?;
+                if previous_interval != site.timing.interval_minutes {
+                    transaction.execute(
+                        "UPDATE latest_model_status
+                         SET next_probe_at_ms = NULL
+                         WHERE model_id IN (SELECT id FROM models WHERE site_id = ?1)",
+                        [&site.id],
+                    )?;
+                }
                 let revision = bump_revision(&transaction)?;
                 transaction.commit()?;
                 Ok(revision)
@@ -833,14 +849,16 @@ fn header_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestHeader> {
 mod tests {
     use crate::{
         domain::{
-            GeneralSettings, HttpMethod, ParameterType, ProbeMode, ProbeParameter, RequestHeader,
-            ThemeMode, TrayAction,
+            GeneralSettings, HttpMethod, ParameterType, ProbeMode, ProbeParameter, ProbeStatus,
+            RequestHeader, ThemeMode, TrayAction,
         },
         persistence::Database,
     };
 
     use super::*;
-    use crate::persistence::repository::test_support::{id, model, site, site_policy, timestamp};
+    use crate::persistence::repository::test_support::{
+        capture, id, latest, model, probe_result, site, site_policy, timestamp,
+    };
 
     #[tokio::test(flavor = "current_thread")]
     async fn configuration_round_trips_after_reopening() {
@@ -974,6 +992,59 @@ mod tests {
                 .expect("settings read"),
             settings
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn changing_probe_interval_clears_persisted_next_probe_times() {
+        let repository = Repository::new(Database::open_in_memory().expect("database opens"));
+        let mut site = site("site-a", 0);
+        let model = model("model-a", &site.id, 0);
+        repository
+            .create_site(site.clone(), site_policy(&site.id))
+            .await
+            .expect("site created");
+        repository
+            .create_model(model.clone())
+            .await
+            .expect("model created");
+
+        let result = probe_result("result-a", &site.id, &model.id, 100, ProbeStatus::Healthy);
+        repository
+            .record_probe(result.clone(), capture(&result.id), latest(&result))
+            .await
+            .expect("probe recorded");
+        assert!(repository
+            .list_latest_model_statuses()
+            .await
+            .expect("statuses read")[0]
+            .next_probe_at
+            .is_some());
+
+        site.name = "Renamed Site".to_owned();
+        site.updated_at = timestamp(10);
+        repository
+            .update_site(site.clone())
+            .await
+            .expect("site updated");
+        assert!(repository
+            .list_latest_model_statuses()
+            .await
+            .expect("statuses read")[0]
+            .next_probe_at
+            .is_some());
+
+        site.timing.interval_minutes = Some(1);
+        site.updated_at = timestamp(11);
+        repository
+            .update_site(site)
+            .await
+            .expect("probe interval updated");
+        assert!(repository
+            .list_latest_model_statuses()
+            .await
+            .expect("statuses read")[0]
+            .next_probe_at
+            .is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]

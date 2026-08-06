@@ -98,6 +98,21 @@ test('general settings apply the selected theme immediately', async ({ page }) =
   await expect(page.getByRole('button', { name: '保存设置' })).toHaveCount(0);
 });
 
+test('general settings report and clear bounded diagnostic logs', async ({ page }) => {
+  await page.goto('/?view=general&theme=light');
+
+  await expect(page.getByText('2 个文件 · 1.75 MB / 10 MB', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '清理日志' }).click();
+  await expect(page.getByText('只会删除日志文件，不会删除探测记录或站点配置。')).toBeVisible();
+  await page
+    .getByRole('tooltip')
+    .getByRole('button', { name: /清\s*理/ })
+    .click();
+
+  await expect(page.getByText('1 个文件 · 192 B / 10 MB', { exact: true })).toBeVisible();
+  await expect(page.getByText('已清理 1.75 MB 日志', { exact: true })).toBeVisible();
+});
+
 test('failed immediate settings restore the previous value', async ({ page }) => {
   await page.goto('/?view=general&theme=light&scenario=action-error');
   await page.getByText('深色', { exact: true }).click();
@@ -282,13 +297,35 @@ test('advanced site settings persist a custom probe frequency', async ({ page })
   await page.setViewportSize({ width: 1504, height: 964 });
   await page.goto('/?view=site-advanced&theme=light');
 
-  const interval = page.getByRole('spinbutton', { name: '探测频率' });
+  const advancedDrawer = page.getByRole('dialog', { name: '站点高级设置' });
+  await expect(advancedDrawer).toBeVisible();
+  await expect(page.getByRole('heading', { name: '站点管理' })).toBeVisible();
+  const interval = advancedDrawer.getByRole('spinbutton', { name: '探测频率' });
   await expect(interval).toHaveValue('10');
   await interval.fill('15');
-  await page.getByRole('button', { name: '保存更改' }).click();
+  await advancedDrawer.getByRole('button', { name: '保存更改' }).click();
   await expect(page.getByText('站点高级设置已保存', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '保存更改' })).toHaveCount(0);
-  await expect(interval).toHaveValue('15');
+  await expect(advancedDrawer).toBeHidden();
+  await expect(page).toHaveURL(/view=sites/);
+});
+
+test('saving basic site fields preserves advanced request headers', async ({ page }) => {
+  await page.setViewportSize({ width: 1504, height: 964 });
+  await page.goto('/?view=sites&theme=light');
+
+  await page.getByRole('textbox', { name: '站点名称' }).fill('OpenAI 已保存线路');
+  await page.getByRole('button', { name: '保存更改' }).click();
+  await expect(page.getByText('站点配置已保存', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: '高级设置' }).click();
+  const advancedDrawer = page.getByRole('dialog', { name: '站点高级设置' });
+  await expect(advancedDrawer).toBeVisible();
+  await expect(advancedDrawer.getByRole('heading', { name: '高级连接' })).toBeVisible();
+  await expect(advancedDrawer.locator('input[value="X-Workspace"]')).toBeVisible();
+  await expect(advancedDrawer.locator('input[value="relaypulse-prod"]')).toBeVisible();
+  await advancedDrawer.getByRole('button', { name: /取\s*消/ }).click();
+  await expect(advancedDrawer).toBeHidden();
+  await expect(page).toHaveURL(/view=sites/);
 });
 
 test('individual models can override the shared probe endpoint', async ({ page }) => {
@@ -405,9 +442,20 @@ test('records keep the table header and pagination fixed while rows scroll', asy
   const tableBody = page.locator('.ant-table-body');
   const tableHeader = page.locator('.ant-table-header');
   const pagination = page.locator('.ant-pagination');
+  const detailHeader = page.getByRole('columnheader', { name: '详情' });
   const headerTop = await tableHeader.evaluate((element) => element.getBoundingClientRect().top);
   const paginationTop = await pagination.evaluate((element) => element.getBoundingClientRect().top);
+  const detailHeaderRight = await detailHeader.evaluate(
+    (element) => element.getBoundingClientRect().right,
+  );
 
+  await expect(tableBody).toHaveCSS('scrollbar-width', 'thin');
+  await expect(
+    tableBody.evaluate((element) => {
+      const scrollbar = window.getComputedStyle(element, '::-webkit-scrollbar');
+      return { height: scrollbar.height, width: scrollbar.width };
+    }),
+  ).resolves.toEqual({ height: '4px', width: '4px' });
   await expect(pagination).toContainText('第 1-10 条，共 11 条');
   await expect(pagination.locator('.ant-pagination-options-size-changer')).toBeVisible();
   await expect(pagination.locator('.ant-pagination-options-quick-jumper')).toBeVisible();
@@ -429,6 +477,15 @@ test('records keep the table header and pagination fixed while rows scroll', asy
   await expect
     .poll(() => pagination.evaluate((element) => element.getBoundingClientRect().top))
     .toBe(paginationTop);
+
+  await expect(detailHeader).toHaveClass(/ant-table-cell-fix-end/);
+  await tableBody.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect.poll(() => tableBody.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+  await expect
+    .poll(() => detailHeader.evaluate((element) => element.getBoundingClientRect().right))
+    .toBe(detailHeaderRight);
 
   const quickJumper = pagination.locator('.ant-pagination-options-quick-jumper input');
   await quickJumper.fill('2');

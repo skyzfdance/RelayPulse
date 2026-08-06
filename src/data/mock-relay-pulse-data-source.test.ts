@@ -111,7 +111,7 @@ describe('MockRelayPulseDataSource', () => {
   it('provides deterministic empty, error and long-text scenarios', async () => {
     expect((await new MockRelayPulseDataSource('empty').getSnapshot()).sites).toHaveLength(0);
     await expect(new MockRelayPulseDataSource('error').getSnapshot()).rejects.toThrow(
-      'Mock 数据加载失败，请重试。',
+      '应用数据加载失败，请重试。',
     );
 
     const longText = await new MockRelayPulseDataSource('long-text').getSnapshot();

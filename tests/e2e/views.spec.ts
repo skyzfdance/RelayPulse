@@ -6,6 +6,7 @@ const mainViews = [
   ['site-advanced', '高级连接'],
   ['model-settings', '模型探针设置'],
   ['general', '通用设置'],
+  ['notifications', '消息通知'],
   ['records', '探测记录'],
   ['delete-confirm', '删除“OpenAI 主线路”？'],
   ['empty', '还没有站点'],
@@ -70,7 +71,7 @@ test('main application leaves the titlebar and window dragging to native Tauri c
 
 test('fixture scenarios expose loading, empty, error and long text', async ({ page }) => {
   await page.goto('/?view=sites&scenario=loading');
-  await expect(page.getByText('正在加载 Mock 数据')).toBeVisible();
+  await expect(page.getByText('正在加载应用数据')).toBeVisible();
 
   await page.goto('/?view=sites&scenario=empty');
   await expect(page.getByRole('heading', { name: '还没有站点' })).toBeVisible();
@@ -120,7 +121,7 @@ test('failed immediate settings restore the previous value', async ({ page }) =>
   await expect(page.getByText('主题更新失败', { exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: '通用设置' })).toBeVisible();
   await expect(page.locator('[data-theme="light"]')).toBeVisible();
-  await expect(page.getByText('Mock 数据加载失败', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('应用数据加载失败', { exact: true })).toHaveCount(0);
 });
 
 test('lightweight backend failures use a message and keep the previous state', async ({ page }) => {

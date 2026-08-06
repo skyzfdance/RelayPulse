@@ -116,6 +116,27 @@
   background: var(--rp-text-tertiary, #595959);
 }
 
+.notification-rule-table .ant-table {
+  background: transparent;
+}
+
+.notification-rule-table .ant-table-thead > tr > th {
+  height: 44px;
+  padding: 8px 12px;
+  color: var(--rp-text-secondary);
+  background: var(--rp-bg-subtle);
+  font-weight: 500;
+}
+
+.notification-rule-table .ant-table-tbody > tr > td {
+  height: 62px;
+  padding: 10px 12px;
+}
+
+.notification-rule-table .ant-table-tbody > tr:last-child > td {
+  border-bottom: 1px solid var(--rp-border);
+}
+
 .rp-tray-panel {
   background: rgb(255 255 255 / 56%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);

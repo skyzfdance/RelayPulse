@@ -59,7 +59,7 @@ export class MockRelayPulseDataSource implements RelayPulseDataSource {
 
   private result(): Promise<AppSnapshot> {
     if (this.scenario === 'loading') return new Promise(() => undefined);
-    if (this.scenario === 'error') return Promise.reject(new Error('Mock 数据加载失败，请重试。'));
+    if (this.scenario === 'error') return Promise.reject(new Error('应用数据加载失败，请重试。'));
     return Promise.resolve(clone(this.snapshot));
   }
 

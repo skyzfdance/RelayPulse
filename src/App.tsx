@@ -18,6 +18,7 @@ import {
 import type { ThemeMode, ViewName } from './domain/types';
 import { GeneralPage } from './features/general/GeneralPage';
 import { ModelSettingsDrawer } from './features/models/ModelSettingsDrawer';
+import { NotificationsPage } from './features/notifications/NotificationsPage';
 import { RecordsPage } from './features/records/RecordsPage';
 import { AddSiteModal } from './features/sites/AddSiteModal';
 import { DeleteSiteModal } from './features/sites/DeleteSiteModal';
@@ -139,15 +140,19 @@ function MainView({ view }: { view: ViewName }) {
       ? 'site-advanced'
       : view === 'general'
         ? 'general'
-        : view === 'records'
-          ? 'records'
-          : view === 'empty' || snapshot?.sites.length === 0
-            ? 'empty'
-            : 'sites';
+        : view === 'notifications'
+          ? 'notifications'
+          : view === 'records'
+            ? 'records'
+            : view === 'empty' || snapshot?.sites.length === 0
+              ? 'empty'
+              : 'sites';
   return (
     <MainShell view={view}>
       {baseView === 'general' ? (
         <GeneralPage />
+      ) : baseView === 'notifications' ? (
+        <NotificationsPage />
       ) : baseView === 'records' ? (
         <RecordsPage />
       ) : baseView === 'empty' ? (
@@ -201,13 +206,13 @@ function RelayPulseApplication() {
       <ThemeSurface dark={isDark} transparent={isTrayView}>
         {loading ? (
           <div className="grid h-full w-full place-items-center bg-rp-canvas">
-            <Spin size="large" description="正在加载 Mock 数据" />
+            <Spin size="large" description="正在加载应用数据" />
           </div>
         ) : error || !snapshot ? (
           <div className="grid h-full w-full place-items-center bg-rp-canvas">
             <Result
               status="warning"
-              title="Mock 数据加载失败"
+              title="应用数据加载失败"
               subTitle={error ?? '没有可用数据'}
               extra={
                 <Button type="primary" onClick={retryMockLoad}>

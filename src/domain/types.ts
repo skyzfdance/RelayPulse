@@ -4,6 +4,7 @@ export const viewNames = [
   'site-advanced',
   'model-settings',
   'general',
+  'notifications',
   'records',
   'delete-confirm',
   'empty',

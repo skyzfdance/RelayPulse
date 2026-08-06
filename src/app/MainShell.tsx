@@ -1,5 +1,6 @@
 import {
   AimOutlined,
+  BellOutlined,
   HistoryOutlined,
   QuestionCircleOutlined,
   SettingOutlined,
@@ -19,7 +20,14 @@ function navItemClasses(selected: boolean) {
 }
 
 export function MainShell({ children, view }: PropsWithChildren<{ view: ViewName }>) {
-  const active = view === 'general' ? 'general' : view === 'records' ? 'records' : 'sites';
+  const active =
+    view === 'general'
+      ? 'general'
+      : view === 'notifications'
+        ? 'notifications'
+        : view === 'records'
+          ? 'records'
+          : 'sites';
   return (
     <div className="h-full w-full min-w-240 overflow-hidden bg-rp-surface">
       <main
@@ -51,6 +59,14 @@ export function MainShell({ children, view }: PropsWithChildren<{ view: ViewName
             >
               <SettingOutlined />
               通用设置
+            </button>
+            <button
+              aria-current={active === 'notifications' ? 'page' : undefined}
+              className={navItemClasses(active === 'notifications')}
+              onClick={() => navigateToView('notifications')}
+            >
+              <BellOutlined />
+              消息通知
             </button>
             <div className="mt-5.5 px-3 pb-2 text-xs text-rp-tertiary">运行</div>
             <button

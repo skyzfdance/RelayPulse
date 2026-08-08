@@ -83,6 +83,18 @@ pub fn run() {
                                     snapshot.general_settings.launch_at_startup,
                                     succeeded,
                                 );
+                                diagnostics.record_startup_completed(
+                                    u64::try_from(snapshot.sites.len()).unwrap_or(u64::MAX),
+                                    u64::try_from(
+                                        snapshot
+                                            .sites
+                                            .iter()
+                                            .map(|site| site.models.len())
+                                            .sum::<usize>(),
+                                    )
+                                    .unwrap_or(u64::MAX),
+                                    true,
+                                );
                             }
                             let _ = desktop::update_status_projection(&app_handle, &snapshot);
                         }
@@ -136,6 +148,8 @@ pub fn run() {
             commands::run_model_probe,
             commands::open_log_directory,
             commands::get_log_statistics,
+            commands::list_operation_records,
+            commands::get_operation_record_details,
             commands::set_diagnostic_log_limit,
             commands::clear_diagnostic_logs,
             commands::export_diagnostics,

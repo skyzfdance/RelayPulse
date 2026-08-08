@@ -11,8 +11,12 @@ use tokio::{
     sync::watch,
     time::{interval, MissedTickBehavior},
 };
+use uuid::Uuid;
 
-use crate::domain::{EntityId, LatestModelStatus, ProbeStatus, ProbeTimingPolicy, TimestampMs};
+use crate::{
+    diagnostics::ProbeBatchSummary,
+    domain::{EntityId, LatestModelStatus, ProbeStatus, ProbeTimingPolicy, TimestampMs},
+};
 
 use super::{ApplicationService, ApplicationSnapshot};
 
@@ -38,6 +42,15 @@ struct Plan {
     site_id: EntityId,
     interval_minutes: u16,
     due_at: TimestampMs,
+}
+
+struct BatchProgress {
+    site_count: usize,
+    model_count: usize,
+    completed_count: usize,
+    failed_count: usize,
+    skipped_count: usize,
+    remaining: usize,
 }
 
 pub struct SchedulerHandle {
@@ -71,6 +84,7 @@ async fn run_scheduler(
     let mut plans = HashMap::<EntityId, Plan>::new();
     let mut active = HashSet::<EntityId>::new();
     let mut probes = FuturesUnordered::new();
+    let mut batches = HashMap::<String, BatchProgress>::new();
     let mut last_tick = None;
 
     loop {
@@ -109,6 +123,26 @@ async fn run_scheduler(
                     })
                     .collect::<Vec<_>>();
 
+                let batch_id = format!("batch_{}", Uuid::new_v4().simple());
+                if !due_models.is_empty() {
+                    let site_count = due_models
+                        .iter()
+                        .map(|(_, site_id, _)| site_id.clone())
+                        .collect::<HashSet<_>>()
+                        .len();
+                    batches.insert(
+                        batch_id.clone(),
+                        BatchProgress {
+                            site_count,
+                            model_count: due_models.len(),
+                            completed_count: 0,
+                            failed_count: 0,
+                            skipped_count: 0,
+                            remaining: due_models.len(),
+                        },
+                    );
+                }
+
                 for (model_id, site_id, interval_minutes) in due_models {
                     if let Some(plan) = plans.get_mut(&model_id) {
                         plan.due_at = stable_next_probe_at(
@@ -120,11 +154,12 @@ async fn run_scheduler(
                     }
                     active.insert(model_id.clone());
                     let probe_service = service.clone();
+                    let probe_batch_id = batch_id.clone();
                     probes.push(async move {
                         let result = probe_service
                             .probe_scheduled_model(site_id, model_id.clone())
                             .await;
-                        (model_id, result)
+                        (model_id, probe_batch_id, result)
                     });
                 }
             }
@@ -135,16 +170,59 @@ async fn run_scheduler(
                     probes.next().await
                 }
             } => {
-                if let Some((model_id, Ok(Some(snapshot)))) = completed {
+                if let Some((model_id, batch_id, result)) = completed {
                     active.remove(&model_id);
-                    on_snapshot(snapshot);
-                } else if let Some((model_id, result)) = completed {
-                    active.remove(&model_id);
-                    if result.is_err() {
+                    let outcome = match result {
+                        Ok(Some((snapshot, ProbeStatus::Healthy | ProbeStatus::Slow))) => {
+                            on_snapshot(snapshot);
+                            "completed"
+                        }
+                        Ok(Some((snapshot, _))) => {
+                            on_snapshot(snapshot);
+                            "failed"
+                        }
+                        Ok(None) => "skipped",
+                        Err(_) => {
+                            if let Some(diagnostics) = service.diagnostics() {
+                                diagnostics.record_background_error(
+                                    "scheduled-probe",
+                                    "scheduled_probe_failed",
+                                );
+                            }
+                            "failed"
+                        }
+                    };
+                    let finished = if let Some(batch) = batches.get_mut(&batch_id) {
+                        match outcome {
+                            "completed" => {
+                                batch.completed_count = batch.completed_count.saturating_add(1)
+                            }
+                            "failed" => batch.failed_count = batch.failed_count.saturating_add(1),
+                            _ => batch.skipped_count = batch.skipped_count.saturating_add(1),
+                        }
+                        batch.remaining = batch.remaining.saturating_sub(1);
+                        batch.remaining == 0
+                    } else {
+                        false
+                    };
+                    if finished {
+                        let batch = batches.remove(&batch_id).expect("finished batch exists");
                         if let Some(diagnostics) = service.diagnostics() {
-                            diagnostics.record_background_error(
-                                "scheduled-probe",
-                                "scheduled_probe_failed",
+                            diagnostics.record_probe_batch_finished(
+                                Some(&batch_id),
+                                "automatic",
+                                ProbeBatchSummary {
+                                    site_count: u64::try_from(batch.site_count)
+                                        .unwrap_or(u64::MAX),
+                                    model_count: u64::try_from(batch.model_count)
+                                        .unwrap_or(u64::MAX),
+                                    completed_count: u64::try_from(batch.completed_count)
+                                        .unwrap_or(u64::MAX),
+                                    failed_count: u64::try_from(batch.failed_count)
+                                        .unwrap_or(u64::MAX),
+                                    skipped_count: u64::try_from(batch.skipped_count)
+                                        .unwrap_or(u64::MAX),
+                                },
                             );
                         }
                     }

@@ -1,3 +1,10 @@
+mod query;
+
+pub use query::{
+    OperationHistoryPageDto, OperationHistoryQueryDto, OperationHistoryQueryError,
+    OperationRecordDetailsDto,
+};
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -45,6 +52,15 @@ pub(crate) struct OperationAudit {
     pub parent_id: Option<String>,
     pub change_kind: &'static str,
     pub field_scope: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProbeBatchSummary {
+    pub site_count: u64,
+    pub model_count: u64,
+    pub completed_count: u64,
+    pub failed_count: u64,
+    pub skipped_count: u64,
 }
 
 pub(crate) struct FrontendErrorRecord<'a> {
@@ -109,6 +125,7 @@ struct DiagnosticsInner {
     max_rotated_log_files: usize,
     configured_max_total_bytes: AtomicU64,
     write_lock: Mutex<()>,
+    query_state: query::QueryState,
 }
 
 pub fn install_panic_hook() {
@@ -162,6 +179,7 @@ impl Diagnostics {
                 max_rotated_log_files: max_rotated_log_files(max_total_bytes),
                 configured_max_total_bytes: AtomicU64::new(max_total_bytes),
                 write_lock: Mutex::new(()),
+                query_state: query::QueryState::new(),
             }),
         };
         diagnostics.remove_excess_rotated_logs()?;
@@ -196,6 +214,22 @@ impl Diagnostics {
             "operatingSystem": std::env::consts::OS,
             "architecture": std::env::consts::ARCH,
             "activeMaxTotalBytes": self.inner.max_total_bytes,
+        }));
+    }
+
+    pub fn record_startup_completed(
+        &self,
+        restored_site_count: u64,
+        restored_model_count: u64,
+        background_tasks_started: bool,
+    ) {
+        self.append(json!({
+            "level": "info",
+            "event": "application-startup-completed",
+            "applicationVersion": env!("CARGO_PKG_VERSION"),
+            "restoredSiteCount": restored_site_count,
+            "restoredModelCount": restored_model_count,
+            "backgroundTasksStarted": background_tasks_started,
         }));
     }
 
@@ -295,10 +329,19 @@ impl Diagnostics {
         }));
     }
 
-    pub fn record_diagnostics_exported(&self, operation_id: Option<&str>) {
+    pub fn record_diagnostics_exported(
+        &self,
+        operation_id: Option<&str>,
+        file_count: u64,
+        bundle_size_bytes: u64,
+    ) {
         self.append(json!({
             "event": "diagnostics-exported",
             "operationId": operation_id,
+            "fileCount": file_count,
+            "bundleSizeBytes": bundle_size_bytes,
+            "locationKind": "user_selected",
+            "requestBodiesExcluded": true,
         }));
     }
 
@@ -391,12 +434,13 @@ impl Diagnostics {
         }));
     }
 
-    pub fn record_operation_finished(
+    pub(crate) fn record_operation_finished(
         &self,
         operation_id: &str,
         operation: &'static str,
         duration_ms: u64,
         error_code: Option<&str>,
+        audit: Option<&OperationAudit>,
     ) {
         let outcome = if error_code.is_some() {
             "failed"
@@ -411,6 +455,28 @@ impl Diagnostics {
             "outcome": outcome,
             "durationMs": duration_ms,
             "errorCode": error_code,
+            "targetType": audit.map(|value| value.target_type),
+            "changeKind": audit.map(|value| value.change_kind),
+            "fieldScope": audit.map(|value| value.field_scope),
+        }));
+    }
+
+    pub(crate) fn record_probe_batch_finished(
+        &self,
+        operation_id: Option<&str>,
+        trigger: &'static str,
+        summary: ProbeBatchSummary,
+    ) {
+        self.append(json!({
+            "level": if summary.failed_count > 0 { "error" } else { "info" },
+            "event": "probe-batch-finished",
+            "operationId": operation_id,
+            "trigger": trigger,
+            "siteCount": summary.site_count,
+            "modelCount": summary.model_count,
+            "completedCount": summary.completed_count,
+            "failedCount": summary.failed_count,
+            "skippedCount": summary.skipped_count,
         }));
     }
 
@@ -507,6 +573,7 @@ impl Diagnostics {
             .write_lock
             .lock()
             .map_err(|_| io::Error::other("diagnostics lock poisoned"))?;
+        self.inner.query_state.invalidate();
         let before = self.statistics_unlocked()?;
         let mut deleted_files = 0u64;
         for path in self.log_paths_oldest_first() {
@@ -687,6 +754,7 @@ impl Diagnostics {
     fn rotate_if_needed(&self, incoming_bytes: u64) -> io::Result<()> {
         if let Ok(metadata) = fs::metadata(&self.inner.log_file) {
             if metadata.len().saturating_add(incoming_bytes) > MAX_LOG_FILE_BYTES {
+                self.inner.query_state.invalidate();
                 let oldest = self.rotated_log_path(self.inner.max_rotated_log_files);
                 remove_if_exists(&oldest)?;
                 for index in (2..=self.inner.max_rotated_log_files).rev() {
@@ -770,6 +838,7 @@ impl Diagnostics {
                 break;
             };
             let bytes = fs::metadata(&path)?.len();
+            self.inner.query_state.invalidate();
             remove_if_exists(&path)?;
             total_bytes = total_bytes.saturating_sub(bytes);
         }
@@ -833,6 +902,15 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "architecture": value.get("architecture")?.as_str()?,
             "activeMaxTotalBytes": value.get("activeMaxTotalBytes").and_then(Value::as_u64),
         })),
+        "application-startup-completed" => Some(json!({
+            "timestamp": timestamp,
+            "sessionId": session_id,
+            "event": event,
+            "applicationVersion": value.get("applicationVersion")?.as_str()?,
+            "restoredSiteCount": value.get("restoredSiteCount")?.as_u64()?,
+            "restoredModelCount": value.get("restoredModelCount")?.as_u64()?,
+            "backgroundTasksStarted": value.get("backgroundTasksStarted")?.as_bool()?,
+        })),
         "application-startup-failed" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
@@ -861,11 +939,21 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "line": value.get("line").and_then(Value::as_u64),
             "column": value.get("column").and_then(Value::as_u64),
         })),
-        "log-directory-opened" | "diagnostics-exported" => Some(json!({
+        "log-directory-opened" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
             "operationId": value.get("operationId").and_then(Value::as_str),
+        })),
+        "diagnostics-exported" => Some(json!({
+            "timestamp": timestamp,
+            "sessionId": session_id,
+            "event": event,
+            "operationId": value.get("operationId").and_then(Value::as_str),
+            "fileCount": value.get("fileCount")?.as_u64()?,
+            "bundleSizeBytes": value.get("bundleSizeBytes")?.as_u64()?,
+            "locationKind": value.get("locationKind")?.as_str().filter(|value| *value == "user_selected")?,
+            "requestBodiesExcluded": value.get("requestBodiesExcluded")?.as_bool()?,
         })),
         "state-changed" => {
             let revision = value.get("revision")?.as_u64()?;
@@ -992,16 +1080,49 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 "fieldScope": field_scope,
             }))
         }
-        "operation-finished" => Some(json!({
-            "timestamp": timestamp,
-            "sessionId": session_id,
-            "event": event,
-            "operationId": value.get("operationId")?.as_str()?,
-            "operation": value.get("operation")?.as_str()?,
-            "outcome": value.get("outcome")?.as_str()?,
-            "durationMs": value.get("durationMs")?.as_u64()?,
-            "errorCode": value.get("errorCode").and_then(Value::as_str),
-        })),
+        "operation-finished" => {
+            let field_scope = value
+                .get("fieldScope")
+                .and_then(Value::as_array)
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|field| is_safe_audit_field(field))
+                        .collect::<Vec<_>>()
+                });
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "operationId": value.get("operationId")?.as_str()?,
+                "operation": value.get("operation")?.as_str()?,
+                "outcome": value.get("outcome")?.as_str()?,
+                "durationMs": value.get("durationMs")?.as_u64()?,
+                "errorCode": value.get("errorCode").and_then(Value::as_str),
+                "targetType": value.get("targetType").and_then(Value::as_str).filter(|value| is_safe_target_type(value)),
+                "changeKind": value.get("changeKind").and_then(Value::as_str).filter(|value| is_safe_change_kind(value)),
+                "fieldScope": field_scope,
+            }))
+        }
+        "probe-batch-finished" => {
+            let trigger = value.get("trigger")?.as_str()?;
+            if !matches!(trigger, "user_action" | "automatic") {
+                return None;
+            }
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "operationId": value.get("operationId").and_then(Value::as_str),
+                "trigger": trigger,
+                "siteCount": value.get("siteCount")?.as_u64()?,
+                "modelCount": value.get("modelCount")?.as_u64()?,
+                "completedCount": value.get("completedCount")?.as_u64()?,
+                "failedCount": value.get("failedCount")?.as_u64()?,
+                "skippedCount": value.get("skippedCount")?.as_u64()?,
+            }))
+        }
         "probe-started" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
@@ -1126,6 +1247,8 @@ fn is_safe_change_kind(value: &str) -> bool {
             | "delete"
             | "reorder"
             | "toggle"
+            | "toggle-on"
+            | "toggle-off"
             | "sync"
             | "clear"
             | "test"
@@ -1137,6 +1260,8 @@ fn is_safe_audit_field(value: &str) -> bool {
     matches!(
         value,
         "name"
+            | "siteConfiguration"
+            | "modelConfiguration"
             | "protocol"
             | "baseUrl"
             | "credential"

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, time::Instant};
+use std::{collections::HashMap, fs, future::Future, time::Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -15,7 +15,8 @@ use crate::{
     desktop,
     diagnostics::{
         Diagnostics, FrontendErrorRecord, LogCleanupResult, LogStatistics, OperationAudit,
-        MAX_LOG_TOTAL_MEGABYTES, MIN_LOG_TOTAL_MEGABYTES,
+        OperationHistoryPageDto, OperationHistoryQueryDto, OperationHistoryQueryError,
+        OperationRecordDetailsDto, MAX_LOG_TOTAL_MEGABYTES, MIN_LOG_TOTAL_MEGABYTES,
     },
     domain::{
         CredentialIntent, EntityId, HttpMethod, ParameterType, ProbeMode, ProbeResult, ProbeStatus,
@@ -284,6 +285,51 @@ impl CommandError {
             field: None,
             retryable: true,
             operation_id: None,
+        }
+    }
+
+    fn operation_history(error: OperationHistoryQueryError) -> Self {
+        match error {
+            OperationHistoryQueryError::InvalidQuery => Self {
+                code: "invalid_query",
+                category: "validation",
+                message: "The operation history query is invalid.",
+                field: None,
+                retryable: false,
+                operation_id: None,
+            },
+            OperationHistoryQueryError::CursorExpired => Self {
+                code: "cursor_expired",
+                category: "conflict",
+                message: "The operation history cursor is no longer valid.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
+            OperationHistoryQueryError::QueryBusy => Self {
+                code: "query_busy",
+                category: "conflict",
+                message: "The operation history query service is busy.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
+            OperationHistoryQueryError::NotFound => Self {
+                code: "not_found",
+                category: "not_found",
+                message: "The requested operation history record was not found.",
+                field: None,
+                retryable: false,
+                operation_id: None,
+            },
+            OperationHistoryQueryError::BackendUnavailable => Self {
+                code: "backend_unavailable",
+                category: "platform",
+                message: "The operation history query service is unavailable.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
         }
     }
 }
@@ -904,7 +950,7 @@ pub async fn delete_site(
         target_id: Some(id.clone()),
         parent_id: None,
         change_kind: "delete",
-        field_scope: &[],
+        field_scope: &["siteConfiguration"],
     };
     observed_user_command(
         diagnostics,
@@ -963,7 +1009,7 @@ pub async fn set_site_enabled(
         target_type: "site",
         target_id: Some(id.clone()),
         parent_id: None,
-        change_kind: "toggle",
+        change_kind: if enabled { "toggle-on" } else { "toggle-off" },
         field_scope: &["enabled"],
     };
     observed_user_command(
@@ -1030,7 +1076,7 @@ pub async fn delete_model(
         target_id: Some(model_id.clone()),
         parent_id: Some(site_id.clone()),
         change_kind: "delete",
-        field_scope: &[],
+        field_scope: &["modelConfiguration"],
     };
     observed_user_command(
         diagnostics,
@@ -1069,7 +1115,7 @@ pub async fn set_model_enabled(
         target_type: "model",
         target_id: Some(model_id.clone()),
         parent_id: Some(site_id.clone()),
-        change_kind: "toggle",
+        change_kind: if enabled { "toggle-on" } else { "toggle-off" },
         field_scope: &["enabled"],
     };
     observed_user_command(
@@ -1401,6 +1447,38 @@ pub fn get_log_statistics(state: State<'_, BackendState>) -> CommandResult<LogSt
 }
 
 #[tauri::command]
+pub async fn list_operation_records(
+    state: State<'_, BackendState>,
+    query: OperationHistoryQueryDto,
+) -> CommandResult<OperationHistoryPageDto> {
+    let diagnostics = state.diagnostics().cloned().ok_or_else(|| {
+        CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
+    })?;
+    tokio::task::spawn_blocking(move || diagnostics.list_operation_records(query))
+        .await
+        .map_err(|_| {
+            CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
+        })?
+        .map_err(CommandError::operation_history)
+}
+
+#[tauri::command]
+pub async fn get_operation_record_details(
+    state: State<'_, BackendState>,
+    record_ref: String,
+) -> CommandResult<OperationRecordDetailsDto> {
+    let diagnostics = state.diagnostics().cloned().ok_or_else(|| {
+        CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
+    })?;
+    tokio::task::spawn_blocking(move || diagnostics.get_operation_record_details(&record_ref))
+        .await
+        .map_err(|_| {
+            CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
+        })?
+        .map_err(CommandError::operation_history)
+}
+
+#[tauri::command]
 pub async fn set_diagnostic_log_limit(
     state: State<'_, BackendState>,
     max_total_megabytes: u16,
@@ -1529,7 +1607,18 @@ pub async fn export_diagnostics(
             action_diagnostics
                 .export(&path, value.as_ref(), state.startup_failure())
                 .map_err(|_| CommandError::desktop_operation_failed())?;
-            action_diagnostics.record_diagnostics_exported(Some(&event_operation_id));
+            let file_count = action_diagnostics
+                .statistics()
+                .map_err(|_| CommandError::diagnostics_io_failed())?
+                .file_count;
+            let bundle_size_bytes = fs::metadata(&path)
+                .map_err(|_| CommandError::desktop_operation_failed())?
+                .len();
+            action_diagnostics.record_diagnostics_exported(
+                Some(&event_operation_id),
+                file_count,
+                bundle_size_bytes,
+            );
             Ok(DiagnosticExportDto {
                 status: "exported",
                 path: Some(path.to_string_lossy().into_owned()),
@@ -1896,6 +1985,7 @@ where
                     operation,
                     elapsed_millis(started),
                     None,
+                    audit.as_ref(),
                 );
             }
             Ok(value)
@@ -1908,6 +1998,7 @@ where
                     operation,
                     elapsed_millis(started),
                     Some(error.code),
+                    audit.as_ref(),
                 );
             }
             Err(error)
@@ -1973,6 +2064,7 @@ fn validate_view(value: &str, field: &'static str) -> CommandResult<()> {
             | "model-settings"
             | "general"
             | "notifications"
+            | "operation-history"
             | "records"
             | "delete-confirm"
             | "empty"
@@ -2002,6 +2094,12 @@ fn validate_frontend_action(value: &str) -> CommandResult<()> {
             | "records-table-changed"
             | "refresh-probe-records"
             | "open-clear-probe-records"
+            | "refresh-operation-records"
+            | "load-more-operation-records"
+            | "operation-history-filter-changed"
+            | "operation-history-search-changed"
+            | "open-operation-record"
+            | "close-operation-record"
             | "control-activated"
             | "field-focused"
             | "form-submitted"
@@ -2579,6 +2677,32 @@ mod tests {
         assert_eq!(error.code, "rate_limited");
         assert_eq!(error.category, "upstream");
         assert!(error.retryable);
+
+        let operation_history_errors = [
+            (
+                OperationHistoryQueryError::CursorExpired,
+                "cursor_expired",
+                true,
+            ),
+            (OperationHistoryQueryError::QueryBusy, "query_busy", true),
+            (
+                OperationHistoryQueryError::InvalidQuery,
+                "invalid_query",
+                false,
+            ),
+            (OperationHistoryQueryError::NotFound, "not_found", false),
+            (
+                OperationHistoryQueryError::BackendUnavailable,
+                "backend_unavailable",
+                true,
+            ),
+        ];
+        for (source, code, retryable) in operation_history_errors {
+            let error = CommandError::operation_history(source);
+            assert_eq!(error.code, code);
+            assert_eq!(error.retryable, retryable);
+            assert_eq!(error.operation_id, None);
+        }
     }
 
     #[test]
@@ -2605,7 +2729,9 @@ mod tests {
         assert!(resolve_operation_id(Some("op_fixture-123".to_owned())).is_ok());
         assert!(resolve_operation_id(Some("wrong_fixture".to_owned())).is_err());
         assert!(validate_view("notifications", "view").is_ok());
+        assert!(validate_view("operation-history", "view").is_ok());
         assert!(validate_frontend_action("open-probe-record").is_ok());
+        assert!(validate_frontend_action("open-operation-record").is_ok());
         assert!(validate_frontend_action("clicked secret button").is_err());
         assert!(validate_stack_frame("render@src/App.tsx:42:7").is_ok());
         assert!(validate_stack_frame("https://example.test/App.tsx?token=secret:42:7").is_err());

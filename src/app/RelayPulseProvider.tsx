@@ -18,9 +18,9 @@ import { TauriNotificationDataSource } from '../features/notifications/tauri-not
 import {
   MockOperationHistoryDataSource,
   operationHistoryScenarioFromSearch,
-  PendingOperationHistoryDataSource,
 } from '../features/operation-history/mock-operation-history-data-source';
 import type { OperationHistoryDataSource } from '../features/operation-history/operation-history-types';
+import { TauriOperationHistoryDataSource } from '../features/operation-history/tauri-operation-history-data-source';
 import { RelayPulseContext } from './relay-pulse-context';
 import type { RelayPulseContextValue } from './relay-pulse-context';
 
@@ -51,7 +51,7 @@ function createDefaultNotificationDataSource(): NotificationDataSource {
 const defaultNotificationDataSource = createDefaultNotificationDataSource();
 
 function createDefaultOperationHistoryDataSource(): OperationHistoryDataSource {
-  if (isTauri()) return new PendingOperationHistoryDataSource();
+  if (isTauri()) return new TauriOperationHistoryDataSource();
   return new MockOperationHistoryDataSource(
     operationHistoryScenarioFromSearch(window.location.search),
   );

@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::{
     credentials::CredentialError,
-    diagnostics::Diagnostics,
+    diagnostics::{Diagnostics, ProbeBatchSummary},
     domain::{
         AuthPreset, Clock, CredentialIntent, DiscoveryStatus, EntityId, GeneralSettings,
         HttpMethod, IdGenerator, LatestModelStatus, LifecycleState, Model, ModelSource,
@@ -352,13 +352,83 @@ impl ApplicationService {
         operation_id: Option<&str>,
     ) -> Result<ApplicationSnapshot> {
         let sites = self.snapshot().await?.sites;
+        let site_count = sites
+            .iter()
+            .filter(|site| site.site.enabled && site.models.iter().any(|model| model.model.enabled))
+            .count();
+        let model_count = sites
+            .iter()
+            .filter(|site| site.site.enabled)
+            .map(|site| {
+                site.models
+                    .iter()
+                    .filter(|model| model.model.enabled)
+                    .count()
+            })
+            .sum::<usize>();
+        let mut completed_count = 0usize;
+        let mut failed_count = 0usize;
+
         for site in sites.iter().filter(|site| site.site.enabled) {
             for model in site.models.iter().filter(|model| model.model.enabled) {
-                self.execute_probe(site, model, ProbeRunKind::Manual, operation_id)
-                    .await?;
+                match self
+                    .execute_probe(site, model, ProbeRunKind::Manual, operation_id)
+                    .await
+                {
+                    Ok(ProbeStatus::Healthy | ProbeStatus::Slow) => {
+                        completed_count = completed_count.saturating_add(1);
+                    }
+                    Ok(_) => failed_count = failed_count.saturating_add(1),
+                    Err(error) => {
+                        failed_count = failed_count.saturating_add(1);
+                        self.record_manual_probe_batch(
+                            operation_id,
+                            site_count,
+                            model_count,
+                            completed_count,
+                            failed_count,
+                        );
+                        return Err(error);
+                    }
+                }
             }
         }
+        self.record_manual_probe_batch(
+            operation_id,
+            site_count,
+            model_count,
+            completed_count,
+            failed_count,
+        );
         self.snapshot().await
+    }
+
+    fn record_manual_probe_batch(
+        &self,
+        operation_id: Option<&str>,
+        site_count: usize,
+        model_count: usize,
+        completed_count: usize,
+        failed_count: usize,
+    ) {
+        let Some(operation_id) = operation_id else {
+            return;
+        };
+        let skipped_count =
+            model_count.saturating_sub(completed_count.saturating_add(failed_count));
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.record_probe_batch_finished(
+                Some(operation_id),
+                "user_action",
+                ProbeBatchSummary {
+                    site_count: u64::try_from(site_count).unwrap_or(u64::MAX),
+                    model_count: u64::try_from(model_count).unwrap_or(u64::MAX),
+                    completed_count: u64::try_from(completed_count).unwrap_or(u64::MAX),
+                    failed_count: u64::try_from(failed_count).unwrap_or(u64::MAX),
+                    skipped_count: u64::try_from(skipped_count).unwrap_or(u64::MAX),
+                },
+            );
+        }
     }
 
     pub async fn probe_site(&self, site_id: EntityId) -> Result<ApplicationSnapshot> {
@@ -414,7 +484,7 @@ impl ApplicationService {
         &self,
         site_id: EntityId,
         model_id: EntityId,
-    ) -> Result<Option<ApplicationSnapshot>> {
+    ) -> Result<Option<(ApplicationSnapshot, ProbeStatus)>> {
         let Some(site) = self.site(site_id).await? else {
             return Ok(None);
         };
@@ -428,9 +498,12 @@ impl ApplicationService {
         else {
             return Ok(None);
         };
-        self.execute_probe(&site, model, ProbeRunKind::Scheduled, None)
+        let status = self
+            .execute_probe(&site, model, ProbeRunKind::Scheduled, None)
             .await?;
-        self.snapshot().await.map(Some)
+        self.snapshot()
+            .await
+            .map(|snapshot| Some((snapshot, status)))
     }
 
     async fn execute_probe(
@@ -439,7 +512,7 @@ impl ApplicationService {
         model: &ModelAggregate,
         run_kind: ProbeRunKind,
         operation_id: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<ProbeStatus> {
         let result_id = self.ids.next_id();
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.record_probe_started(
@@ -558,18 +631,21 @@ impl ApplicationService {
         match outcome {
             Ok(()) => {
                 if let (Some(diagnostics), Some((status, http_status, duration_ms, error_code))) =
-                    (&self.diagnostics, observation)
+                    (&self.diagnostics, observation.as_ref())
                 {
                     diagnostics.record_probe_finished(
                         result_id.as_str(),
                         operation_id,
-                        status,
-                        http_status,
-                        duration_ms,
+                        *status,
+                        *http_status,
+                        *duration_ms,
                         error_code.as_deref(),
                     );
                 }
-                Ok(())
+                Ok(observation
+                    .as_ref()
+                    .map(|value| value.0)
+                    .unwrap_or(ProbeStatus::Unknown))
             }
             Err(error) => {
                 if let Some(diagnostics) = &self.diagnostics {

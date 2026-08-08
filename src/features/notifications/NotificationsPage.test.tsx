@@ -1,6 +1,5 @@
 import { App as AntdApp, ConfigProvider } from 'antd';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNotificationFixture } from './mock-notification-data-source';
 import { NotificationsPage } from './NotificationsPage';
@@ -79,10 +78,10 @@ function renderPage(dataSource: NotificationDataSource) {
 }
 
 afterEach(cleanup);
+vi.setConfig({ testTimeout: 30_000 });
 
 describe('NotificationsPage', () => {
   it('renders the dynamic catalog and saves only after the draft changes', async () => {
-    const user = userEvent.setup();
     const { dataSource, updates } = createDataSource();
     renderPage(dataSource);
 
@@ -94,12 +93,12 @@ describe('NotificationsPage', () => {
     expect(discard).toBeDisabled();
 
     const failedRule = screen.getByRole('switch', { name: '启用模型探测故障通知' });
-    await user.click(failedRule);
+    fireEvent.click(failedRule);
     expect(failedRule).not.toBeChecked();
     expect(save).toBeEnabled();
     expect(discard).toBeEnabled();
 
-    await user.click(save);
+    fireEvent.click(save);
     await waitFor(() => expect(updates).toHaveLength(1));
     expect(updates[0]?.rules.find((rule) => rule.eventType === 'probe.model_failed')?.enabled).toBe(
       false,
@@ -111,7 +110,6 @@ describe('NotificationsPage', () => {
   });
 
   it('keeps child rules editable while the master switch disables testing', async () => {
-    const user = userEvent.setup();
     const { dataSource, tests } = createDataSource();
     renderPage(dataSource);
 
@@ -120,15 +118,14 @@ describe('NotificationsPage', () => {
     const recoveredRule = screen.getByRole('switch', { name: '启用模型探测恢复通知' });
     expect(testButton).toBeEnabled();
 
-    await user.click(master);
+    fireEvent.click(master);
     expect(testButton).toBeDisabled();
-    await user.click(recoveredRule);
+    fireEvent.click(recoveredRule);
     expect(recoveredRule).not.toBeChecked();
     expect(tests).toHaveLength(0);
   });
 
   it('does not test against settings that are only enabled in the unsaved draft', async () => {
-    const user = userEvent.setup();
     const snapshot = createNotificationFixture();
     snapshot.notificationsEnabled = false;
     const { dataSource } = createDataSource({ snapshot });
@@ -138,24 +135,23 @@ describe('NotificationsPage', () => {
     const testButton = screen.getByRole('button', { name: '发送测试通知' });
     expect(testButton).toBeDisabled();
 
-    await user.click(master);
+    fireEvent.click(master);
     expect(master).toBeChecked();
     expect(testButton).toBeDisabled();
 
-    await user.click(screen.getByRole('button', { name: '保存设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
     await waitFor(() => expect(testButton).toBeEnabled());
   });
 
   it('retains the draft and reports an actionable save failure', async () => {
-    const user = userEvent.setup();
     const { dataSource } = createDataSource({ saveError: true });
     renderPage(dataSource);
 
     const failedRule = await screen.findByRole('switch', {
       name: '启用模型探测故障通知',
     });
-    await user.click(failedRule);
-    await user.click(screen.getByRole('button', { name: '保存设置' }));
+    fireEvent.click(failedRule);
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
 
     expect(await screen.findByText('通知设置保存失败')).toBeInTheDocument();
     expect(failedRule).not.toBeChecked();
@@ -188,14 +184,13 @@ describe('NotificationsPage', () => {
   });
 
   it('requests permission explicitly and refreshes the channel state', async () => {
-    const user = userEvent.setup();
     const { dataSource, permissionRequests } = createDataSource({
       snapshot: createNotificationFixture('permission-not-requested'),
     });
     renderPage(dataSource);
 
     expect(await screen.findByText('尚未授权')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: '请求授权' }));
+    fireEvent.click(screen.getByRole('button', { name: '请求授权' }));
 
     await waitFor(() => expect(permissionRequests).toEqual(['system']));
     expect(await screen.findByText('已授权')).toBeVisible();

@@ -2,6 +2,7 @@ import { viewNames, type ViewName } from '../domain/types';
 import { recordFrontendAction } from './frontend-diagnostics';
 
 const trayViews = new Set<ViewName>(['tray-healthy', 'tray-alerts']);
+export const BEFORE_VIEW_CHANGE_EVENT = 'relaypulse:before-view-change';
 
 export function parseView(search: string): ViewName {
   const value = new URLSearchParams(search).get('view');
@@ -10,6 +11,17 @@ export function parseView(search: string): ViewName {
 
 export function navigateToView(view: ViewName) {
   const currentView = parseView(window.location.search);
+  if (
+    currentView !== view &&
+    !window.dispatchEvent(
+      new CustomEvent(BEFORE_VIEW_CHANGE_EVENT, {
+        cancelable: true,
+        detail: { currentView, nextView: view },
+      }),
+    )
+  ) {
+    return;
+  }
   if (currentView !== view) {
     recordFrontendAction('navigate', {
       destinationView: view,

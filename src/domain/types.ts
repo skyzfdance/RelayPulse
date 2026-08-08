@@ -6,6 +6,7 @@ export const viewNames = [
   'general',
   'notifications',
   'records',
+  'operation-history',
   'delete-confirm',
   'empty',
   'tray-healthy',

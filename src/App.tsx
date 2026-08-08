@@ -20,6 +20,7 @@ import type { ThemeMode, ViewName } from './domain/types';
 import { GeneralPage } from './features/general/GeneralPage';
 import { ModelSettingsDrawer } from './features/models/ModelSettingsDrawer';
 import { NotificationsPage } from './features/notifications/NotificationsPage';
+import { OperationHistoryPage } from './features/operation-history/OperationHistoryPage';
 import { RecordsPage } from './features/records/RecordsPage';
 import { AddSiteModal } from './features/sites/AddSiteModal';
 import { DeleteSiteModal } from './features/sites/DeleteSiteModal';
@@ -145,7 +146,7 @@ function ThemeSurface({
 }
 
 function MainView({ view }: { view: ViewName }) {
-  const { notificationDataSource, snapshot } = useRelayPulse();
+  const { notificationDataSource, operationHistoryDataSource, snapshot } = useRelayPulse();
   const baseView =
     view === 'site-advanced'
       ? 'site-advanced'
@@ -153,17 +154,21 @@ function MainView({ view }: { view: ViewName }) {
         ? 'general'
         : view === 'notifications'
           ? 'notifications'
-          : view === 'records'
-            ? 'records'
-            : view === 'empty' || snapshot?.sites.length === 0
-              ? 'empty'
-              : 'sites';
+          : view === 'operation-history'
+            ? 'operation-history'
+            : view === 'records'
+              ? 'records'
+              : view === 'empty' || snapshot?.sites.length === 0
+                ? 'empty'
+                : 'sites';
   return (
     <MainShell view={view}>
       {baseView === 'general' ? (
         <GeneralPage />
       ) : baseView === 'notifications' ? (
         <NotificationsPage dataSource={notificationDataSource} />
+      ) : baseView === 'operation-history' ? (
+        <OperationHistoryPage dataSource={operationHistoryDataSource} />
       ) : baseView === 'records' ? (
         <RecordsPage />
       ) : baseView === 'empty' ? (

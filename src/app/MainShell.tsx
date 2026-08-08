@@ -2,6 +2,7 @@ import {
   AimOutlined,
   BellOutlined,
   HistoryOutlined,
+  ProfileOutlined,
   QuestionCircleOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
@@ -28,7 +29,9 @@ export function MainShell({ children, view }: PropsWithChildren<{ view: ViewName
         ? 'notifications'
         : view === 'records'
           ? 'records'
-          : 'sites';
+          : view === 'operation-history'
+            ? 'operation-history'
+            : 'sites';
   return (
     <div className="h-full w-full min-w-240 overflow-hidden bg-rp-surface">
       <main
@@ -77,6 +80,14 @@ export function MainShell({ children, view }: PropsWithChildren<{ view: ViewName
             >
               <HistoryOutlined />
               探测记录
+            </button>
+            <button
+              aria-current={active === 'operation-history' ? 'page' : undefined}
+              className={navItemClasses(active === 'operation-history')}
+              onClick={() => navigateToView('operation-history')}
+            >
+              <ProfileOutlined />
+              操作记录
             </button>
             <div className="flex-1" />
             <button

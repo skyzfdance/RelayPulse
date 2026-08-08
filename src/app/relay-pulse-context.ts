@@ -16,9 +16,11 @@ import type {
   LogStatistics,
 } from '../data/relay-pulse-data-source';
 import type { NotificationDataSource } from '../features/notifications/notification-types';
+import type { OperationHistoryDataSource } from '../features/operation-history/operation-history-types';
 
 export interface RelayPulseContextValue {
   notificationDataSource: NotificationDataSource;
+  operationHistoryDataSource: OperationHistoryDataSource;
   snapshot: AppSnapshot | null;
   loading: boolean;
   error: string | null;

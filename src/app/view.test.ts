@@ -10,6 +10,7 @@ describe('parseView', () => {
     'general',
     'notifications',
     'records',
+    'operation-history',
     'delete-confirm',
     'empty',
     'tray-healthy',

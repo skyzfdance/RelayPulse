@@ -15,6 +15,12 @@ import {
 } from '../features/notifications/mock-notification-data-source';
 import type { NotificationDataSource } from '../features/notifications/notification-types';
 import { TauriNotificationDataSource } from '../features/notifications/tauri-notification-data-source';
+import {
+  MockOperationHistoryDataSource,
+  operationHistoryScenarioFromSearch,
+  PendingOperationHistoryDataSource,
+} from '../features/operation-history/mock-operation-history-data-source';
+import type { OperationHistoryDataSource } from '../features/operation-history/operation-history-types';
 import { RelayPulseContext } from './relay-pulse-context';
 import type { RelayPulseContextValue } from './relay-pulse-context';
 
@@ -44,6 +50,15 @@ function createDefaultNotificationDataSource(): NotificationDataSource {
 
 const defaultNotificationDataSource = createDefaultNotificationDataSource();
 
+function createDefaultOperationHistoryDataSource(): OperationHistoryDataSource {
+  if (isTauri()) return new PendingOperationHistoryDataSource();
+  return new MockOperationHistoryDataSource(
+    operationHistoryScenarioFromSearch(window.location.search),
+  );
+}
+
+const defaultOperationHistoryDataSource = createDefaultOperationHistoryDataSource();
+
 function preserveSelection(current: AppSnapshot | null, next: AppSnapshot): AppSnapshot {
   const selectedSiteId = current?.selectedSiteId;
   return {
@@ -58,9 +73,11 @@ export function RelayPulseProvider({
   children,
   dataSource = defaultDataSource,
   notificationDataSource = defaultNotificationDataSource,
+  operationHistoryDataSource = defaultOperationHistoryDataSource,
 }: PropsWithChildren<{
   dataSource?: RelayPulseDataSource;
   notificationDataSource?: NotificationDataSource;
+  operationHistoryDataSource?: OperationHistoryDataSource;
 }>) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -113,6 +130,7 @@ export function RelayPulseProvider({
   const value = useMemo<RelayPulseContextValue>(
     () => ({
       notificationDataSource,
+      operationHistoryDataSource,
       snapshot,
       loading,
       error,
@@ -167,7 +185,7 @@ export function RelayPulseProvider({
       exportDiagnostics: () => dataSource.exportDiagnostics(),
       openMainWindow: (view) => dataSource.openMainWindow(view),
     }),
-    [dataSource, error, loading, notificationDataSource, run, snapshot],
+    [dataSource, error, loading, notificationDataSource, operationHistoryDataSource, run, snapshot],
   );
 
   return <RelayPulseContext.Provider value={value}>{children}</RelayPulseContext.Provider>;

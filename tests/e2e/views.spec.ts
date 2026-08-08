@@ -8,6 +8,7 @@ const mainViews = [
   ['general', '通用设置'],
   ['notifications', '消息通知'],
   ['records', '探测记录'],
+  ['operation-history', '操作记录'],
   ['delete-confirm', '删除“OpenAI 主线路”？'],
   ['empty', '还没有站点'],
 ] as const;
@@ -58,6 +59,41 @@ test('sidebar keeps the current page selected after navigation', async ({ page }
   await records.click();
   await expect(records).toHaveAttribute('aria-current', 'page');
   await expect(general).not.toHaveAttribute('aria-current', 'page');
+});
+
+test('operation history keeps the fixed columns and opens typed details from the icon', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1504, height: 964 });
+  await page.goto('/?view=operation-history&theme=light');
+
+  await expect(page.getByRole('heading', { name: '操作记录' })).toBeVisible();
+  await expect(page.getByRole('columnheader').allTextContents()).resolves.toEqual([
+    '时间',
+    '类型',
+    '操作',
+    '详情',
+  ]);
+  await expect(page.getByText('调整站点配置')).toBeVisible();
+  await page.getByText('调整站点配置').click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  await page.getByRole('button', { name: '查看 调整站点配置 操作详情' }).click();
+  const drawer = page.getByRole('dialog');
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByText('变更内容')).toBeVisible();
+  await expect(drawer.getByText('API Key')).toBeVisible();
+  await expect(drawer.getByText('已更新')).toBeVisible();
+  await expect(drawer).not.toContainText('record-config-site-1');
+});
+
+test('operation history cursor expiry rebuilds the first page', async ({ page }) => {
+  await page.goto('/?view=operation-history&operationScenario=cursor-expired');
+
+  await expect(page.getByText('调整站点配置')).toBeVisible();
+  await page.getByRole('button', { name: '加载更多' }).click();
+  await expect(page.getByText('日志内容已变化，已重新载入最新记录。')).toBeVisible();
+  await expect(page.getByText('停用站点')).toHaveCount(0);
 });
 
 test('main application leaves the titlebar and window dragging to native Tauri chrome', async ({

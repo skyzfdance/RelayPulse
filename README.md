@@ -7,4 +7,7 @@ RelayPulse 是面向 macOS、Windows 与 Linux 桌面的 AI API 模型可用性�
 - [MVP 01：跨平台托盘探针](./docs/01-relaypulse-desktop/README.md)
 - [MVP 02：后端主链路与真实状态](./docs/02-relaypulse-backend/README.md)
 - [MVP 03：通知中心与模型状态推送（未来阶段）](./docs/03-notification-center/README.md)
+- [MVP 04：智力天梯与页面抓取（未来阶段）](./docs/04-intelligence-ladder/README.md)
+- [MVP 05：操作记录与诊断日志查询（未来阶段）](./docs/05-operation-history/README.md)
+- [MVP 06：诊断接入治理与存量代码审计（未来阶段）](./docs/06-diagnostics-governance/README.md)
 - [UI 定稿与成品验收基准](./docs/design/final/README.md)

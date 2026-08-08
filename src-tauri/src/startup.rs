@@ -12,6 +12,7 @@ use crate::{
     credentials::{CredentialService, LocalCredentialStore},
     diagnostics::Diagnostics,
     domain::{SystemClock, UuidGenerator},
+    notifications::NotificationService,
     persistence::{Database, DatabaseError, Repository},
 };
 
@@ -71,7 +72,9 @@ impl StartupFailure {
             | DatabaseError::WorkerStopped
             | DatabaseError::WorkerPanicked
             | DatabaseError::InvalidInput { .. }
-            | DatabaseError::NotFound { .. } => Self {
+            | DatabaseError::NotFound { .. }
+            | DatabaseError::Conflict { .. }
+            | DatabaseError::CatalogChanged => Self {
                 code: StartupErrorCode::DatabaseUnavailable,
                 message: "RelayPulse cannot open its database.",
             },
@@ -82,6 +85,7 @@ impl StartupFailure {
 pub struct BackendState {
     database: Option<Database>,
     application_service: Option<ApplicationService>,
+    notification_service: Option<NotificationService>,
     credential_saga: Option<CredentialSaga>,
     startup_failure: Option<StartupFailure>,
     diagnostics: Option<Diagnostics>,
@@ -110,6 +114,7 @@ impl BackendState {
                     }
                 };
                 let repository = Repository::new(database.clone());
+                let notification_service = NotificationService::new(repository.clone());
                 let ids = Arc::new(UuidGenerator);
                 let clock = Arc::new(SystemClock);
                 let credential_saga = CredentialSaga::new(
@@ -124,6 +129,7 @@ impl BackendState {
                 Self {
                     database: Some(database),
                     application_service: Some(application_service),
+                    notification_service: Some(notification_service),
                     credential_saga: Some(credential_saga),
                     startup_failure: None,
                     diagnostics,
@@ -149,6 +155,7 @@ impl BackendState {
         Self {
             database: None,
             application_service: None,
+            notification_service: None,
             credential_saga: None,
             startup_failure: Some(failure),
             diagnostics,
@@ -171,6 +178,10 @@ impl BackendState {
 
     pub fn application_service(&self) -> Option<&ApplicationService> {
         self.application_service.as_ref()
+    }
+
+    pub fn notification_service(&self) -> Option<&NotificationService> {
+        self.notification_service.as_ref()
     }
 
     pub fn diagnostics(&self) -> Option<&Diagnostics> {
@@ -213,6 +224,7 @@ mod tests {
         assert!(state.is_ready());
         assert!(state.database().is_some());
         assert!(state.application_service().is_some());
+        assert!(state.notification_service().is_some());
         assert!(state.credential_saga().is_some());
         assert!(state.startup_failure().is_none());
     }

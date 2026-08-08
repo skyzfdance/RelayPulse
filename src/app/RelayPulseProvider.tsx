@@ -9,6 +9,12 @@ import { isNewerRevision } from '../data/revision';
 import type { AppSnapshot } from '../domain/types';
 import type { ThemeMode } from '../domain/types';
 import { recordFrontendAction } from './frontend-diagnostics';
+import {
+  MockNotificationDataSource,
+  notificationScenarioFromSearch,
+} from '../features/notifications/mock-notification-data-source';
+import type { NotificationDataSource } from '../features/notifications/notification-types';
+import { TauriNotificationDataSource } from '../features/notifications/tauri-notification-data-source';
 import { RelayPulseContext } from './relay-pulse-context';
 import type { RelayPulseContextValue } from './relay-pulse-context';
 
@@ -31,6 +37,13 @@ function createDefaultDataSource() {
 
 const defaultDataSource = createDefaultDataSource();
 
+function createDefaultNotificationDataSource(): NotificationDataSource {
+  if (isTauri()) return new TauriNotificationDataSource();
+  return new MockNotificationDataSource(notificationScenarioFromSearch(window.location.search));
+}
+
+const defaultNotificationDataSource = createDefaultNotificationDataSource();
+
 function preserveSelection(current: AppSnapshot | null, next: AppSnapshot): AppSnapshot {
   const selectedSiteId = current?.selectedSiteId;
   return {
@@ -44,7 +57,11 @@ function preserveSelection(current: AppSnapshot | null, next: AppSnapshot): AppS
 export function RelayPulseProvider({
   children,
   dataSource = defaultDataSource,
-}: PropsWithChildren<{ dataSource?: RelayPulseDataSource }>) {
+  notificationDataSource = defaultNotificationDataSource,
+}: PropsWithChildren<{
+  dataSource?: RelayPulseDataSource;
+  notificationDataSource?: NotificationDataSource;
+}>) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -95,6 +112,7 @@ export function RelayPulseProvider({
 
   const value = useMemo<RelayPulseContextValue>(
     () => ({
+      notificationDataSource,
       snapshot,
       loading,
       error,
@@ -149,7 +167,7 @@ export function RelayPulseProvider({
       exportDiagnostics: () => dataSource.exportDiagnostics(),
       openMainWindow: (view) => dataSource.openMainWindow(view),
     }),
-    [dataSource, error, loading, run, snapshot],
+    [dataSource, error, loading, notificationDataSource, run, snapshot],
   );
 
   return <RelayPulseContext.Provider value={value}>{children}</RelayPulseContext.Provider>;

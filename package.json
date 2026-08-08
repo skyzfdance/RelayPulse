@@ -19,7 +19,7 @@
     "test:visual": "playwright test tests/visual",
     "preview": "vite preview",
     "t": "tauri",
-    "t:dev": "tauri dev",
+    "t:dev": "node scripts/tauri-dev.mjs",
     "t:build": "tauri build",
     "t:info": "tauri info"
   },

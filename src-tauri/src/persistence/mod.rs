@@ -27,6 +27,10 @@ pub enum DatabaseError {
     InvalidInput { field: &'static str },
     #[error("persisted {entity} was not found")]
     NotFound { entity: &'static str },
+    #[error("persisted {entity} changed concurrently")]
+    Conflict { entity: &'static str },
+    #[error("the notification catalog changed during the operation")]
+    CatalogChanged,
 }
 
 impl From<rusqlite::Error> for DatabaseError {

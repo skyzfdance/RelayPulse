@@ -31,6 +31,7 @@ function createDataSource({
 } = {}) {
   let current = cloneSnapshot(snapshot);
   const updates: NotificationSettingsUpdate[] = [];
+  const permissionRequests: string[] = [];
   const tests: string[] = [];
   const dataSource: NotificationDataSource = {
     async getSettings() {
@@ -47,11 +48,24 @@ function createDataSource({
       };
       return cloneSnapshot(current);
     },
+    async requestPermission(channelId) {
+      permissionRequests.push(channelId);
+      const channel = current.channels.find((candidate) => candidate.id === channelId);
+      if (!channel) throw new Error('channel not found');
+      const updated = { ...channel, permission: 'granted' as const };
+      current = {
+        ...current,
+        channels: current.channels.map((candidate) =>
+          candidate.id === channelId ? updated : candidate,
+        ),
+      };
+      return updated;
+    },
     async sendTestNotification(channelId) {
       tests.push(channelId);
     },
   };
-  return { dataSource, updates, tests };
+  return { dataSource, permissionRequests, updates, tests };
 }
 
 function renderPage(dataSource: NotificationDataSource) {
@@ -161,7 +175,6 @@ describe('NotificationsPage', () => {
 
   it.each([
     ['permission-unknown', '状态未知'],
-    ['permission-not-requested', '尚未授权'],
     ['permission-unsupported', '当前平台不支持'],
   ] as const)('renders the %s permission state', async (scenario, label) => {
     const { dataSource } = createDataSource({
@@ -172,6 +185,21 @@ describe('NotificationsPage', () => {
     expect(await screen.findByText(label)).toBeVisible();
     expect(screen.getByRole('button', { name: '发送测试通知' })).toBeDisabled();
     expect(screen.queryByRole('switch', { name: '启用系统通知' })).not.toBeInTheDocument();
+  });
+
+  it('requests permission explicitly and refreshes the channel state', async () => {
+    const user = userEvent.setup();
+    const { dataSource, permissionRequests } = createDataSource({
+      snapshot: createNotificationFixture('permission-not-requested'),
+    });
+    renderPage(dataSource);
+
+    expect(await screen.findByText('尚未授权')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '请求授权' }));
+
+    await waitFor(() => expect(permissionRequests).toEqual(['system']));
+    expect(await screen.findByText('已授权')).toBeVisible();
+    expect(screen.getByRole('button', { name: '发送测试通知' })).toBeEnabled();
   });
 
   it('renders a stable empty state when the event catalog is empty', async () => {
@@ -188,6 +216,7 @@ describe('NotificationsPage', () => {
     const dataSource: NotificationDataSource = {
       getSettings,
       updateSettings: vi.fn(),
+      requestPermission: vi.fn(),
       sendTestNotification: vi.fn(),
     };
     renderPage(dataSource);
@@ -202,6 +231,7 @@ describe('NotificationsPage', () => {
         throw new Error('load failed');
       },
       updateSettings: vi.fn(),
+      requestPermission: vi.fn(),
       sendTestNotification: vi.fn(),
     };
     renderPage(dataSource);

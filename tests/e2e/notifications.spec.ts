@@ -30,7 +30,7 @@ test('notification settings support draft, discard, save and test feedback', asy
   await expect(save).toBeDisabled();
 
   await testNotification.click();
-  await expect(page.getByText('测试通知已发送', { exact: true })).toBeVisible();
+  await expect(page.getByText('测试通知已提交到系统通知中心', { exact: true })).toBeVisible();
 });
 
 test('master switch disables testing while preserving editable child rules', async ({ page }) => {
@@ -48,6 +48,12 @@ test('master switch disables testing while preserving editable child rules', asy
 });
 
 test('permission, empty and failure fixtures expose truthful UI states', async ({ page }) => {
+  await page.goto('/?view=notifications&notificationScenario=permission-not-requested');
+  await expect(page.getByText('尚未授权', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '请求授权' }).click();
+  await expect(page.getByText('系统通知权限已授权', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送测试通知' })).toBeEnabled();
+
   await page.goto('/?view=notifications&notificationScenario=permission-denied');
   await expect(page.getByText('授权已拒绝', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '发送测试通知' })).toBeDisabled();

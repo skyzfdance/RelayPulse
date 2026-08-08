@@ -4,6 +4,7 @@ pub mod credentials;
 pub mod desktop;
 pub mod diagnostics;
 pub mod domain;
+pub mod notifications;
 pub mod persistence;
 pub mod startup;
 
@@ -13,7 +14,7 @@ use tauri_plugin_autostart::MacosLauncher;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     diagnostics::install_panic_hook();
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = desktop::show_main_window(app);
         }))
@@ -22,6 +23,12 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init());
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(desktop::build_app_menu)
+        .on_menu_event(desktop::handle_app_menu_event);
+    let app = builder
         .setup(|app| {
             let state = match app.path().app_data_dir() {
                 Ok(data_directory) => startup::BackendState::initialize(data_directory),
@@ -29,7 +36,16 @@ pub fn run() {
             };
             let credential_saga = state.credential_saga().cloned();
             let application_service = state.application_service().cloned();
+            let notification_service = state.notification_service().cloned();
+            let notification_diagnostics = state.diagnostics().cloned();
             app.manage(state);
+            if let Some(notification_service) = notification_service {
+                notifications::start_dispatcher(
+                    app.handle().clone(),
+                    notification_service,
+                    notification_diagnostics,
+                );
+            }
             if let Some(credential_saga) = credential_saga {
                 tauri::async_runtime::spawn(async move {
                     let _ = credential_saga.reconcile().await;
@@ -124,6 +140,10 @@ pub fn run() {
             commands::clear_diagnostic_logs,
             commands::export_diagnostics,
             commands::open_main_window,
+            commands::get_notification_settings,
+            commands::update_notification_settings,
+            commands::request_notification_permission,
+            commands::send_test_notification,
         ])
         .build(tauri::generate_context!())
         .expect("error while building RelayPulse");

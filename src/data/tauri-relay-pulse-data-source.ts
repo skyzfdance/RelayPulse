@@ -318,7 +318,7 @@ function viewSnapshot(snapshot: AuthoritativeSnapshot): AppSnapshot {
   };
 }
 
-function backendError(cause: unknown): Error {
+export function backendError(cause: unknown): Error {
   if (cause instanceof RelayPulseBackendError) return cause;
   if (isBackendErrorPayload(cause)) return new RelayPulseBackendError(cause);
   return new RelayPulseBackendError({

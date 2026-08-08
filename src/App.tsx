@@ -5,6 +5,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { CSSProperties, PropsWithChildren } from 'react';
+import { DesktopMenuBridge } from './app/DesktopMenuBridge';
 import { MainShell } from './app/MainShell';
 import { RelayPulseProvider } from './app/RelayPulseProvider';
 import { recordFrontendAction } from './app/frontend-diagnostics';
@@ -75,6 +76,16 @@ function useActiveView() {
   return view;
 }
 
+function useDesktopContextMenuGuard() {
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    const preventContextMenu = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener('contextmenu', preventContextMenu, true);
+    return () => document.removeEventListener('contextmenu', preventContextMenu, true);
+  }, []);
+}
+
 function useResolvedTheme(mode: ThemeMode) {
   const [systemDark, setSystemDark] = useState(
     () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false,
@@ -134,7 +145,7 @@ function ThemeSurface({
 }
 
 function MainView({ view }: { view: ViewName }) {
-  const { snapshot } = useRelayPulse();
+  const { notificationDataSource, snapshot } = useRelayPulse();
   const baseView =
     view === 'site-advanced'
       ? 'site-advanced'
@@ -152,7 +163,7 @@ function MainView({ view }: { view: ViewName }) {
       {baseView === 'general' ? (
         <GeneralPage />
       ) : baseView === 'notifications' ? (
-        <NotificationsPage />
+        <NotificationsPage dataSource={notificationDataSource} />
       ) : baseView === 'records' ? (
         <RecordsPage />
       ) : baseView === 'empty' ? (
@@ -168,6 +179,7 @@ function MainView({ view }: { view: ViewName }) {
 }
 
 function RelayPulseApplication() {
+  useDesktopContextMenuGuard();
   const view = useActiveView();
   const { snapshot, loading, error } = useRelayPulse();
   const isDark = useResolvedTheme(snapshot?.generalSettings.theme ?? 'light');
@@ -204,6 +216,7 @@ function RelayPulseApplication() {
       }}
     >
       <ThemeSurface dark={isDark} transparent={isTrayView}>
+        <DesktopMenuBridge />
         {loading ? (
           <div className="grid h-full w-full place-items-center bg-rp-canvas">
             <Spin size="large" description="正在加载应用数据" />

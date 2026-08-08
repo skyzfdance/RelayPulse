@@ -21,6 +21,11 @@ use crate::{
         CredentialIntent, EntityId, HttpMethod, ParameterType, ProbeMode, ProbeResult, ProbeStatus,
         ResponseMode, SecretValue, SiteProtocol, ThemeMode, TimestampMs, TrayAction,
     },
+    notifications::{
+        request_system_notification_permission, send_test_system_notification,
+        system_channel_snapshot, NotificationChannelSnapshot, NotificationError,
+        NotificationService, NotificationSettingsSnapshot, NotificationSettingsUpdate,
+    },
     startup::BackendState,
 };
 use uuid::Uuid;
@@ -126,6 +131,109 @@ impl From<ApplicationError> for CommandError {
                 code: "internal",
                 category: "internal",
                 message: "RelayPulse could not complete the operation.",
+                field: None,
+                retryable: false,
+                operation_id: None,
+            },
+        }
+    }
+}
+
+impl From<NotificationError> for CommandError {
+    fn from(error: NotificationError) -> Self {
+        match error {
+            NotificationError::SettingsConflict => Self {
+                code: "notification_settings_conflict",
+                category: "conflict",
+                message: "Notification settings changed in another operation.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
+            NotificationError::CatalogChanged => Self {
+                code: "notification_catalog_changed",
+                category: "conflict",
+                message: "The notification catalog changed while saving.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
+            NotificationError::InvalidSettings { field } => Self {
+                code: "notification_settings_invalid",
+                category: "validation",
+                message: "The submitted notification settings are invalid.",
+                field: Some(field),
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::SettingsUnavailable => Self {
+                code: "notification_settings_unavailable",
+                category: "database",
+                message: "Notification settings are currently unavailable.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
+            NotificationError::ServiceDisabled => Self {
+                code: "notification_service_disabled",
+                category: "validation",
+                message: "Notification delivery is disabled in settings.",
+                field: Some("notifications_enabled"),
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::PermissionUnknown => Self {
+                code: "notification_permission_unknown",
+                category: "platform",
+                message: "The system notification permission could not be determined.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
+            NotificationError::PermissionNotRequested => Self {
+                code: "notification_permission_not_requested",
+                category: "permission",
+                message: "System notification permission has not been requested.",
+                field: None,
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::PermissionDenied => Self {
+                code: "notification_permission_denied",
+                category: "permission",
+                message: "System notification permission was denied.",
+                field: None,
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::ChannelNotFound => Self {
+                code: "notification_channel_not_found",
+                category: "validation",
+                message: "The notification channel was not found.",
+                field: Some("channel_id"),
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::ChannelUnsupported => Self {
+                code: "notification_channel_unsupported",
+                category: "platform",
+                message: "The notification channel is not supported on this platform.",
+                field: None,
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::DispatchRetryable => Self {
+                code: "notification_dispatch_retryable",
+                category: "platform",
+                message: "The system notification could not be accepted temporarily.",
+                field: None,
+                retryable: true,
+                operation_id: None,
+            },
+            NotificationError::DispatchFailed => Self {
+                code: "notification_dispatch_failed",
+                category: "platform",
+                message: "The system notification could not be accepted.",
                 field: None,
                 retryable: false,
                 operation_id: None,
@@ -1609,11 +1717,132 @@ pub async fn run_model_probe(
     .await
 }
 
+#[tauri::command]
+pub async fn get_notification_settings(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+) -> CommandResult<NotificationSettingsSnapshot> {
+    notification_service(&state)?
+        .settings(system_channel_snapshot(&app))
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn update_notification_settings(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    settings: NotificationSettingsUpdate,
+    operation_id: Option<String>,
+) -> CommandResult<NotificationSettingsSnapshot> {
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "update-notification-settings",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "notification-settings",
+            target_id: None,
+            parent_id: None,
+            change_kind: "update",
+            field_scope: &["notificationsEnabled", "rules"],
+        }),
+        |operation_id| async move {
+            let (snapshot, app_revision) = notification_service(&state)?
+                .update_settings(settings, system_channel_snapshot(&app))
+                .await?;
+            notification_changed(&app, app_revision, Some(&operation_id));
+            Ok(snapshot)
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn send_test_notification(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    channel_id: String,
+    operation_id: Option<String>,
+) -> CommandResult<()> {
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "send-test-notification",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "notification-channel",
+            target_id: Some(channel_id.clone()),
+            parent_id: None,
+            change_kind: "test",
+            field_scope: &[],
+        }),
+        |_operation_id| async move {
+            let service = notification_service(&state)?;
+            let channel = system_channel_snapshot(&app);
+            let settings = service.settings(channel).await?;
+            if !settings.notifications_enabled {
+                return Err(NotificationError::ServiceDisabled.into());
+            }
+            send_test_system_notification(&app, &channel_id).map_err(Into::into)
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn request_notification_permission(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    channel_id: String,
+    operation_id: Option<String>,
+) -> CommandResult<NotificationChannelSnapshot> {
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "request-notification-permission",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "notification-channel",
+            target_id: Some(channel_id.clone()),
+            parent_id: None,
+            change_kind: "request",
+            field_scope: &[],
+        }),
+        |_operation_id| async move {
+            request_system_notification_permission(&app, &channel_id).map_err(Into::into)
+        },
+    )
+    .await
+}
+
 fn service(state: &State<'_, BackendState>) -> CommandResult<ApplicationService> {
     state
         .application_service()
         .cloned()
         .ok_or_else(CommandError::database_unavailable)
+}
+
+fn notification_service(state: &State<'_, BackendState>) -> CommandResult<NotificationService> {
+    state
+        .notification_service()
+        .cloned()
+        .ok_or_else(CommandError::database_unavailable)
+}
+
+fn notification_changed(app: &tauri::AppHandle, revision: u64, operation_id: Option<&str>) {
+    if let Some(state) = app.try_state::<BackendState>() {
+        if let Some(diagnostics) = state.diagnostics() {
+            diagnostics.record_state_change(operation_id, revision, &["notifications"]);
+        }
+    }
+    let _ = app.emit(
+        "relaypulse://state-changed",
+        StateChangedDto {
+            revision,
+            domains: vec!["notifications"],
+        },
+    );
 }
 
 #[cfg(test)]
@@ -1743,6 +1972,7 @@ fn validate_view(value: &str, field: &'static str) -> CommandResult<()> {
             | "site-advanced"
             | "model-settings"
             | "general"
+            | "notifications"
             | "records"
             | "delete-confirm"
             | "empty"
@@ -2374,6 +2604,7 @@ mod tests {
     fn diagnostic_inputs_accept_only_safe_correlatable_metadata() {
         assert!(resolve_operation_id(Some("op_fixture-123".to_owned())).is_ok());
         assert!(resolve_operation_id(Some("wrong_fixture".to_owned())).is_err());
+        assert!(validate_view("notifications", "view").is_ok());
         assert!(validate_frontend_action("open-probe-record").is_ok());
         assert!(validate_frontend_action("clicked secret button").is_err());
         assert!(validate_stack_frame("render@src/App.tsx:42:7").is_ok());

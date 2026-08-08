@@ -9,11 +9,8 @@ import {
 import { App as AntdApp, Badge, Button, Empty, Result, Spin, Switch, Table } from 'antd';
 import type { TableProps } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { recordFrontendAction } from '../../app/frontend-diagnostics';
 import { pageHeaderClass } from '../../styles/tailwind';
-import {
-  MockNotificationDataSource,
-  notificationScenarioFromSearch,
-} from './mock-notification-data-source';
 import type {
   NotificationChannelSnapshot,
   NotificationDataSource,
@@ -24,7 +21,7 @@ import type {
 } from './notification-types';
 
 interface NotificationsPageProps {
-  dataSource?: NotificationDataSource;
+  dataSource: NotificationDataSource;
 }
 
 interface RuleRow extends NotificationEventCatalogItem {
@@ -91,17 +88,13 @@ function groupedEvents(events: NotificationEventCatalogItem[]) {
 
 export function NotificationsPage({ dataSource }: NotificationsPageProps) {
   const { message, notification } = AntdApp.useApp();
-  const source = useMemo(
-    () =>
-      dataSource ??
-      new MockNotificationDataSource(notificationScenarioFromSearch(window.location.search)),
-    [dataSource],
-  );
+  const source = dataSource;
   const [snapshot, setSnapshot] = useState<NotificationSettingsSnapshot | null>(null);
   const [draft, setDraft] = useState<NotificationSettingsUpdate | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [authorizingChannelId, setAuthorizingChannelId] = useState<string | null>(null);
   const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
 
   const loadSettings = useCallback(async () => {
@@ -150,6 +143,10 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
   );
 
   function updateRule(eventType: string, enabled: boolean) {
+    recordFrontendAction('setting-changed', {
+      targetType: 'form',
+      targetId: `notification-rule-${eventType.replace(/\./g, '-')}`,
+    });
     setDraft((current) =>
       current
         ? {
@@ -189,7 +186,7 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
     setTestingChannelId(channel.id);
     try {
       await source.sendTestNotification(channel.id);
-      message.success({ content: '测试通知已发送', duration: 3 });
+      message.success({ content: '测试通知已提交到系统通知中心', duration: 3 });
     } catch {
       notification.error({
         title: '测试通知发送失败',
@@ -201,6 +198,47 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
       });
     } finally {
       setTestingChannelId(null);
+    }
+  }
+
+  async function requestPermission(channel: NotificationChannelSnapshot) {
+    if (authorizingChannelId) return;
+    setAuthorizingChannelId(channel.id);
+    try {
+      const updated = await source.requestPermission(channel.id);
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              channels: current.channels.map((candidate) =>
+                candidate.id === updated.id ? updated : candidate,
+              ),
+            }
+          : current,
+      );
+      if (updated.permission === 'granted') {
+        message.success({ content: '系统通知权限已授权', duration: 3 });
+      } else {
+        notification.warning({
+          title: '系统通知权限未授权',
+          description: 'RelayPulse 无法发送系统通知。',
+          placement: 'topRight',
+          duration: 6,
+          pauseOnHover: true,
+          role: 'alert',
+        });
+      }
+    } catch {
+      notification.error({
+        title: '系统通知授权失败',
+        description: '当前运行环境无法请求系统通知权限。',
+        placement: 'topRight',
+        duration: 6,
+        pauseOnHover: true,
+        role: 'alert',
+      });
+    } finally {
+      setAuthorizingChannelId(null);
     }
   }
 
@@ -310,11 +348,15 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
                     aria-label="启用消息通知"
                     checked={draft.notificationsEnabled}
                     disabled={saving}
-                    onChange={(notificationsEnabled) =>
+                    onChange={(notificationsEnabled) => {
+                      recordFrontendAction('setting-changed', {
+                        targetType: 'form',
+                        targetId: 'notification-master',
+                      });
                       setDraft((current) =>
                         current ? { ...current, notificationsEnabled } : current,
-                      )
-                    }
+                      );
+                    }}
                     size="small"
                   />
                 </div>
@@ -344,7 +386,8 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
                       !draft.notificationsEnabled ||
                       !channel.supported ||
                       channel.permission !== 'granted' ||
-                      saving;
+                      saving ||
+                      authorizingChannelId === channel.id;
                     return (
                       <div
                         className="grid min-h-14.5 grid-cols-[minmax(0,1fr)_auto] items-center gap-6 py-2"
@@ -363,6 +406,16 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
                               <span className="text-xs text-rp-secondary">{permission.label}</span>
                             }
                           />
+                          {channel.permission === 'not_requested' ? (
+                            <Button
+                              disabled={saving || testingChannelId === channel.id}
+                              icon={<BellOutlined aria-hidden="true" />}
+                              loading={authorizingChannelId === channel.id}
+                              onClick={() => void requestPermission(channel)}
+                            >
+                              请求授权
+                            </Button>
+                          ) : null}
                           <Button
                             disabled={testDisabled}
                             icon={<SendOutlined aria-hidden="true" />}

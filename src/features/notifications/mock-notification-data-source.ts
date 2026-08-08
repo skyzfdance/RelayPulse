@@ -150,6 +150,24 @@ export class MockNotificationDataSource implements NotificationDataSource {
     return cloneSnapshot(this.snapshot);
   }
 
+  async requestPermission(channelId: string) {
+    await delay(320);
+    const channel = this.snapshot.channels.find((candidate) => candidate.id === channelId);
+    if (!channel) throw new Error('通知渠道不存在');
+    if (!channel.supported || channel.permission === 'unknown') {
+      throw new Error('系统通知当前不可用');
+    }
+
+    const permission = channel.permission === 'not_requested' ? 'granted' : channel.permission;
+    this.snapshot = {
+      ...this.snapshot,
+      channels: this.snapshot.channels.map((candidate) =>
+        candidate.id === channelId ? { ...candidate, permission } : candidate,
+      ),
+    };
+    return { ...channel, permission };
+  }
+
   async sendTestNotification(channelId: string) {
     await delay(420);
     if (this.scenario === 'test-error') throw new Error('测试通知发送失败');

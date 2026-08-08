@@ -15,8 +15,10 @@ import type {
   LogCleanupResult,
   LogStatistics,
 } from '../data/relay-pulse-data-source';
+import type { NotificationDataSource } from '../features/notifications/notification-types';
 
 export interface RelayPulseContextValue {
+  notificationDataSource: NotificationDataSource;
   snapshot: AppSnapshot | null;
   loading: boolean;
   error: string | null;

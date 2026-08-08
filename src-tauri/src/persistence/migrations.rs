@@ -3,12 +3,13 @@ use rusqlite_migration::{Migrations, M};
 
 use super::{DatabaseError, Result};
 
-pub const LATEST_SCHEMA_VERSION: u32 = 2;
+pub const LATEST_SCHEMA_VERSION: u32 = 3;
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("migrations/v1.sql")).foreign_key_check(),
         M::up(include_str!("migrations/v2.sql")).foreign_key_check(),
+        M::up(include_str!("migrations/v3.sql")).foreign_key_check(),
     ])
 }
 
@@ -49,6 +50,11 @@ mod tests {
         "general_settings",
         "latest_model_status",
         "models",
+        "notification_events",
+        "notification_outbox",
+        "notification_rule_channels",
+        "notification_rules",
+        "notification_settings",
         "probe_captures",
         "probe_policies",
         "probe_results",
@@ -243,7 +249,10 @@ mod tests {
             )
             .expect("migrated settings are readable");
 
-        assert_eq!(schema_version(&connection).expect("version is readable"), 2);
+        assert_eq!(
+            schema_version(&connection).expect("version is readable"),
+            LATEST_SCHEMA_VERSION
+        );
         assert_eq!(
             settings,
             (

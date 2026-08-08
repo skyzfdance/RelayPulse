@@ -17,6 +17,12 @@ use tauri::{
 };
 use tauri_plugin_autostart::ManagerExt;
 
+#[cfg(target_os = "macos")]
+use tauri::menu::{
+    AboutMetadata, Menu, MenuEvent, MenuItemBuilder, SubmenuBuilder, HELP_SUBMENU_ID,
+    WINDOW_SUBMENU_ID,
+};
+
 use crate::{application::ApplicationSnapshot, domain::ProbeStatus, startup::BackendState};
 
 const STATUS_WINDOW_LABEL: &str = "status-panel";
@@ -26,6 +32,24 @@ const MAIN_WINDOW_MENU_ID: &str = "main-window";
 const QUIT_MENU_ID: &str = "quit";
 const STATUS_PANEL_OPENING_EVENT: &str = "relaypulse://status-panel-opening";
 const STATUS_PANEL_CLOSING_EVENT: &str = "relaypulse://status-panel-closing";
+#[cfg(target_os = "macos")]
+const DESKTOP_MENU_ACTION_EVENT: &str = "relaypulse://desktop-menu-action";
+#[cfg(target_os = "macos")]
+const SETTINGS_MENU_ID: &str = "app-settings";
+#[cfg(target_os = "macos")]
+const VIEW_SITES_MENU_ID: &str = "view-sites";
+#[cfg(target_os = "macos")]
+const VIEW_GENERAL_MENU_ID: &str = "view-general";
+#[cfg(target_os = "macos")]
+const VIEW_NOTIFICATIONS_MENU_ID: &str = "view-notifications";
+#[cfg(target_os = "macos")]
+const VIEW_RECORDS_MENU_ID: &str = "view-records";
+#[cfg(target_os = "macos")]
+const HELP_FEEDBACK_MENU_ID: &str = "help-feedback";
+#[cfg(target_os = "macos")]
+const OPEN_LOG_DIRECTORY_MENU_ID: &str = "open-log-directory";
+#[cfg(target_os = "macos")]
+const EXPORT_DIAGNOSTICS_MENU_ID: &str = "export-diagnostics";
 const STATUS_PANEL_CLOSE_DELAY: Duration = Duration::from_millis(110);
 static STATUS_PANEL_MOTION_GENERATION: AtomicU64 = AtomicU64::new(0);
 static STATUS_PANEL_CLOSE_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -54,6 +78,132 @@ pub fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
 #[derive(Clone, Serialize)]
 struct NavigateEvent<'a> {
     view: &'a str,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Serialize)]
+struct DesktopMenuActionEvent<'a> {
+    action: &'a str,
+}
+
+#[cfg(target_os = "macos")]
+pub fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let package = app.package_info();
+    let about_metadata = AboutMetadata {
+        name: Some("RelayPulse".into()),
+        version: Some(package.version.to_string()),
+        copyright: Some("© 2026 RelayPulse".into()),
+        credits: Some("AI 模型可用性探测与运行监控".into()),
+        icon: app.default_window_icon().cloned(),
+        ..Default::default()
+    };
+    let settings = MenuItemBuilder::with_id(SETTINGS_MENU_ID, "设置…")
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+    let application_menu = SubmenuBuilder::new(app, "RelayPulse")
+        .about_with_text("关于 RelayPulse", Some(about_metadata))
+        .separator()
+        .item(&settings)
+        .separator()
+        .services_with_text("服务")
+        .separator()
+        .hide_with_text("隐藏 RelayPulse")
+        .hide_others_with_text("隐藏其他应用")
+        .show_all_with_text("全部显示")
+        .separator()
+        .quit_with_text("退出 RelayPulse")
+        .build()?;
+    let edit_menu = SubmenuBuilder::new(app, "编辑")
+        .undo_with_text("撤销")
+        .redo_with_text("重做")
+        .separator()
+        .cut_with_text("剪切")
+        .copy_with_text("拷贝")
+        .paste_with_text("粘贴")
+        .select_all_with_text("全选")
+        .build()?;
+
+    let sites = MenuItemBuilder::with_id(VIEW_SITES_MENU_ID, "站点管理")
+        .accelerator("CmdOrCtrl+1")
+        .build(app)?;
+    let general = MenuItemBuilder::with_id(VIEW_GENERAL_MENU_ID, "通用设置")
+        .accelerator("CmdOrCtrl+2")
+        .build(app)?;
+    let notifications = MenuItemBuilder::with_id(VIEW_NOTIFICATIONS_MENU_ID, "消息通知")
+        .accelerator("CmdOrCtrl+3")
+        .build(app)?;
+    let records = MenuItemBuilder::with_id(VIEW_RECORDS_MENU_ID, "探测记录")
+        .accelerator("CmdOrCtrl+4")
+        .build(app)?;
+    let view_menu = SubmenuBuilder::new(app, "显示")
+        .item(&sites)
+        .item(&general)
+        .item(&notifications)
+        .item(&records)
+        .build()?;
+
+    let window_menu = SubmenuBuilder::with_id(app, WINDOW_SUBMENU_ID, "窗口")
+        .minimize_with_text("最小化")
+        .maximize_with_text("缩放")
+        .separator()
+        .close_window_with_text("关闭窗口")
+        .build()?;
+
+    let help_feedback = MenuItemBuilder::with_id(HELP_FEEDBACK_MENU_ID, "帮助与反馈")
+        .enabled(false)
+        .build(app)?;
+    let open_logs =
+        MenuItemBuilder::with_id(OPEN_LOG_DIRECTORY_MENU_ID, "打开日志目录").build(app)?;
+    let export_diagnostics =
+        MenuItemBuilder::with_id(EXPORT_DIAGNOSTICS_MENU_ID, "导出诊断信息…").build(app)?;
+    let help_menu = SubmenuBuilder::with_id(app, HELP_SUBMENU_ID, "帮助")
+        .item(&help_feedback)
+        .separator()
+        .item(&open_logs)
+        .item(&export_diagnostics)
+        .build()?;
+
+    MenuBuilder::new(app)
+        .item(&application_menu)
+        .item(&edit_menu)
+        .item(&view_menu)
+        .item(&window_menu)
+        .item(&help_menu)
+        .build()
+}
+
+#[cfg(target_os = "macos")]
+pub fn handle_app_menu_event(app: &AppHandle, event: MenuEvent) {
+    let menu_id = event.id().as_ref();
+    if let Some(view) = view_for_menu_id(menu_id) {
+        let _ = show_main_window_at(app, view);
+        return;
+    }
+
+    let action = match menu_id {
+        OPEN_LOG_DIRECTORY_MENU_ID => Some("open-log-directory"),
+        EXPORT_DIAGNOSTICS_MENU_ID => Some("export-diagnostics"),
+        _ => None,
+    };
+    if let Some(action) = action {
+        let _ = show_main_window(app);
+        let _ = app.emit_to(
+            MAIN_WINDOW_LABEL,
+            DESKTOP_MENU_ACTION_EVENT,
+            DesktopMenuActionEvent { action },
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn view_for_menu_id(menu_id: &str) -> Option<&'static str> {
+    match menu_id {
+        SETTINGS_MENU_ID | VIEW_GENERAL_MENU_ID => Some("general"),
+        VIEW_SITES_MENU_ID => Some("sites"),
+        VIEW_NOTIFICATIONS_MENU_ID => Some("notifications"),
+        VIEW_RECORDS_MENU_ID => Some("records"),
+        _ => None,
+    }
 }
 
 pub fn set_tray_enabled(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
@@ -170,6 +320,7 @@ fn status_panel_window(app: &AppHandle, alert_count: usize) -> tauri::Result<Web
         WebviewUrl::App(format!("index.html?view={view}").into()),
     )
     .title("RelayPulse 状态")
+    .devtools(false)
     .inner_size(width, height)
     .resizable(false)
     .decorations(false)
@@ -422,6 +573,19 @@ fn open_current_status_panel(app: AppHandle, anchor: StatusPanelAnchor) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn maps_application_menu_items_to_main_window_views() {
+        assert_eq!(view_for_menu_id(SETTINGS_MENU_ID), Some("general"));
+        assert_eq!(view_for_menu_id(VIEW_SITES_MENU_ID), Some("sites"));
+        assert_eq!(
+            view_for_menu_id(VIEW_NOTIFICATIONS_MENU_ID),
+            Some("notifications")
+        );
+        assert_eq!(view_for_menu_id(VIEW_RECORDS_MENU_ID), Some("records"));
+        assert_eq!(view_for_menu_id("unknown"), None);
+    }
 
     #[test]
     fn selects_the_native_directory_opener() {

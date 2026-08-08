@@ -8,6 +8,7 @@ import {
 import type { PropsWithChildren } from 'react';
 import { BrandMark } from '../components/BrandMark';
 import type { ViewName } from '../domain/types';
+import { APP_VERSION } from './app-metadata';
 import { navigateToView } from './view';
 
 const navItemClass =
@@ -86,7 +87,7 @@ export function MainShell({ children, view }: PropsWithChildren<{ view: ViewName
               <QuestionCircleOutlined />
               帮助与反馈
             </button>
-            <div className="px-3 pt-3 text-[11px] text-rp-quaternary">RelayPulse 0.1.0</div>
+            <div className="px-3 pt-3 text-[11px] text-rp-quaternary">RelayPulse {APP_VERSION}</div>
           </aside>
           <section
             className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-rp-surface"

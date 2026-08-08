@@ -46,5 +46,6 @@ export interface NotificationSettingsUpdate {
 export interface NotificationDataSource {
   getSettings(): Promise<NotificationSettingsSnapshot>;
   updateSettings(settings: NotificationSettingsUpdate): Promise<NotificationSettingsSnapshot>;
+  requestPermission(channelId: string): Promise<NotificationChannelSnapshot>;
   sendTestNotification(channelId: string): Promise<void>;
 }

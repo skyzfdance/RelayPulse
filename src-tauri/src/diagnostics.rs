@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::{
     application::ApplicationSnapshot,
     domain::{ProbeRunKind, ProbeStatus, ResponseMode, SiteProtocol},
+    notifications::DispatchReport,
     startup::{StartupErrorCode, StartupFailure},
 };
 
@@ -314,6 +315,19 @@ impl Diagnostics {
             "event": "autostart-reconciled",
             "enabled": enabled,
             "succeeded": succeeded,
+        }));
+    }
+
+    pub fn record_notification_dispatch(&self, report: &DispatchReport) {
+        self.append(json!({
+            "level": if report.status == "failed" { "error" } else { "info" },
+            "event": "notification-dispatched",
+            "eventId": report.event_id,
+            "eventType": report.event_type,
+            "channelId": report.channel_id,
+            "status": report.status,
+            "attemptCount": report.attempt_count,
+            "errorCode": report.error_code,
         }));
     }
 
@@ -863,7 +877,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 .filter(|domain| {
                     matches!(
                         *domain,
-                        "sites" | "models" | "records" | "status" | "settings"
+                        "sites" | "models" | "records" | "status" | "settings" | "notifications"
                     )
                 })
                 .collect::<Vec<_>>();
@@ -908,6 +922,39 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "enabled": value.get("enabled")?.as_bool()?,
             "succeeded": value.get("succeeded")?.as_bool()?,
         })),
+        "notification-dispatched" => {
+            let event_type = value.get("eventType")?.as_str()?;
+            let channel_id = value.get("channelId")?.as_str()?;
+            let status = value.get("status")?.as_str()?;
+            if !matches!(
+                event_type,
+                "probe.model_failed" | "probe.model_recovered" | "fixture.task_completed"
+            ) || channel_id != "system"
+                || !matches!(status, "pending" | "dispatched" | "failed" | "suppressed")
+            {
+                return None;
+            }
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "eventId": value.get("eventId")?.as_str().and_then(sanitize_audit_identifier)?,
+                "eventType": event_type,
+                "channelId": channel_id,
+                "status": status,
+                "attemptCount": value.get("attemptCount")?.as_u64()?,
+                "errorCode": value.get("errorCode").and_then(Value::as_str).filter(|code| matches!(
+                    *code,
+                    "notification_channel_not_found"
+                        | "notification_channel_unsupported"
+                        | "notification_permission_unknown"
+                        | "notification_permission_not_requested"
+                        | "notification_permission_denied"
+                        | "notification_dispatch_retryable"
+                        | "notification_dispatch_failed"
+                )),
+            }))
+        }
         "window-opened" => {
             let window = value.get("window")?.as_str()?;
             if !matches!(window, "main" | "status-panel") {
@@ -1051,7 +1098,15 @@ fn recent_probe_failures(snapshot: &ApplicationSnapshot) -> Vec<Value> {
 }
 
 fn is_safe_target_type(value: &str) -> bool {
-    matches!(value, "site" | "model" | "settings" | "probe-records")
+    matches!(
+        value,
+        "site"
+            | "model"
+            | "settings"
+            | "probe-records"
+            | "notification-settings"
+            | "notification-channel"
+    )
 }
 
 fn sanitize_audit_identifier(value: &str) -> Option<String> {
@@ -1066,7 +1121,15 @@ fn sanitize_audit_identifier(value: &str) -> Option<String> {
 fn is_safe_change_kind(value: &str) -> bool {
     matches!(
         value,
-        "create" | "update" | "delete" | "reorder" | "toggle" | "sync" | "clear"
+        "create"
+            | "update"
+            | "delete"
+            | "reorder"
+            | "toggle"
+            | "sync"
+            | "clear"
+            | "test"
+            | "request"
     )
 }
 
@@ -1100,6 +1163,8 @@ fn is_safe_audit_field(value: &str) -> bool {
             | "diagnosticCaptureEnabled"
             | "diagnosticLogMaxMegabytes"
             | "records"
+            | "notificationsEnabled"
+            | "rules"
     )
 }
 

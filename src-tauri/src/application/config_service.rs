@@ -13,13 +13,16 @@ use crate::{
         HttpMethod, IdGenerator, LatestModelStatus, LifecycleState, Model, ModelSource,
         ParameterType, ProbeCapture, ProbeMode, ProbeParameter, ProbePolicy, ProbeResult,
         ProbeRunKind, ProbeStatus, ProbeTimingPolicy, RequestHeader, SecretValue, Site,
-        SiteProtocol, ThemeMode, TrayAction,
+        SiteProtocol, ThemeMode, TimestampMs, TrayAction,
+    },
+    notifications::{
+        ModelFailureReason, ModelRecoveryState, NotificationService, PreparedNotificationEvent,
     },
     persistence::{CleanupResult, DatabaseError, ProbePageRequest, Repository},
 };
 
 use super::{
-    scheduler::{aggregate_latest_status, stable_next_probe_at},
+    scheduler::{aggregate_latest_status, is_failure, stable_next_probe_at},
     CredentialSaga, CredentialSagaError, DiscoveredModel, ModelCatalogClient, ModelCatalogError,
     ProbeExecutor, ScheduleSnapshot, ScheduledModel,
 };
@@ -236,6 +239,7 @@ pub struct ApplicationService {
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
     diagnostics: Option<Diagnostics>,
+    notification_service: Option<NotificationService>,
 }
 
 impl ApplicationService {
@@ -254,11 +258,17 @@ impl ApplicationService {
             ids,
             clock,
             diagnostics: None,
+            notification_service: None,
         }
     }
 
     pub fn with_diagnostics(mut self, diagnostics: Option<Diagnostics>) -> Self {
         self.diagnostics = diagnostics;
+        self
+    }
+
+    pub fn with_notification_service(mut self, notification_service: NotificationService) -> Self {
+        self.notification_service = Some(notification_service);
         self
     }
 
@@ -605,6 +615,23 @@ impl ApplicationService {
                 finished_at,
                 next_probe_at,
             );
+            let notification_event = if site.site.enabled && model.model.enabled {
+                prepare_probe_notification(
+                    previous.as_ref(),
+                    &latest,
+                    execution.status,
+                    &result_id,
+                    finished_at,
+                    &site.site.name,
+                    model
+                        .model
+                        .display_name
+                        .as_deref()
+                        .unwrap_or(&model.model.model_key),
+                )
+            } else {
+                None
+            };
             let general_settings = self.repository.load_general_settings().await?;
             let mut capture = execution.capture;
             capture.probe_result_id = result_id.clone();
@@ -622,6 +649,18 @@ impl ApplicationService {
             self.repository
                 .record_probe(result, capture, latest)
                 .await?;
+            if let (Some(service), Some(event)) =
+                (self.notification_service.as_ref(), notification_event)
+            {
+                if service.publish(event).await.is_err() {
+                    if let Some(diagnostics) = &self.diagnostics {
+                        diagnostics.record_background_error(
+                            "notification-publisher",
+                            "notification_publish_failed",
+                        );
+                    }
+                }
+            }
             self.clear_expired_probe_records(general_settings.history_retention_days, finished_at)
                 .await?;
             Ok(())
@@ -1238,6 +1277,65 @@ impl ApplicationService {
     }
 }
 
+fn prepare_probe_notification(
+    previous: Option<&LatestModelStatus>,
+    latest: &LatestModelStatus,
+    observed: ProbeStatus,
+    probe_result_id: &EntityId,
+    occurred_at: TimestampMs,
+    site_name: &str,
+    model_name: &str,
+) -> Option<PreparedNotificationEvent> {
+    let was_failure = previous.is_some_and(|status| is_failure(status.status));
+    let has_failed = is_failure(latest.status);
+    if !was_failure && has_failed {
+        PreparedNotificationEvent::model_failed(
+            probe_result_id.as_str(),
+            occurred_at,
+            probe_result_id.as_str(),
+            latest.model_id.as_str(),
+            site_name,
+            model_name,
+            failure_reason(observed),
+        )
+        .ok()
+    } else if was_failure && matches!(latest.status, ProbeStatus::Healthy | ProbeStatus::Slow) {
+        let state = if latest.status == ProbeStatus::Slow {
+            ModelRecoveryState::Slow
+        } else {
+            ModelRecoveryState::Healthy
+        };
+        PreparedNotificationEvent::model_recovered(
+            probe_result_id.as_str(),
+            occurred_at,
+            probe_result_id.as_str(),
+            latest.model_id.as_str(),
+            site_name,
+            model_name,
+            state,
+        )
+        .ok()
+    } else {
+        None
+    }
+}
+
+fn failure_reason(status: ProbeStatus) -> ModelFailureReason {
+    match status {
+        ProbeStatus::AuthError => ModelFailureReason::Authentication,
+        ProbeStatus::RateLimited => ModelFailureReason::RateLimited,
+        ProbeStatus::Timeout => ModelFailureReason::Timeout,
+        ProbeStatus::NetworkError => ModelFailureReason::Network,
+        ProbeStatus::ModelUnavailable | ProbeStatus::UpstreamError => ModelFailureReason::Upstream,
+        ProbeStatus::ProtocolError | ProbeStatus::ValidationFailed => ModelFailureReason::Protocol,
+        ProbeStatus::Healthy
+        | ProbeStatus::Slow
+        | ProbeStatus::Probing
+        | ProbeStatus::Cancelled
+        | ProbeStatus::Unknown => ModelFailureReason::Unknown,
+    }
+}
+
 struct ActiveProbeGuard {
     active: Arc<Mutex<HashSet<EntityId>>>,
     model_id: EntityId,
@@ -1365,6 +1463,62 @@ mod tests {
         let effective = effective_probe_policy(&site_default, Some(&model_policy));
 
         assert_eq!(effective.mode, ProbeMode::DisabledThinking);
+    }
+
+    #[test]
+    fn notifications_are_created_only_for_stable_failure_edges() {
+        let model_id = EntityId::parse("model-a").expect("model id is valid");
+        let probe_id = EntityId::parse("probe-a").expect("probe id is valid");
+        let occurred_at = TimestampMs::new(1_700_000_000_000).expect("timestamp is valid");
+        let status = |value| LatestModelStatus {
+            model_id: model_id.clone(),
+            probe_result_id: Some(probe_id.clone()),
+            status: value,
+            consecutive_failures: u16::from(is_failure(value)),
+            consecutive_successes: u16::from(matches!(
+                value,
+                ProbeStatus::Healthy | ProbeStatus::Slow
+            )),
+            next_probe_at: None,
+            revision: 0,
+            updated_at: occurred_at,
+        };
+        let healthy = status(ProbeStatus::Healthy);
+        let failed = status(ProbeStatus::Timeout);
+
+        let failure = prepare_probe_notification(
+            Some(&healthy),
+            &failed,
+            ProbeStatus::Timeout,
+            &probe_id,
+            occurred_at,
+            "Site A",
+            "Model A",
+        )
+        .expect("healthy to failed creates an event");
+        assert_eq!(failure.event_type, "probe.model_failed");
+        assert!(prepare_probe_notification(
+            Some(&failed),
+            &failed,
+            ProbeStatus::Timeout,
+            &probe_id,
+            occurred_at,
+            "Site A",
+            "Model A",
+        )
+        .is_none());
+
+        let recovery = prepare_probe_notification(
+            Some(&failed),
+            &healthy,
+            ProbeStatus::Healthy,
+            &probe_id,
+            occurred_at,
+            "Site A",
+            "Model A",
+        )
+        .expect("failed to healthy creates an event");
+        assert_eq!(recovery.event_type, "probe.model_recovered");
     }
 
     fn serve_probe() -> (String, thread::JoinHandle<()>) {

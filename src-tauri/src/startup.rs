@@ -114,7 +114,8 @@ impl BackendState {
                     }
                 };
                 let repository = Repository::new(database.clone());
-                let notification_service = NotificationService::new(repository.clone());
+                let notification_service = NotificationService::new(repository.clone())
+                    .with_diagnostics(diagnostics.clone());
                 let ids = Arc::new(UuidGenerator);
                 let clock = Arc::new(SystemClock);
                 let credential_saga = CredentialSaga::new(
@@ -125,7 +126,8 @@ impl BackendState {
                 );
                 let application_service =
                     ApplicationService::new(repository, credential_saga.clone(), ids, clock)
-                        .with_diagnostics(diagnostics.clone());
+                        .with_diagnostics(diagnostics.clone())
+                        .with_notification_service(notification_service.clone());
                 Self {
                     database: Some(database),
                     application_service: Some(application_service),

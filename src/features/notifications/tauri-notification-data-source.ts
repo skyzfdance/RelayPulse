@@ -7,6 +7,8 @@ import type {
   NotificationChannelSnapshot,
   NotificationSettingsSnapshot,
   NotificationSettingsUpdate,
+  NotificationTemplateDraft,
+  NotificationTemplateTestResult,
 } from './notification-types';
 
 type InvokeNotificationCommand = <T>(command: string, args?: InvokeArgs) => Promise<T>;
@@ -29,6 +31,12 @@ export class TauriNotificationDataSource implements NotificationDataSource {
 
   sendTestNotification(channelId: string): Promise<void> {
     return this.observedAction('send_test_notification', { channelId });
+  }
+
+  sendTemplateTestNotification(
+    draft: NotificationTemplateDraft,
+  ): Promise<NotificationTemplateTestResult> {
+    return this.observedAction('send_notification_template_test', { draft });
   }
 
   private async action<T>(command: string, args?: NotificationCommandArgs): Promise<T> {

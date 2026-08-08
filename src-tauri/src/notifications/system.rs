@@ -49,6 +49,15 @@ pub fn send_test_system_notification(
     app: &AppHandle,
     channel_id: &str,
 ) -> Result<(), NotificationError> {
+    send_system_notification(app, channel_id, TEST_TITLE, TEST_BODY)
+}
+
+pub(crate) fn send_system_notification(
+    app: &AppHandle,
+    channel_id: &str,
+    title: &str,
+    body: &str,
+) -> Result<(), NotificationError> {
     if channel_id != SYSTEM_CHANNEL_ID {
         return Err(NotificationError::ChannelNotFound);
     }
@@ -65,7 +74,7 @@ pub fn send_test_system_notification(
         NotificationPermission::Unsupported => return Err(NotificationError::ChannelUnsupported),
         NotificationPermission::Granted => {}
     }
-    show(app, TEST_TITLE, TEST_BODY).map_err(|error| {
+    show(app, title, body).map_err(|error| {
         if error.retryable {
             NotificationError::DispatchRetryable
         } else {

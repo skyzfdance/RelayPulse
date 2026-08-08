@@ -109,7 +109,7 @@ test('notification template editor keeps cursor insertion and page draft boundar
   await expect(body).toHaveValue('{{site_name}} · {{model_name}}：{{failure_reason}}');
 
   await page.getByRole('button', { name: '测试当前模板' }).click();
-  await expect(page.getByText('当前模板草稿渲染成功', { exact: true })).toBeVisible();
+  await expect(page.getByText('当前模板已提交到系统通知中心', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /应\s*用/ }).click();
 
   await expect(page.getByText('自定义', { exact: true })).toBeVisible();

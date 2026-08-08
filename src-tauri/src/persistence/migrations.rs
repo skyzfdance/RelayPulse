@@ -3,13 +3,14 @@ use rusqlite_migration::{Migrations, M};
 
 use super::{DatabaseError, Result};
 
-pub const LATEST_SCHEMA_VERSION: u32 = 3;
+pub const LATEST_SCHEMA_VERSION: u32 = 4;
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(include_str!("migrations/v1.sql")).foreign_key_check(),
         M::up(include_str!("migrations/v2.sql")).foreign_key_check(),
         M::up(include_str!("migrations/v3.sql")).foreign_key_check(),
+        M::up(include_str!("migrations/v4.sql")).foreign_key_check(),
     ])
 }
 
@@ -55,6 +56,7 @@ mod tests {
         "notification_rule_channels",
         "notification_rules",
         "notification_settings",
+        "notification_template_overrides",
         "probe_captures",
         "probe_policies",
         "probe_results",
@@ -65,6 +67,73 @@ mod tests {
     #[test]
     fn migration_definition_is_valid() {
         assert_eq!(migrations().validate(), Ok(()));
+    }
+
+    #[test]
+    fn upgrading_v3_preserves_notification_settings_and_rules() {
+        let mut connection = Connection::open_in_memory().expect("database opens");
+        let migrations_through_v3 = Migrations::new(vec![
+            M::up(include_str!("migrations/v1.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v2.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v3.sql")).foreign_key_check(),
+        ]);
+        migrations_through_v3
+            .to_latest(&mut connection)
+            .expect("v3 schema migrates");
+        connection
+            .execute_batch(
+                "UPDATE notification_settings
+                   SET revision = 7, notifications_enabled = 0, updated_at_ms = 1234
+                 WHERE singleton = 1;
+                 INSERT INTO notification_rules (event_type, enabled, updated_at_ms)
+                 VALUES ('probe.model_failed', 1, 1234);
+                 INSERT INTO notification_rule_channels (event_type, channel_id)
+                 VALUES ('probe.model_failed', 'system');",
+            )
+            .expect("v3 notification fixture is stored");
+
+        migrate_to_latest(&mut connection).expect("v3 schema migrates to latest");
+
+        let settings = connection
+            .query_row(
+                "SELECT revision, notifications_enabled, updated_at_ms
+                 FROM notification_settings WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .expect("notification settings remain readable");
+        let rule = connection
+            .query_row(
+                "SELECT r.enabled, c.channel_id
+                 FROM notification_rules r
+                 JOIN notification_rule_channels c USING (event_type)
+                 WHERE r.event_type = 'probe.model_failed'",
+                [],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("notification rule remains readable");
+        let template_table_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'table' AND name = 'notification_template_overrides'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("template table can be inspected");
+
+        assert_eq!(
+            schema_version(&connection).expect("version is readable"),
+            LATEST_SCHEMA_VERSION
+        );
+        assert_eq!(settings, (7, false, 1234));
+        assert_eq!(rule, (true, "system".to_owned()));
+        assert_eq!(template_table_count, 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

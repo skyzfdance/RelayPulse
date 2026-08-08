@@ -352,7 +352,7 @@ pub fn aggregate_latest_status(
     }
 }
 
-fn is_failure(status: ProbeStatus) -> bool {
+pub(crate) fn is_failure(status: ProbeStatus) -> bool {
     !matches!(
         status,
         ProbeStatus::Healthy | ProbeStatus::Slow | ProbeStatus::Unknown

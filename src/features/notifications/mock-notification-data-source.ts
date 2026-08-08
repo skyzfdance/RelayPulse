@@ -3,6 +3,8 @@ import type {
   NotificationPermission,
   NotificationSettingsSnapshot,
   NotificationSettingsUpdate,
+  NotificationTemplateDescriptor,
+  NotificationTemplateDraft,
 } from './notification-types';
 
 export type NotificationMockScenario =
@@ -43,8 +45,17 @@ function cloneSnapshot(snapshot: NotificationSettingsSnapshot): NotificationSett
     eventCatalog: snapshot.eventCatalog.map((event) => ({
       ...event,
       supportedChannels: [...event.supportedChannels],
+      templateDescriptor: {
+        ...event.templateDescriptor,
+        variables: event.templateDescriptor.variables.map((variable) => ({ ...variable })),
+      },
     })),
-    rules: snapshot.rules.map((rule) => ({ ...rule, channelIds: [...rule.channelIds] })),
+    rules: snapshot.rules.map((rule) => ({
+      ...rule,
+      channelIds: [...rule.channelIds],
+      templateOverrides: rule.templateOverrides.map((template) => ({ ...template })),
+    })),
+    markerCatalog: snapshot.markerCatalog.map((marker) => ({ ...marker })),
   };
 }
 
@@ -71,6 +82,7 @@ export function createNotificationFixture(
       defaultEnabled: true,
       supportedChannels: ['system'],
       tone: 'critical' as const,
+      templateDescriptor: templateDescriptor('probe.model_failed'),
     },
     {
       eventType: 'probe.model_recovered',
@@ -82,6 +94,7 @@ export function createNotificationFixture(
       defaultEnabled: true,
       supportedChannels: ['system'],
       tone: 'positive' as const,
+      templateDescriptor: templateDescriptor('probe.model_recovered'),
     },
   ];
 
@@ -111,7 +124,82 @@ export function createNotificationFixture(
       eventType: event.eventType,
       enabled: event.defaultEnabled,
       channelIds: [...event.supportedChannels],
+      templateOverrides: [],
     })),
+    markerCatalog: [
+      { markerId: 'none', symbol: '', accessibleName: '无标记', enabled: true },
+      {
+        markerId: 'red_failure',
+        symbol: '🔴',
+        accessibleName: '红色故障',
+        tone: 'critical',
+        enabled: true,
+      },
+      {
+        markerId: 'success',
+        symbol: '✅',
+        accessibleName: '成功',
+        tone: 'positive',
+        enabled: true,
+      },
+      { markerId: 'warning', symbol: '⚠️', accessibleName: '警告', enabled: true },
+    ],
+  };
+}
+
+function templateDescriptor(eventType: string): NotificationTemplateDescriptor {
+  const failed = eventType === 'probe.model_failed';
+  return {
+    eventType,
+    channelId: 'system',
+    templateSchemaVersion: 1,
+    defaultMarkerId: failed ? 'red_failure' : 'success',
+    defaultTitleTemplate: failed ? '模型探测故障' : '模型探测恢复',
+    defaultBodyTemplate: failed
+      ? '{{site_name}} · {{model_name}}：{{failure_reason}}，发生时间：{{occurred_at}}'
+      : '{{site_name}} · {{model_name}}：{{recovery_state}}，恢复时间：{{occurred_at}}',
+    variables: [
+      {
+        key: 'occurred_at',
+        label: '发生时间',
+        group: '通用变量',
+        description: '事件发生的本地时间',
+        example: '2026-08-08 14:32:18',
+        required: true,
+      },
+      {
+        key: 'event_name',
+        label: '事件名称',
+        group: '通用变量',
+        description: '当前通知事件的显示名称',
+        example: failed ? '模型探测故障' : '模型探测恢复',
+        required: true,
+      },
+      {
+        key: 'site_name',
+        label: '站点名称',
+        group: '事件变量',
+        description: '站点名称',
+        example: '东京主站',
+        required: true,
+      },
+      {
+        key: 'model_name',
+        label: '模型名称',
+        group: '事件变量',
+        description: '模型名称',
+        example: 'GPT-5',
+        required: true,
+      },
+      {
+        key: failed ? 'failure_reason' : 'recovery_state',
+        label: failed ? '故障原因' : '恢复状态',
+        group: '事件变量',
+        description: failed ? '经过安全归类的故障原因' : '恢复后的稳定状态',
+        example: failed ? '探测请求超时' : '已恢复为正常',
+        required: true,
+      },
+    ],
   };
 }
 
@@ -180,5 +268,16 @@ export class MockNotificationDataSource implements NotificationDataSource {
     if (!channel.supported || channel.permission !== 'granted') {
       throw new Error('系统通知当前不可用');
     }
+  }
+
+  async sendTemplateTestNotification(draft: NotificationTemplateDraft) {
+    await this.sendTestNotification(draft.channelId);
+    return {
+      accepted: true,
+      renderedMarker: '',
+      renderedTitle: draft.titleTemplate,
+      renderedBody: draft.bodyTemplate,
+      operationId: 'op_mock_template_test',
+    };
   }
 }

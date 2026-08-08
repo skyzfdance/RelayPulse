@@ -23,9 +23,10 @@ use crate::{
         ResponseMode, SecretValue, SiteProtocol, ThemeMode, TimestampMs, TrayAction,
     },
     notifications::{
-        request_system_notification_permission, send_test_system_notification,
-        system_channel_snapshot, NotificationChannelSnapshot, NotificationError,
-        NotificationService, NotificationSettingsSnapshot, NotificationSettingsUpdate,
+        request_system_notification_permission, send_system_notification,
+        send_test_system_notification, system_channel_snapshot, NotificationChannelSnapshot,
+        NotificationError, NotificationService, NotificationSettingsSnapshot,
+        NotificationSettingsUpdate, NotificationTemplateDraft, NotificationTemplateTestResult,
     },
     startup::BackendState,
 };
@@ -164,6 +165,38 @@ impl From<NotificationError> for CommandError {
                 category: "validation",
                 message: "The submitted notification settings are invalid.",
                 field: Some(field),
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::TemplateInvalid { field } => Self {
+                code: "notification_template_invalid",
+                category: "validation",
+                message: "The submitted notification template is invalid.",
+                field: Some(field),
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::TemplateSchemaChanged => Self {
+                code: "notification_template_schema_changed",
+                category: "conflict",
+                message: "The notification template schema changed while editing.",
+                field: Some("template_schema_version"),
+                retryable: true,
+                operation_id: None,
+            },
+            NotificationError::TemplateVariableMissing => Self {
+                code: "notification_template_variable_missing",
+                category: "validation",
+                message: "A required notification template variable is unavailable.",
+                field: Some("template"),
+                retryable: false,
+                operation_id: None,
+            },
+            NotificationError::TemplateRenderFailed => Self {
+                code: "notification_template_render_failed",
+                category: "validation",
+                message: "The notification template could not be rendered safely.",
+                field: Some("template"),
                 retryable: false,
                 operation_id: None,
             },
@@ -1834,7 +1867,7 @@ pub async fn update_notification_settings(
             target_id: None,
             parent_id: None,
             change_kind: "update",
-            field_scope: &["notificationsEnabled", "rules"],
+            field_scope: &["notificationsEnabled", "rules", "templateOverrides"],
         }),
         |operation_id| async move {
             let (snapshot, app_revision) = notification_service(&state)?
@@ -1874,6 +1907,47 @@ pub async fn send_test_notification(
                 return Err(NotificationError::ServiceDisabled.into());
             }
             send_test_system_notification(&app, &channel_id).map_err(Into::into)
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn send_notification_template_test(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+    draft: NotificationTemplateDraft,
+    operation_id: Option<String>,
+) -> CommandResult<NotificationTemplateTestResult> {
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "send-notification-template-test",
+        operation_id,
+        Some(OperationAudit {
+            target_type: "notification-template",
+            target_id: None,
+            parent_id: None,
+            change_kind: "test",
+            field_scope: &[],
+        }),
+        |operation_id| async move {
+            let service = notification_service(&state)?;
+            let channel = system_channel_snapshot(&app);
+            let settings = service.settings(channel).await?;
+            if !settings.notifications_enabled {
+                return Err(NotificationError::ServiceDisabled.into());
+            }
+            let channel_id = draft.channel_id.clone();
+            let rendered = service.render_template_test(draft)?;
+            send_system_notification(&app, &channel_id, &rendered.title, &rendered.body)?;
+            Ok(NotificationTemplateTestResult {
+                accepted: true,
+                rendered_marker: rendered.marker,
+                rendered_title: rendered.title,
+                rendered_body: rendered.body,
+                operation_id,
+            })
         },
     )
     .await

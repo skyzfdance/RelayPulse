@@ -1,25 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import type { NotificationEventCatalogItem } from './notification-types';
+import { createNotificationFixture } from './mock-notification-data-source';
 import {
   defaultTemplateSelection,
   effectiveTemplateSelection,
   graphemeCount,
-  notificationTemplateMarkers,
   renderTemplatePreview,
   templateDescriptorFor,
   validateTemplate,
 } from './notification-templates';
 
-const failedEvent: NotificationEventCatalogItem = {
-  eventType: 'probe.model_failed',
-  payloadVersion: 1,
-  category: 'model-health',
-  displayName: '模型探测故障',
-  description: '模型达到稳定故障判定时发送系统通知',
-  defaultEnabled: true,
-  supportedChannels: ['system'],
-  tone: 'critical',
-};
+const snapshot = createNotificationFixture();
+const failedEvent = snapshot.eventCatalog[0];
+const markers = snapshot.markerCatalog;
 
 describe('notification templates', () => {
   it('provides stable defaults, markers and event-scoped variables', () => {
@@ -34,41 +26,15 @@ describe('notification templates', () => {
       'model_name',
       'failure_reason',
     ]);
-    expect(notificationTemplateMarkers.map((marker) => marker.markerId)).toEqual(
-      expect.arrayContaining([
-        'none',
-        'red',
-        'orange',
-        'yellow',
-        'green',
-        'blue',
-        'warning',
-        'failure',
-        'success',
-        'info',
-        'reminder',
-        'timer',
-        'task_completed',
-      ]),
+    expect(markers.map((marker) => marker.markerId)).toEqual(
+      expect.arrayContaining(['none', 'red_failure', 'success', 'warning']),
     );
   });
 
-  it('creates a generic template descriptor for a newly cataloged event', () => {
-    const descriptor = templateDescriptorFor(
-      {
-        ...failedEvent,
-        eventType: 'fixture.task_completed',
-        displayName: '任务完成',
-        tone: 'neutral',
-      },
-      'system',
-    );
-
-    expect(descriptor.defaultTitleTemplate).toBe('任务完成');
-    expect(descriptor.variables.map((variable) => variable.key)).toEqual([
-      'occurred_at',
-      'event_name',
-    ]);
+  it('rejects an inconsistent backend event and template catalog', () => {
+    expect(() =>
+      templateDescriptorFor({ ...failedEvent, eventType: 'fixture.task_completed' }, 'system'),
+    ).toThrow('catalog is inconsistent');
   });
 
   it('rejects unknown and malformed placeholders without partially accepting a template', () => {
@@ -79,12 +45,12 @@ describe('notification templates', () => {
       bodyTemplate: '{{recovery_state}}',
     };
 
-    expect(validateTemplate(descriptor, selection).body).toContain('不适用于当前事件');
-    expect(validateTemplate(descriptor, { ...selection, bodyTemplate: '{{site_name}' }).body).toBe(
-      '变量占位符格式不完整',
-    );
+    expect(validateTemplate(descriptor, selection, markers).body).toContain('不适用于当前事件');
     expect(
-      validateTemplate(descriptor, { ...selection, bodyTemplate: '安全正文\u0000' }).body,
+      validateTemplate(descriptor, { ...selection, bodyTemplate: '{{site_name}' }, markers).body,
+    ).toBe('变量占位符格式不完整');
+    expect(
+      validateTemplate(descriptor, { ...selection, bodyTemplate: '安全正文\u0000' }, markers).body,
     ).toBe('不能包含控制字符或换行');
   });
 
@@ -97,7 +63,7 @@ describe('notification templates', () => {
       titleTemplate: '{{site_name}} 告警',
       bodyTemplate: '{{model_name}}：{{failure_reason}}',
     };
-    const preview = renderTemplatePreview(descriptor, custom);
+    const preview = renderTemplatePreview(descriptor, custom, markers);
 
     expect(preview).toEqual({
       title: '⚠️ 东京主站 告警',

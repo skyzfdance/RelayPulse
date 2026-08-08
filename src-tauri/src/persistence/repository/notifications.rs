@@ -7,7 +7,7 @@ use crate::{
     notifications::{
         NotificationDelivery, NotificationEventCatalogItem, NotificationRule,
         NotificationSettingsState, NotificationSettingsUpdate, NotificationSettingsUpdateOutcome,
-        PreparedNotificationEvent,
+        NotificationTemplateMode, NotificationTemplateOverride, QueuedNotificationEvent,
     },
 };
 
@@ -84,6 +84,42 @@ impl Repository {
                             params![rule.event_type, channel_id],
                         )?;
                     }
+                    transaction.execute(
+                        "DELETE FROM notification_template_overrides WHERE event_type = ?1",
+                        [&rule.event_type],
+                    )?;
+                    let descriptor = catalog
+                        .iter()
+                        .find(|item| item.event_type == rule.event_type)
+                        .map(|item| &item.template_descriptor)
+                        .ok_or(DatabaseError::CatalogChanged)?;
+                    for template_override in &rule.template_overrides {
+                        let redundant_default = template_override.mode
+                            == NotificationTemplateMode::Default
+                            && template_override.marker_id == descriptor.default_marker_id
+                            && template_override.title_template
+                                == descriptor.default_title_template
+                            && template_override.body_template == descriptor.default_body_template;
+                        if redundant_default {
+                            continue;
+                        }
+                        transaction.execute(
+                            "INSERT INTO notification_template_overrides (
+                               event_type, channel_id, mode, marker_id, title_template,
+                               body_template, template_schema_version, updated_at_ms
+                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                            params![
+                                template_override.event_type,
+                                template_override.channel_id,
+                                template_mode_name(template_override.mode),
+                                template_override.marker_id,
+                                template_override.title_template,
+                                template_override.body_template,
+                                template_override.template_schema_version,
+                                now.as_i64(),
+                            ],
+                        )?;
+                    }
                 }
 
                 let app_revision = bump_revision(&transaction)?;
@@ -97,9 +133,9 @@ impl Repository {
             .await
     }
 
-    pub async fn enqueue_notification(
+    pub(crate) async fn enqueue_notification(
         &self,
-        event: PreparedNotificationEvent,
+        event: QueuedNotificationEvent,
         catalog: Vec<NotificationEventCatalogItem>,
         now: TimestampMs,
     ) -> Result<bool> {
@@ -175,6 +211,30 @@ impl Repository {
                 }
                 transaction.commit()?;
                 Ok(true)
+            })
+            .await
+    }
+
+    pub(crate) async fn notification_template_override(
+        &self,
+        event_type: &str,
+        channel_id: &str,
+    ) -> Result<Option<NotificationTemplateOverride>> {
+        let event_type = event_type.to_owned();
+        let channel_id = channel_id.to_owned();
+        self.database()
+            .call(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT event_type, channel_id, mode, marker_id, title_template,
+                                body_template, template_schema_version
+                         FROM notification_template_overrides
+                         WHERE event_type = ?1 AND channel_id = ?2",
+                        params![event_type, channel_id],
+                        template_override_from_row,
+                    )
+                    .optional()
+                    .map_err(DatabaseError::from)
             })
             .await
     }
@@ -390,10 +450,12 @@ fn load_notification_settings(
             .unwrap_or(event.default_enabled);
         let channel_ids = persisted_rule_channels(connection, &event.event_type)?
             .unwrap_or_else(|| event.supported_channels.clone());
+        let template_overrides = persisted_template_overrides(connection, &event.event_type)?;
         rules.push(NotificationRule {
             event_type: event.event_type.clone(),
             enabled,
             channel_ids,
+            template_overrides,
         });
     }
     Ok(NotificationSettingsState {
@@ -401,6 +463,49 @@ fn load_notification_settings(
         notifications_enabled,
         rules,
     })
+}
+
+fn persisted_template_overrides(
+    connection: &Connection,
+    event_type: &str,
+) -> Result<Vec<NotificationTemplateOverride>> {
+    let mut statement = connection.prepare(
+        "SELECT event_type, channel_id, mode, marker_id, title_template,
+                body_template, template_schema_version
+         FROM notification_template_overrides
+         WHERE event_type = ?1 ORDER BY channel_id",
+    )?;
+    let result = statement
+        .query_map([event_type], template_override_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(DatabaseError::from);
+    result
+}
+
+fn template_override_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<NotificationTemplateOverride> {
+    let mode = match row.get::<_, String>(2)?.as_str() {
+        "default" => NotificationTemplateMode::Default,
+        "custom" => NotificationTemplateMode::Custom,
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    Ok(NotificationTemplateOverride {
+        event_type: row.get(0)?,
+        channel_id: row.get(1)?,
+        mode,
+        marker_id: row.get(3)?,
+        title_template: row.get(4)?,
+        body_template: row.get(5)?,
+        template_schema_version: row.get(6)?,
+    })
+}
+
+fn template_mode_name(mode: NotificationTemplateMode) -> &'static str {
+    match mode {
+        NotificationTemplateMode::Default => "default",
+        NotificationTemplateMode::Custom => "custom",
+    }
 }
 
 fn persisted_rule_channels(

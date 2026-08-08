@@ -158,6 +158,7 @@ pub fn run() {
             commands::update_notification_settings,
             commands::request_notification_permission,
             commands::send_test_notification,
+            commands::send_notification_template_test,
         ])
         .build(tauri::generate_context!())
         .expect("error while building RelayPulse");

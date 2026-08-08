@@ -16,8 +16,17 @@ function cloneSnapshot(snapshot: NotificationSettingsSnapshot): NotificationSett
     eventCatalog: snapshot.eventCatalog.map((event) => ({
       ...event,
       supportedChannels: [...event.supportedChannels],
+      templateDescriptor: {
+        ...event.templateDescriptor,
+        variables: event.templateDescriptor.variables.map((variable) => ({ ...variable })),
+      },
     })),
-    rules: snapshot.rules.map((rule) => ({ ...rule, channelIds: [...rule.channelIds] })),
+    rules: snapshot.rules.map((rule) => ({
+      ...rule,
+      channelIds: [...rule.channelIds],
+      templateOverrides: rule.templateOverrides.map((template) => ({ ...template })),
+    })),
+    markerCatalog: snapshot.markerCatalog.map((marker) => ({ ...marker })),
   };
 }
 
@@ -32,6 +41,7 @@ function createDataSource({
   const updates: NotificationSettingsUpdate[] = [];
   const permissionRequests: string[] = [];
   const tests: string[] = [];
+  const templateTests: string[] = [];
   const dataSource: NotificationDataSource = {
     async getSettings() {
       return cloneSnapshot(current);
@@ -43,7 +53,11 @@ function createDataSource({
         ...current,
         revision: current.revision + 1,
         notificationsEnabled: settings.notificationsEnabled,
-        rules: settings.rules.map((rule) => ({ ...rule, channelIds: [...rule.channelIds] })),
+        rules: settings.rules.map((rule) => ({
+          ...rule,
+          channelIds: [...rule.channelIds],
+          templateOverrides: rule.templateOverrides.map((template) => ({ ...template })),
+        })),
       };
       return cloneSnapshot(current);
     },
@@ -63,8 +77,18 @@ function createDataSource({
     async sendTestNotification(channelId) {
       tests.push(channelId);
     },
+    async sendTemplateTestNotification(draft) {
+      templateTests.push(`${draft.eventType}:${draft.channelId}`);
+      return {
+        accepted: true,
+        renderedMarker: '',
+        renderedTitle: draft.titleTemplate,
+        renderedBody: draft.bodyTemplate,
+        operationId: 'op_template_test',
+      };
+    },
   };
-  return { dataSource, permissionRequests, updates, tests };
+  return { dataSource, permissionRequests, updates, tests, templateTests };
 }
 
 function renderPage(dataSource: NotificationDataSource) {
@@ -123,6 +147,32 @@ describe('NotificationsPage', () => {
     fireEvent.click(recoveredRule);
     expect(recoveredRule).not.toBeChecked();
     expect(tests).toHaveLength(0);
+  });
+
+  it('saves a custom template in the settings transaction and tests the live draft', async () => {
+    const { dataSource, updates, templateTests } = createDataSource();
+    renderPage(dataSource);
+
+    fireEvent.click(await screen.findByRole('button', { name: '编辑 模型探测故障 通知模板' }));
+    fireEvent.click(screen.getByText('自定义模板'));
+    fireEvent.change(screen.getByRole('textbox', { name: '通知标题' }), {
+      target: { value: '{{model_name}} 不可用' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '测试当前模板' }));
+    await waitFor(() => expect(templateTests).toEqual(['probe.model_failed:system']));
+    await waitFor(() => expect(screen.getByRole('button', { name: /应\s*用/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /应\s*用/ }));
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
+
+    await waitFor(() => expect(updates).toHaveLength(1));
+    expect(
+      updates[0].rules.find((rule) => rule.eventType === 'probe.model_failed')?.templateOverrides,
+    ).toEqual([
+      expect.objectContaining({
+        mode: 'custom',
+        titleTemplate: '{{model_name}} 不可用',
+      }),
+    ]);
   });
 
   it('does not test against settings that are only enabled in the unsaved draft', async () => {
@@ -213,6 +263,7 @@ describe('NotificationsPage', () => {
       updateSettings: vi.fn(),
       requestPermission: vi.fn(),
       sendTestNotification: vi.fn(),
+      sendTemplateTestNotification: vi.fn(),
     };
     renderPage(dataSource);
 
@@ -228,6 +279,7 @@ describe('NotificationsPage', () => {
       updateSettings: vi.fn(),
       requestPermission: vi.fn(),
       sendTestNotification: vi.fn(),
+      sendTemplateTestNotification: vi.fn(),
     };
     renderPage(dataSource);
 

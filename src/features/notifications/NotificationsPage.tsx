@@ -24,6 +24,7 @@ import type {
 } from './notification-types';
 import {
   defaultTemplateSelection,
+  isDefaultTemplateSelection,
   templateDescriptorFor,
   templateSelectionKey,
   templateSelectionsMatch,
@@ -60,6 +61,7 @@ function toDraft(snapshot: NotificationSettingsSnapshot): NotificationSettingsUp
         eventType: event.eventType,
         enabled: rule?.enabled ?? event.defaultEnabled,
         channelIds: [...(rule?.channelIds ?? event.supportedChannels)],
+        templateOverrides: rule?.templateOverrides.map((template) => ({ ...template })) ?? [],
       };
     }),
   };
@@ -70,17 +72,44 @@ function draftsMatch(left: NotificationSettingsUpdate, right: NotificationSettin
 }
 
 function initialTemplateSelections(snapshot: NotificationSettingsSnapshot) {
+  const rules = new Map(snapshot.rules.map((rule) => [rule.eventType, rule]));
   return Object.fromEntries(
     snapshot.eventCatalog.flatMap((event) =>
       event.supportedChannels.map((channelId) => {
         const descriptor = templateDescriptorFor(event, channelId);
+        const saved = rules
+          .get(event.eventType)
+          ?.templateOverrides.find((template) => template.channelId === channelId);
         return [
           templateSelectionKey(event.eventType, channelId),
-          defaultTemplateSelection(descriptor),
+          saved ? { ...saved } : defaultTemplateSelection(descriptor),
         ];
       }),
     ),
   ) as Record<string, NotificationTemplateSelection>;
+}
+
+function applyTemplateSelections(
+  snapshot: NotificationSettingsSnapshot,
+  draft: NotificationSettingsUpdate,
+  selections: Record<string, NotificationTemplateSelection>,
+): NotificationSettingsUpdate {
+  const events = new Map(snapshot.eventCatalog.map((event) => [event.eventType, event]));
+  return {
+    ...draft,
+    rules: draft.rules.map((rule) => {
+      const event = events.get(rule.eventType);
+      if (!event) return rule;
+      const templateOverrides = event.supportedChannels.flatMap((channelId) => {
+        const descriptor = templateDescriptorFor(event, channelId);
+        const selection =
+          selections[templateSelectionKey(event.eventType, channelId)] ??
+          defaultTemplateSelection(descriptor);
+        return isDefaultTemplateSelection(descriptor, selection) ? [] : [{ ...selection }];
+      });
+      return { ...rule, templateOverrides };
+    }),
+  };
 }
 
 function eventIcon(event: NotificationEventCatalogItem) {
@@ -241,15 +270,17 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
   }
 
   async function saveSettings() {
-    if (!draft || !dirty || saving) return;
+    if (!snapshot || !draft || !dirty || saving) return;
     setSaving(true);
     try {
-      if (settingsDirty) {
-        const next = await source.updateSettings(draft);
-        setSnapshot(next);
-        setDraft(toDraft(next));
-      }
-      setSavedTemplates(templateDrafts);
+      const next = await source.updateSettings(
+        applyTemplateSelections(snapshot, draft, templateDrafts),
+      );
+      setSnapshot(next);
+      setDraft(toDraft(next));
+      const templates = initialTemplateSelections(next);
+      setSavedTemplates(templates);
+      setTemplateDrafts(templates);
       message.success({ content: '通知设置已保存', duration: 3 });
     } catch {
       notification.error({
@@ -265,9 +296,20 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
     }
   }
 
-  async function testTemplateDraft() {
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 280));
-    message.success({ content: '当前模板草稿渲染成功', duration: 3 });
+  async function testTemplateDraft(selection: NotificationTemplateSelection) {
+    try {
+      await source.sendTemplateTestNotification(selection);
+      message.success({ content: '当前模板已提交到系统通知中心', duration: 3 });
+    } catch {
+      notification.error({
+        title: '模板测试通知发送失败',
+        description: '当前模板或系统通知不可用，请检查内容和权限后重试。',
+        placement: 'topRight',
+        duration: 6,
+        pauseOnHover: true,
+        role: 'alert',
+      });
+    }
   }
 
   async function sendTestNotification(channel: NotificationChannelSnapshot) {
@@ -632,6 +674,7 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
               onClose={() => setActiveTemplate(null)}
               onDirtyChange={setTemplateEditorDirty}
               onTest={testTemplateDraft}
+              markers={snapshot.markerCatalog}
               open
               testAvailable={
                 snapshot.notificationsEnabled &&

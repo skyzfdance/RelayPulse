@@ -12,12 +12,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   NotificationChannelSnapshot,
   NotificationEventCatalogItem,
+  NotificationTemplateMarker,
 } from './notification-types';
 import {
   defaultTemplateSelection,
   effectiveTemplateSelection,
   graphemeCount,
-  notificationTemplateMarkers,
   renderTemplatePreview,
   type NotificationTemplateDescriptor,
   type NotificationTemplateMode,
@@ -33,6 +33,7 @@ interface NotificationTemplateDrawerProps {
   event: NotificationEventCatalogItem;
   channel: NotificationChannelSnapshot;
   descriptor: NotificationTemplateDescriptor;
+  markers: NotificationTemplateMarker[];
   value: NotificationTemplateSelection;
   testAvailable: boolean;
   onApply(value: NotificationTemplateSelection): void;
@@ -46,6 +47,7 @@ export function NotificationTemplateDrawer({
   event,
   channel,
   descriptor,
+  markers,
   value,
   testAvailable,
   onApply,
@@ -70,24 +72,26 @@ export function NotificationTemplateDrawer({
   }, [composing, open, selection]);
 
   const validation = useMemo(
-    () => validateTemplate(descriptor, previewSelection),
-    [descriptor, previewSelection],
+    () => validateTemplate(descriptor, previewSelection, markers),
+    [descriptor, markers, previewSelection],
   );
   const actionValidation = useMemo(
-    () => (composing ? validation : validateTemplate(descriptor, selection)),
-    [composing, descriptor, selection, validation],
+    () => (composing ? validation : validateTemplate(descriptor, selection, markers)),
+    [composing, descriptor, markers, selection, validation],
   );
   const effective = useMemo(
     () => effectiveTemplateSelection(descriptor, previewSelection),
     [descriptor, previewSelection],
   );
   const preview = useMemo(
-    () => renderTemplatePreview(descriptor, previewSelection),
-    [descriptor, previewSelection],
+    () => renderTemplatePreview(descriptor, previewSelection, markers),
+    [descriptor, markers, previewSelection],
   );
   const dirty = JSON.stringify(selection) !== JSON.stringify(initialSelection);
   const custom = selection.mode === 'custom';
-  const invalid = Boolean(actionValidation.title || actionValidation.body);
+  const invalid = Boolean(
+    actionValidation.title || actionValidation.body || actionValidation.marker,
+  );
   const variableMenuItems = useMemo<MenuProps['items']>(
     () =>
       ['通用变量', '事件变量'].map((group) => ({
@@ -271,7 +275,7 @@ export function NotificationTemplateDrawer({
               aria-label="标题标记"
               disabled={!custom}
               onChange={(markerId) => setSelection((current) => ({ ...current, markerId }))}
-              options={notificationTemplateMarkers
+              options={markers
                 .filter((marker) => marker.enabled)
                 .map((marker) => ({
                   value: marker.markerId,

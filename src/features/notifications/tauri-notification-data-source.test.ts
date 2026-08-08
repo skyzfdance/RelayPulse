@@ -10,7 +10,14 @@ describe('TauriNotificationDataSource', () => {
       .mockResolvedValueOnce(snapshot)
       .mockResolvedValueOnce({ ...snapshot, revision: 2 })
       .mockResolvedValueOnce(snapshot.channels[0])
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        accepted: true,
+        renderedMarker: '🔴',
+        renderedTitle: '模型探测故障',
+        renderedBody: '测试详情',
+        operationId: 'op_template_test',
+      });
     const dataSource = new TauriNotificationDataSource(invoke);
 
     await expect(dataSource.getSettings()).resolves.toEqual(snapshot);
@@ -21,6 +28,16 @@ describe('TauriNotificationDataSource', () => {
     });
     await dataSource.requestPermission('system');
     await dataSource.sendTestNotification('system');
+    const draft = snapshot.eventCatalog[0].templateDescriptor;
+    await dataSource.sendTemplateTestNotification({
+      eventType: draft.eventType,
+      channelId: draft.channelId,
+      mode: 'custom',
+      markerId: draft.defaultMarkerId,
+      titleTemplate: draft.defaultTitleTemplate,
+      bodyTemplate: draft.defaultBodyTemplate,
+      templateSchemaVersion: draft.templateSchemaVersion,
+    });
 
     expect(invoke).toHaveBeenNthCalledWith(1, 'get_notification_settings', undefined);
     expect(invoke).toHaveBeenNthCalledWith(2, 'update_notification_settings', {
@@ -37,6 +54,19 @@ describe('TauriNotificationDataSource', () => {
     });
     expect(invoke).toHaveBeenNthCalledWith(4, 'send_test_notification', {
       channelId: 'system',
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, 'send_notification_template_test', {
+      draft: {
+        eventType: 'probe.model_failed',
+        channelId: 'system',
+        mode: 'custom',
+        markerId: 'red_failure',
+        titleTemplate: '模型探测故障',
+        bodyTemplate:
+          '{{site_name}} · {{model_name}}：{{failure_reason}}，发生时间：{{occurred_at}}',
+        templateSchemaVersion: 1,
+      },
       operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
     });
   });

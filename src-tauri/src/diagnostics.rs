@@ -1227,6 +1227,7 @@ fn is_safe_target_type(value: &str) -> bool {
             | "probe-records"
             | "notification-settings"
             | "notification-channel"
+            | "notification-template"
     )
 }
 
@@ -1290,6 +1291,7 @@ fn is_safe_audit_field(value: &str) -> bool {
             | "records"
             | "notificationsEnabled"
             | "rules"
+            | "templateOverrides"
     )
 }
 

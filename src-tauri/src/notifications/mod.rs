@@ -1,7 +1,11 @@
 mod dispatcher;
 mod system;
+mod templates;
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,9 +16,19 @@ use crate::{
 };
 
 pub use dispatcher::start_dispatcher;
+pub(crate) use system::send_system_notification;
 pub(crate) use system::system_dispatch;
 pub use system::{
     request_system_notification_permission, send_test_system_notification, system_channel_snapshot,
+};
+use templates::{
+    example_variables, render_notification_template, template_descriptor,
+    validate_template_override, RenderedNotificationTemplate,
+};
+pub use templates::{
+    marker_catalog, NotificationTemplateDescriptor, NotificationTemplateDraft,
+    NotificationTemplateMarker, NotificationTemplateMode, NotificationTemplateOverride,
+    NotificationTemplateTestResult, NotificationTemplateVariable,
 };
 
 pub const SYSTEM_CHANNEL_ID: &str = "system";
@@ -61,6 +75,7 @@ pub struct NotificationEventCatalogItem {
     pub default_enabled: bool,
     pub supported_channels: Vec<String>,
     pub tone: Option<NotificationEventTone>,
+    pub template_descriptor: NotificationTemplateDescriptor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +84,7 @@ pub struct NotificationRule {
     pub event_type: String,
     pub enabled: bool,
     pub channel_ids: Vec<String>,
+    pub template_overrides: Vec<NotificationTemplateOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -79,6 +95,7 @@ pub struct NotificationSettingsSnapshot {
     pub channels: Vec<NotificationChannelSnapshot>,
     pub event_catalog: Vec<NotificationEventCatalogItem>,
     pub rules: Vec<NotificationRule>,
+    pub marker_catalog: Vec<NotificationTemplateMarker>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -104,6 +121,16 @@ pub struct NotificationSettingsUpdateOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedNotificationEvent {
+    pub(crate) id: String,
+    pub(crate) event_type: String,
+    pub(crate) payload_version: u16,
+    pub(crate) occurred_at_ms: i64,
+    pub(crate) variables: HashMap<String, String>,
+    pub(crate) dedupe_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QueuedNotificationEvent {
     pub(crate) id: String,
     pub(crate) event_type: String,
     pub(crate) payload_version: u16,
@@ -153,13 +180,15 @@ impl PreparedNotificationEvent {
             ModelFailureReason::Protocol => "响应协议不受支持",
             ModelFailureReason::Unknown => "探测未成功完成",
         };
+        let mut variables =
+            common_event_variables("模型探测故障", occurred_at, site_name, model_name);
+        variables.insert("failure_reason".to_owned(), summary.to_owned());
         Ok(Self {
             id: id.into(),
             event_type: "probe.model_failed".to_owned(),
             payload_version: 1,
             occurred_at_ms: occurred_at.as_i64(),
-            title: "模型探测故障".to_owned(),
-            body: format!("{site_name} · {model_name}：{summary}"),
+            variables,
             dedupe_key: format!("probe.model_failed:{monitoring_session_id}:{model_id}"),
         })
     }
@@ -181,29 +210,70 @@ impl PreparedNotificationEvent {
             ModelRecoveryState::Healthy => "已恢复为正常",
             ModelRecoveryState::Slow => "已恢复但响应偏慢",
         };
+        let mut variables =
+            common_event_variables("模型探测恢复", occurred_at, site_name, model_name);
+        variables.insert("recovery_state".to_owned(), summary.to_owned());
         Ok(Self {
             id: id.into(),
             event_type: "probe.model_recovered".to_owned(),
             payload_version: 1,
             occurred_at_ms: occurred_at.as_i64(),
-            title: "模型探测恢复".to_owned(),
-            body: format!("{site_name} · {model_name}：{summary}"),
+            variables,
             dedupe_key: format!("probe.model_recovered:{monitoring_session_id}:{model_id}"),
         })
     }
 
     #[cfg(test)]
     fn fixture(id: &str, dedupe_key: &str) -> Self {
+        let occurred_at = TimestampMs::new(1_700_000_000_000).expect("fixture timestamp is valid");
         Self {
             id: id.to_owned(),
             event_type: "fixture.task_completed".to_owned(),
             payload_version: 1,
             occurred_at_ms: 1_700_000_000_000,
-            title: "RelayPulse fixture".to_owned(),
-            body: "A deterministic notification fixture completed.".to_owned(),
+            variables: common_event_variables(
+                "Fixture completed",
+                occurred_at,
+                "Fixture site",
+                "Fixture model",
+            ),
             dedupe_key: dedupe_key.to_owned(),
         }
     }
+}
+
+fn common_event_variables(
+    event_name: &str,
+    occurred_at: TimestampMs,
+    site_name: &str,
+    model_name: &str,
+) -> HashMap<String, String> {
+    HashMap::from([
+        ("event_name".to_owned(), event_name.to_owned()),
+        (
+            "occurred_at".to_owned(),
+            format_local_timestamp(occurred_at),
+        ),
+        ("site_name".to_owned(), site_name.to_owned()),
+        ("model_name".to_owned(), model_name.to_owned()),
+    ])
+}
+
+fn format_local_timestamp(timestamp: TimestampMs) -> String {
+    let seconds = timestamp.as_i64().div_euclid(1_000);
+    let datetime = time::OffsetDateTime::from_unix_timestamp(seconds)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    let local = datetime.to_offset(offset);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        local.year(),
+        u8::from(local.month()),
+        local.day(),
+        local.hour(),
+        local.minute(),
+        local.second()
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +311,14 @@ pub enum NotificationError {
     CatalogChanged,
     #[error("notification settings are invalid")]
     InvalidSettings { field: &'static str },
+    #[error("notification template is invalid")]
+    TemplateInvalid { field: &'static str },
+    #[error("notification template schema changed")]
+    TemplateSchemaChanged,
+    #[error("notification template variable is missing")]
+    TemplateVariableMissing,
+    #[error("notification template could not be rendered")]
+    TemplateRenderFailed,
     #[error("notification settings are unavailable")]
     SettingsUnavailable,
     #[error("notification service is disabled")]
@@ -278,6 +356,7 @@ impl From<DatabaseError> for NotificationError {
 pub struct NotificationService {
     repository: Repository,
     clock: Arc<dyn Clock>,
+    diagnostics: Option<crate::diagnostics::Diagnostics>,
 }
 
 impl NotificationService {
@@ -285,12 +364,25 @@ impl NotificationService {
         Self {
             repository,
             clock: Arc::new(SystemClock),
+            diagnostics: None,
         }
+    }
+
+    pub fn with_diagnostics(
+        mut self,
+        diagnostics: Option<crate::diagnostics::Diagnostics>,
+    ) -> Self {
+        self.diagnostics = diagnostics;
+        self
     }
 
     #[cfg(test)]
     fn with_clock(repository: Repository, clock: Arc<dyn Clock>) -> Self {
-        Self { repository, clock }
+        Self {
+            repository,
+            clock,
+            diagnostics: None,
+        }
     }
 
     pub async fn settings(
@@ -327,10 +419,59 @@ impl NotificationService {
         event: PreparedNotificationEvent,
     ) -> Result<bool, NotificationError> {
         validate_prepared_event(&event)?;
+        let catalog = event_catalog();
+        let descriptor = catalog
+            .iter()
+            .find(|item| item.event_type == event.event_type)
+            .map(|item| &item.template_descriptor)
+            .ok_or(NotificationError::CatalogChanged)?;
+        let template_override = self
+            .repository
+            .notification_template_override(&event.event_type, SYSTEM_CHANNEL_ID)
+            .await?;
+        let rendered =
+            render_notification_template(descriptor, template_override.as_ref(), &event.variables)?;
+        if let (Some(diagnostics), Some(error_code)) =
+            (&self.diagnostics, rendered.fallback_error_code)
+        {
+            diagnostics.record_background_error("notification-template-render", error_code);
+        }
+        let queued = QueuedNotificationEvent {
+            id: event.id,
+            event_type: event.event_type,
+            payload_version: event.payload_version,
+            occurred_at_ms: event.occurred_at_ms,
+            title: rendered.title,
+            body: rendered.body,
+            dedupe_key: event.dedupe_key,
+        };
         Ok(self
             .repository
-            .enqueue_notification(event, event_catalog(), self.clock.now())
+            .enqueue_notification(queued, catalog, self.clock.now())
             .await?)
+    }
+
+    pub(crate) fn render_template_test(
+        &self,
+        draft: NotificationTemplateDraft,
+    ) -> Result<RenderedNotificationTemplate, NotificationError> {
+        let catalog = event_catalog();
+        let descriptor = catalog
+            .iter()
+            .find(|item| item.event_type == draft.event_type)
+            .map(|item| &item.template_descriptor)
+            .ok_or(NotificationError::CatalogChanged)?;
+        let template_override = NotificationTemplateOverride::from(draft);
+        validate_template_override(descriptor, &template_override)?;
+        let rendered = render_notification_template(
+            descriptor,
+            Some(&template_override),
+            &example_variables(descriptor),
+        )?;
+        if rendered.fallback_error_code.is_some() {
+            return Err(NotificationError::TemplateRenderFailed);
+        }
+        Ok(rendered)
     }
 
     pub(crate) async fn dispatch_next<F>(
@@ -416,6 +557,7 @@ fn snapshot(
         channels: vec![system_channel],
         event_catalog,
         rules: settings.rules,
+        marker_catalog: marker_catalog(),
     }
 }
 
@@ -447,6 +589,13 @@ fn validate_settings_update(update: &NotificationSettingsUpdate) -> Result<(), N
                 field: "channel_ids",
             });
         }
+        let mut template_channels = HashSet::new();
+        for template_override in &rule.template_overrides {
+            if !template_channels.insert(template_override.channel_id.as_str()) {
+                return Err(NotificationError::TemplateInvalid { field: "template" });
+            }
+            validate_template_override(&event.template_descriptor, template_override)?;
+        }
     }
     Ok(())
 }
@@ -465,10 +614,10 @@ fn validate_prepared_event(event: &PreparedNotificationEvent) -> Result<(), Noti
         || event.occurred_at_ms < 0
         || event.dedupe_key.is_empty()
         || event.dedupe_key.len() > 200
-        || event.title.is_empty()
-        || event.title.chars().count() > 120
-        || event.body.is_empty()
-        || event.body.chars().count() > 500
+        || event.variables.is_empty()
+        || event.variables.values().any(|value| {
+            value.chars().count() > 500 || value.chars().any(|character| character.is_control())
+        })
     {
         return Err(NotificationError::InvalidSettings { field: "event" });
     }
@@ -509,6 +658,8 @@ pub fn event_catalog() -> Vec<NotificationEventCatalogItem> {
             default_enabled: true,
             supported_channels: vec![SYSTEM_CHANNEL_ID.to_owned()],
             tone: Some(NotificationEventTone::Critical),
+            template_descriptor: template_descriptor("probe.model_failed", "模型探测故障")
+                .expect("built-in failure template exists"),
         },
         NotificationEventCatalogItem {
             event_type: "probe.model_recovered".to_owned(),
@@ -520,6 +671,8 @@ pub fn event_catalog() -> Vec<NotificationEventCatalogItem> {
             default_enabled: true,
             supported_channels: vec![SYSTEM_CHANNEL_ID.to_owned()],
             tone: Some(NotificationEventTone::Positive),
+            template_descriptor: template_descriptor("probe.model_recovered", "模型探测恢复")
+                .expect("built-in recovery template exists"),
         },
     ];
     #[cfg(test)]
@@ -535,6 +688,8 @@ pub fn event_catalog() -> Vec<NotificationEventCatalogItem> {
             default_enabled: true,
             supported_channels: vec![SYSTEM_CHANNEL_ID.to_owned()],
             tone: Some(NotificationEventTone::Neutral),
+            template_descriptor: template_descriptor("fixture.task_completed", "Fixture completed")
+                .expect("fixture template exists"),
         });
         catalog
     }
@@ -589,6 +744,36 @@ mod tests {
             permission: NotificationPermission::Granted,
             supported: true,
         }
+    }
+
+    fn custom_fixture_template() -> NotificationTemplateOverride {
+        NotificationTemplateOverride {
+            event_type: "fixture.task_completed".to_owned(),
+            channel_id: SYSTEM_CHANNEL_ID.to_owned(),
+            mode: NotificationTemplateMode::Custom,
+            marker_id: "none".to_owned(),
+            title_template: "{{event_name}} custom".to_owned(),
+            body_template: "Custom at {{occurred_at}}".to_owned(),
+            template_schema_version: templates::TEMPLATE_SCHEMA_VERSION,
+        }
+    }
+
+    #[test]
+    fn template_test_rejects_a_draft_that_would_fall_back() {
+        let result = service().render_template_test(NotificationTemplateDraft {
+            event_type: "probe.model_failed".to_owned(),
+            channel_id: SYSTEM_CHANNEL_ID.to_owned(),
+            mode: NotificationTemplateMode::Custom,
+            marker_id: "warning".to_owned(),
+            title_template: "a".repeat(120),
+            body_template: "{{failure_reason}}".to_owned(),
+            template_schema_version: templates::TEMPLATE_SCHEMA_VERSION,
+        });
+
+        assert!(matches!(
+            result,
+            Err(NotificationError::TemplateRenderFailed)
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -680,7 +865,7 @@ mod tests {
 
         let report = service
             .dispatch_next(|delivery| {
-                assert_eq!(delivery.title, "RelayPulse fixture");
+                assert_eq!(delivery.title, "☑️ RelayPulse fixture");
                 Ok(())
             })
             .await
@@ -694,6 +879,46 @@ mod tests {
             .await
             .expect("dispatcher runs again")
             .is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn custom_template_is_snapshotted_before_dispatch() {
+        let service = service();
+        let initial = service.settings(channel()).await.expect("settings load");
+        let mut rules = initial.rules;
+        rules
+            .iter_mut()
+            .find(|rule| rule.event_type == "fixture.task_completed")
+            .expect("fixture rule exists")
+            .template_overrides = vec![custom_fixture_template()];
+        service
+            .update_settings(
+                NotificationSettingsUpdate {
+                    revision: initial.revision,
+                    notifications_enabled: true,
+                    rules,
+                },
+                channel(),
+            )
+            .await
+            .expect("custom template saves");
+        service
+            .publish(PreparedNotificationEvent::fixture(
+                "event_custom_template",
+                "dedupe_custom_template",
+            ))
+            .await
+            .expect("event is queued");
+
+        service
+            .dispatch_next(|delivery| {
+                assert_eq!(delivery.title, "Fixture completed custom");
+                assert!(delivery.body.starts_with("Custom at 2023-"));
+                Ok(())
+            })
+            .await
+            .expect("dispatcher runs")
+            .expect("custom delivery exists");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1001,12 +1226,18 @@ mod tests {
             let database = Database::open(&path).expect("database opens");
             let service = NotificationService::new(Repository::new(database));
             let initial = service.settings(channel()).await.expect("settings load");
+            let mut rules = initial.rules;
+            rules
+                .iter_mut()
+                .find(|rule| rule.event_type == "fixture.task_completed")
+                .expect("fixture rule exists")
+                .template_overrides = vec![custom_fixture_template()];
             service
                 .update_settings(
                     NotificationSettingsUpdate {
                         revision: initial.revision,
                         notifications_enabled: false,
-                        rules: initial.rules,
+                        rules,
                     },
                     channel(),
                 )
@@ -1020,6 +1251,15 @@ mod tests {
         let settings = reopened.settings(channel()).await.expect("settings reload");
         assert_eq!(settings.revision, 1);
         assert!(!settings.notifications_enabled);
+        assert_eq!(
+            settings
+                .rules
+                .iter()
+                .find(|rule| rule.event_type == "fixture.task_completed")
+                .expect("fixture rule reloads")
+                .template_overrides,
+            vec![custom_fixture_template()]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1073,8 +1313,22 @@ mod tests {
             ModelFailureReason::Timeout,
         )
         .expect("safe event is prepared");
-        assert_eq!(event.title, "模型探测故障");
-        assert_eq!(event.body, "站点 A · 模型 A：探测请求超时");
+        assert_eq!(
+            event.variables.get("event_name").map(String::as_str),
+            Some("模型探测故障")
+        );
+        assert_eq!(
+            event.variables.get("site_name").map(String::as_str),
+            Some("站点 A")
+        );
+        assert_eq!(
+            event.variables.get("model_name").map(String::as_str),
+            Some("模型 A")
+        );
+        assert_eq!(
+            event.variables.get("failure_reason").map(String::as_str),
+            Some("探测请求超时")
+        );
         assert!(PreparedNotificationEvent::model_recovered(
             "event_model_recovered",
             now,

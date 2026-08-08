@@ -2,15 +2,18 @@ import {
   BellOutlined,
   CheckCircleOutlined,
   DesktopOutlined,
+  EditOutlined,
   ExclamationCircleOutlined,
   SaveOutlined,
   SendOutlined,
 } from '@ant-design/icons';
-import { App as AntdApp, Badge, Button, Empty, Result, Spin, Switch, Table } from 'antd';
+import { App as AntdApp, Badge, Button, Empty, Result, Spin, Switch, Table, Tooltip } from 'antd';
 import type { TableProps } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { recordFrontendAction } from '../../app/frontend-diagnostics';
+import { BEFORE_VIEW_CHANGE_EVENT } from '../../app/view';
 import { pageHeaderClass } from '../../styles/tailwind';
+import { NotificationTemplateDrawer } from './NotificationTemplateDrawer';
 import type {
   NotificationChannelSnapshot,
   NotificationDataSource,
@@ -19,6 +22,13 @@ import type {
   NotificationSettingsSnapshot,
   NotificationSettingsUpdate,
 } from './notification-types';
+import {
+  defaultTemplateSelection,
+  templateDescriptorFor,
+  templateSelectionKey,
+  templateSelectionsMatch,
+  type NotificationTemplateSelection,
+} from './notification-templates';
 
 interface NotificationsPageProps {
   dataSource: NotificationDataSource;
@@ -59,6 +69,20 @@ function draftsMatch(left: NotificationSettingsUpdate, right: NotificationSettin
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function initialTemplateSelections(snapshot: NotificationSettingsSnapshot) {
+  return Object.fromEntries(
+    snapshot.eventCatalog.flatMap((event) =>
+      event.supportedChannels.map((channelId) => {
+        const descriptor = templateDescriptorFor(event, channelId);
+        return [
+          templateSelectionKey(event.eventType, channelId),
+          defaultTemplateSelection(descriptor),
+        ];
+      }),
+    ),
+  ) as Record<string, NotificationTemplateSelection>;
+}
+
 function eventIcon(event: NotificationEventCatalogItem) {
   if (event.tone === 'critical') return <ExclamationCircleOutlined />;
   if (event.tone === 'positive') return <CheckCircleOutlined />;
@@ -96,6 +120,17 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
   const [saving, setSaving] = useState(false);
   const [authorizingChannelId, setAuthorizingChannelId] = useState<string | null>(null);
   const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
+  const [savedTemplates, setSavedTemplates] = useState<
+    Record<string, NotificationTemplateSelection>
+  >({});
+  const [templateDrafts, setTemplateDrafts] = useState<
+    Record<string, NotificationTemplateSelection>
+  >({});
+  const [activeTemplate, setActiveTemplate] = useState<{
+    eventType: string;
+    channelId: string;
+  } | null>(null);
+  const [templateEditorDirty, setTemplateEditorDirty] = useState(false);
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -104,6 +139,9 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
       const next = await source.getSettings();
       setSnapshot(next);
       setDraft(toDraft(next));
+      const templates = initialTemplateSelections(next);
+      setSavedTemplates(templates);
+      setTemplateDrafts(templates);
     } catch {
       setLoadError(true);
     } finally {
@@ -119,6 +157,9 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
         if (!active) return;
         setSnapshot(next);
         setDraft(toDraft(next));
+        const templates = initialTemplateSelections(next);
+        setSavedTemplates(templates);
+        setTemplateDrafts(templates);
       })
       .catch(() => {
         if (active) setLoadError(true);
@@ -132,7 +173,10 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
   }, [source]);
 
   const savedDraft = useMemo(() => (snapshot ? toDraft(snapshot) : null), [snapshot]);
-  const dirty = Boolean(draft && savedDraft && !draftsMatch(draft, savedDraft));
+  const settingsDirty = Boolean(draft && savedDraft && !draftsMatch(draft, savedDraft));
+  const templatesDirty = !templateSelectionsMatch(templateDrafts, savedTemplates);
+  const dirty = settingsDirty || templatesDirty;
+  const protectedDirty = dirty || templateEditorDirty;
   const channelsById = useMemo(
     () => new Map(snapshot?.channels.map((channel) => [channel.id, channel]) ?? []),
     [snapshot],
@@ -141,6 +185,43 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
     () => new Map(draft?.rules.map((rule) => [rule.eventType, rule]) ?? []),
     [draft],
   );
+  const activeTemplateEvent = useMemo(
+    () =>
+      activeTemplate
+        ? (snapshot?.eventCatalog.find((event) => event.eventType === activeTemplate.eventType) ??
+          null)
+        : null,
+    [activeTemplate, snapshot],
+  );
+  const activeTemplateChannel = useMemo(
+    () => (activeTemplate ? (channelsById.get(activeTemplate.channelId) ?? null) : null),
+    [activeTemplate, channelsById],
+  );
+  const activeTemplateDescriptor = useMemo(
+    () =>
+      activeTemplate && activeTemplateEvent
+        ? templateDescriptorFor(activeTemplateEvent, activeTemplate.channelId)
+        : null,
+    [activeTemplate, activeTemplateEvent],
+  );
+
+  useEffect(() => {
+    if (!protectedDirty) return;
+    const protectBrowserExit = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    const protectViewChange = (event: Event) => {
+      if (!window.confirm('当前通知设置仍有未保存的更改，确定要离开吗？')) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', protectBrowserExit);
+    window.addEventListener(BEFORE_VIEW_CHANGE_EVENT, protectViewChange);
+    return () => {
+      window.removeEventListener('beforeunload', protectBrowserExit);
+      window.removeEventListener(BEFORE_VIEW_CHANGE_EVENT, protectViewChange);
+    };
+  }, [protectedDirty]);
 
   function updateRule(eventType: string, enabled: boolean) {
     recordFrontendAction('setting-changed', {
@@ -163,9 +244,12 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
     if (!draft || !dirty || saving) return;
     setSaving(true);
     try {
-      const next = await source.updateSettings(draft);
-      setSnapshot(next);
-      setDraft(toDraft(next));
+      if (settingsDirty) {
+        const next = await source.updateSettings(draft);
+        setSnapshot(next);
+        setDraft(toDraft(next));
+      }
+      setSavedTemplates(templateDrafts);
       message.success({ content: '通知设置已保存', duration: 3 });
     } catch {
       notification.error({
@@ -179,6 +263,11 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function testTemplateDraft() {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 280));
+    message.success({ content: '当前模板草稿渲染成功', duration: 3 });
   }
 
   async function sendTestNotification(channel: NotificationChannelSnapshot) {
@@ -278,6 +367,36 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
             ))}
           </div>
         ),
+      },
+      {
+        title: '模板',
+        dataIndex: 'eventType',
+        align: 'center',
+        width: 116,
+        render: (_, event) => {
+          const channelId = event.supportedChannels[0];
+          if (!channelId) return null;
+          const selection =
+            templateDrafts[templateSelectionKey(event.eventType, channelId)] ??
+            defaultTemplateSelection(templateDescriptorFor(event, channelId));
+          return (
+            <div className="flex items-center justify-center gap-1">
+              <span className="text-xs leading-5 text-rp-tertiary">
+                {selection.mode === 'custom' ? '自定义' : '默认'}
+              </span>
+              <Tooltip title="编辑通知模板">
+                <Button
+                  aria-label={`编辑 ${event.displayName} 通知模板`}
+                  className="size-8! text-rp-primary!"
+                  icon={<EditOutlined aria-hidden="true" />}
+                  onClick={() => setActiveTemplate({ eventType: event.eventType, channelId })}
+                  shape="circle"
+                  type="text"
+                />
+              </Tooltip>
+            </div>
+          );
+        },
       },
       {
         title: '启用',
@@ -476,7 +595,13 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
           </div>
 
           <footer className="flex min-h-18 flex-none items-center justify-end gap-2.5 px-6">
-            <Button disabled={!dirty || saving} onClick={() => savedDraft && setDraft(savedDraft)}>
+            <Button
+              disabled={!dirty || saving}
+              onClick={() => {
+                if (savedDraft) setDraft(savedDraft);
+                setTemplateDrafts(savedTemplates);
+              }}
+            >
               放弃更改
             </Button>
             <Button
@@ -489,6 +614,38 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
               保存设置
             </Button>
           </footer>
+
+          {activeTemplate &&
+          activeTemplateEvent &&
+          activeTemplateChannel &&
+          activeTemplateDescriptor ? (
+            <NotificationTemplateDrawer
+              channel={activeTemplateChannel}
+              descriptor={activeTemplateDescriptor}
+              event={activeTemplateEvent}
+              key={templateSelectionKey(activeTemplate.eventType, activeTemplate.channelId)}
+              onApply={(selection) => {
+                const key = templateSelectionKey(selection.eventType, selection.channelId);
+                setTemplateDrafts((current) => ({ ...current, [key]: selection }));
+                setActiveTemplate(null);
+              }}
+              onClose={() => setActiveTemplate(null)}
+              onDirtyChange={setTemplateEditorDirty}
+              onTest={testTemplateDraft}
+              open
+              testAvailable={
+                snapshot.notificationsEnabled &&
+                draft.notificationsEnabled &&
+                activeTemplateChannel.supported &&
+                activeTemplateChannel.permission === 'granted'
+              }
+              value={
+                templateDrafts[
+                  templateSelectionKey(activeTemplate.eventType, activeTemplate.channelId)
+                ] ?? defaultTemplateSelection(activeTemplateDescriptor)
+              }
+            />
+          ) : null}
         </>
       )}
     </div>

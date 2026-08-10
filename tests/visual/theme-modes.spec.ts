@@ -8,6 +8,7 @@ const cases = [
   ['site-advanced', 1504, 964],
   ['model-settings', 1504, 964],
   ['general', 1504, 964],
+  ['intelligence-ladder', 1504, 964],
   ['delete-confirm', 1504, 964],
   ['empty', 1504, 964],
   ['tray-healthy', 480, 400],

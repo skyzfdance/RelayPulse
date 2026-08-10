@@ -5,6 +5,7 @@ import {
   ProfileOutlined,
   QuestionCircleOutlined,
   SettingOutlined,
+  TrophyOutlined,
 } from '@ant-design/icons';
 import type { PropsWithChildren } from 'react';
 import { BrandMark } from '../components/BrandMark';
@@ -31,7 +32,9 @@ export function MainShell({ children, view }: PropsWithChildren<{ view: ViewName
           ? 'records'
           : view === 'operation-history'
             ? 'operation-history'
-            : 'sites';
+            : view === 'intelligence-ladder'
+              ? 'intelligence-ladder'
+              : 'sites';
   return (
     <div className="h-full w-full min-w-240 overflow-hidden bg-rp-surface">
       <main
@@ -88,6 +91,15 @@ export function MainShell({ children, view }: PropsWithChildren<{ view: ViewName
             >
               <ProfileOutlined />
               操作记录
+            </button>
+            <div className="mt-5.5 px-3 pb-2 text-xs text-rp-tertiary">情报</div>
+            <button
+              aria-current={active === 'intelligence-ladder' ? 'page' : undefined}
+              className={navItemClasses(active === 'intelligence-ladder')}
+              onClick={() => navigateToView('intelligence-ladder')}
+            >
+              <TrophyOutlined />
+              智力天梯
             </button>
             <div className="flex-1" />
             <button

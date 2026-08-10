@@ -7,6 +7,7 @@ export const viewNames = [
   'notifications',
   'records',
   'operation-history',
+  'intelligence-ladder',
   'delete-confirm',
   'empty',
   'tray-healthy',

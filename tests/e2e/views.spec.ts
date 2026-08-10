@@ -7,6 +7,7 @@ const mainViews = [
   ['model-settings', '模型探针设置'],
   ['general', '通用设置'],
   ['notifications', '消息通知'],
+  ['intelligence-ladder', '智力天梯'],
   ['records', '探测记录'],
   ['operation-history', '操作记录'],
   ['delete-confirm', '删除“OpenAI 主线路”？'],
@@ -59,6 +60,67 @@ test('sidebar keeps the current page selected after navigation', async ({ page }
   await records.click();
   await expect(records).toHaveAttribute('aria-current', 'page');
   await expect(general).not.toHaveAttribute('aria-current', 'page');
+});
+
+test('intelligence ladder renders the 2-1-3 podium and saves drawer settings', async ({ page }) => {
+  await page.setViewportSize({ width: 1504, height: 964 });
+  await page.goto('/?view=intelligence-ladder&theme=light');
+
+  await expect(page.getByRole('heading', { name: '智力天梯' })).toBeVisible();
+  await expect(
+    page.getByTestId('sidebar').getByRole('button', { name: /智力天梯/ }),
+  ).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByTestId('podium-rank-2')).toHaveClass(/order-1/);
+  await expect(page.getByTestId('podium-rank-1')).toHaveClass(/order-2/);
+  await expect(page.getByTestId('podium-rank-3')).toHaveClass(/order-3/);
+  await expect(page.getByRole('columnheader').allTextContents()).resolves.toEqual([
+    '排名',
+    '模型',
+    '努力档位',
+    '智力分数 (IQ)',
+  ]);
+
+  await page.getByRole('button', { name: '打开自动获取设置' }).click();
+  const drawer = page.getByRole('dialog', { name: '自动获取设置' });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole('switch', { name: '后台自动获取' })).toBeChecked();
+  await expect(drawer.getByRole('combobox', { name: '获取间隔' })).toBeVisible();
+  await expect(drawer.getByRole('switch', { name: '应用启动时立即获取' })).toBeChecked();
+  await expect(drawer.getByRole('switch', { name: '网络恢复后立即获取' })).toBeChecked();
+  await drawer.getByRole('switch', { name: '网络恢复后立即获取' }).click();
+  await drawer.getByRole('button', { name: /保\s*存/ }).click();
+  await expect(page.getByText('自动获取设置已保存', { exact: true })).toBeVisible();
+  await expect(drawer).toBeHidden();
+
+  await page.getByRole('button', { name: '打开自动获取设置' }).click();
+  await expect(
+    page.getByRole('dialog', { name: '自动获取设置' }).getByRole('switch', {
+      name: '网络恢复后立即获取',
+    }),
+  ).not.toBeChecked();
+});
+
+test('intelligence ladder keeps its old ranking while a refresh is running', async ({ page }) => {
+  await page.goto('/?view=intelligence-ladder&intelligenceScenario=refreshing');
+  await expect(page.getByTestId('podium-rank-1')).toBeVisible();
+  await page.getByRole('button', { name: '刷新智力天梯' }).click();
+  await expect(
+    page.getByTestId('intelligence-ladder-content').getByText('数据刷新中...', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId('podium-rank-1')).toBeVisible();
+});
+
+test('intelligence ladder distinguishes empty, failed and unavailable states', async ({ page }) => {
+  await page.goto('/?view=intelligence-ladder&intelligenceScenario=empty');
+  await expect(page.getByText('暂无排名数据', { exact: true })).toBeVisible();
+
+  await page.goto('/?view=intelligence-ladder&intelligenceScenario=load-error');
+  await expect(page.getByText('暂时无法获取排名', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开自动获取设置' })).toBeEnabled();
+
+  await page.goto('/?view=intelligence-ladder&intelligenceScenario=scraper-unavailable');
+  await expect(page.getByText('采集服务不可用', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('podium-rank-1')).toBeVisible();
 });
 
 test('operation history keeps the fixed columns and opens typed details from the icon', async ({

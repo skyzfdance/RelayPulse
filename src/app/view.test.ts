@@ -11,6 +11,7 @@ describe('parseView', () => {
     'notifications',
     'records',
     'operation-history',
+    'intelligence-ladder',
     'delete-confirm',
     'empty',
     'tray-healthy',
@@ -27,6 +28,7 @@ describe('parseView', () => {
 describe('window view isolation', () => {
   it('keeps tray views out of the main window', () => {
     expect(isViewAllowedForWindow('main', 'general')).toBe(true);
+    expect(isViewAllowedForWindow('main', 'intelligence-ladder')).toBe(true);
     expect(isViewAllowedForWindow('main', 'tray-healthy')).toBe(false);
     expect(defaultViewForWindow('main')).toBe('sites');
   });
@@ -34,6 +36,7 @@ describe('window view isolation', () => {
   it('only permits tray views in the status panel', () => {
     expect(isViewAllowedForWindow('status-panel', 'tray-alerts')).toBe(true);
     expect(isViewAllowedForWindow('status-panel', 'records')).toBe(false);
+    expect(isViewAllowedForWindow('status-panel', 'intelligence-ladder')).toBe(false);
     expect(defaultViewForWindow('status-panel')).toBe('tray-healthy');
   });
 });

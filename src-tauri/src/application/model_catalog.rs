@@ -1,5 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 
+use futures_util::{Stream, StreamExt};
 use reqwest::{
     header::{
         HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT,
@@ -14,6 +15,7 @@ use crate::domain::{AuthPreset, HttpMethod, RequestHeader, SecretValue, Site, Si
 const MAX_CATALOG_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_MODELS: usize = 10_000;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredModel {
@@ -55,8 +57,9 @@ impl Default for ModelCatalogClient {
         Self {
             client: reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(REQUEST_TIMEOUT)
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .expect("static model catalog HTTP client configuration is valid"),
         }
     }
 }
@@ -68,8 +71,8 @@ impl ModelCatalogClient {
         headers: &[RequestHeader],
         secret: Option<&SecretValue>,
     ) -> Result<Vec<DiscoveredModel>> {
-        let request_headers = request_headers(site, headers, secret)?;
         let catalog_url = catalog_url(&site.base_url, &site.models_endpoint)?;
+        let request_headers = request_headers(site, headers, secret)?;
         let response = self.send(site, catalog_url, request_headers).await?;
         parse_response(response).await
     }
@@ -93,12 +96,20 @@ fn catalog_url(base_url: &str, endpoint: &str) -> Result<Url> {
         return Err(ModelCatalogError::InvalidUrl);
     }
 
-    if let Ok(url) = Url::parse(endpoint) {
-        return validate_url(url);
-    }
-
     let mut base = Url::parse(base_url.trim()).map_err(|_| ModelCatalogError::InvalidUrl)?;
     validate_url(base.clone())?;
+
+    if let Ok(url) = Url::parse(endpoint) {
+        let url = validate_url(url)?;
+        if url.scheme() != base.scheme()
+            || url.host_str() != base.host_str()
+            || url.port_or_known_default() != base.port_or_known_default()
+        {
+            return Err(ModelCatalogError::InvalidUrl);
+        }
+        return Ok(url);
+    }
+
     if !base.path().ends_with('/') {
         let path = format!("{}/", base.path());
         base.set_path(&path);
@@ -195,11 +206,34 @@ async fn parse_response(response: reqwest::Response) -> Result<Vec<DiscoveredMod
     {
         return Err(ModelCatalogError::Protocol);
     }
-    let body = response.bytes().await.map_err(classify_transport_error)?;
-    if u64::try_from(body.len()).unwrap_or(u64::MAX) > MAX_CATALOG_BYTES {
-        return Err(ModelCatalogError::Protocol);
-    }
+    let stream = response
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(classify_transport_error));
+    let body = read_limited_body(stream).await?;
     parse_catalog(&body)
+}
+
+async fn read_limited_body<S, B>(stream: S) -> Result<Vec<u8>>
+where
+    S: Stream<Item = Result<B>>,
+    B: AsRef<[u8]>,
+{
+    futures_util::pin_mut!(stream);
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let chunk = chunk.as_ref();
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(ModelCatalogError::Protocol)?;
+        let next_len = u64::try_from(next_len).map_err(|_| ModelCatalogError::Protocol)?;
+        if next_len > MAX_CATALOG_BYTES {
+            return Err(ModelCatalogError::Protocol);
+        }
+        body.extend_from_slice(chunk);
+    }
+    Ok(body)
 }
 
 fn parse_catalog(body: &[u8]) -> Result<Vec<DiscoveredModel>> {
@@ -221,7 +255,7 @@ fn parse_catalog(body: &[u8]) -> Result<Vec<DiscoveredModel>> {
     let mut models = Vec::with_capacity(entries.len());
     for entry in entries {
         let model = parse_model(entry)?;
-        if seen.insert(model.key.to_ascii_lowercase()) {
+        if seen.insert(model.key.clone()) {
             models.push(model);
         }
     }
@@ -263,7 +297,7 @@ fn require_model_key(value: &str) -> Result<String> {
 mod tests {
     use std::{
         io::{Read, Write},
-        net::TcpListener,
+        net::{TcpListener, TcpStream},
         thread,
         time::Duration,
     };
@@ -273,7 +307,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_openai_and_common_catalog_shapes_without_duplicates() {
+    fn parses_openai_and_common_catalog_shapes_without_exact_duplicates() {
         let models = parse_catalog(
             br#"{"data":[{"id":"model-a","name":"Model A"},{"id":"MODEL-A"},{"id":"model-a"},{"id":"model-b"}]}"#,
         )
@@ -284,6 +318,10 @@ mod tests {
                 DiscoveredModel {
                     key: "model-a".to_owned(),
                     display_name: Some("Model A".to_owned()),
+                },
+                DiscoveredModel {
+                    key: "MODEL-A".to_owned(),
+                    display_name: None,
                 },
                 DiscoveredModel {
                     key: "model-b".to_owned(),
@@ -313,6 +351,21 @@ mod tests {
         ));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn bounded_body_reader_stops_when_chunked_data_exceeds_the_limit() {
+        let half_limit = usize::try_from(MAX_CATALOG_BYTES / 2).expect("limit fits");
+        let chunks = futures_util::stream::iter([
+            Ok::<_, ModelCatalogError>(vec![b'a'; half_limit]),
+            Ok(vec![b'b'; half_limit]),
+            Ok(vec![b'c']),
+        ]);
+
+        assert!(matches!(
+            read_limited_body(chunks).await,
+            Err(ModelCatalogError::Protocol)
+        ));
+    }
+
     #[test]
     fn joins_endpoints_without_dropping_a_base_path() {
         assert_eq!(
@@ -325,6 +378,26 @@ mod tests {
             catalog_url("file:///tmp/catalog", "/models"),
             Err(ModelCatalogError::InvalidUrl)
         ));
+    }
+
+    #[test]
+    fn absolute_catalog_endpoints_must_match_the_base_origin() {
+        assert_eq!(
+            catalog_url("https://example.test:443/v1", "https://EXAMPLE.test/models")
+                .expect("default HTTPS ports share an origin")
+                .as_str(),
+            "https://example.test/models"
+        );
+        for endpoint in [
+            "http://example.test/models",
+            "https://catalog.example.test/models",
+            "https://example.test:8443/models",
+        ] {
+            assert!(matches!(
+                catalog_url("https://example.test/v1", endpoint),
+                Err(ModelCatalogError::InvalidUrl)
+            ));
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -374,6 +447,54 @@ mod tests {
         assert!(matches!(result, Err(ModelCatalogError::Authentication)));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejects_an_oversized_body_without_a_content_length() {
+        let (base_url, server) = spawn_raw_server(|stream| {
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                )
+                .expect("response headers written");
+            let body = vec![b' '; usize::try_from(MAX_CATALOG_BYTES).expect("limit fits") + 1];
+            let _ = stream.write_all(&body);
+        });
+        let mut site = fixture_site("site-a", 0);
+        site.base_url = base_url;
+        let secret = SecretValue::new("fixture-secret").expect("secret is valid");
+
+        let result = ModelCatalogClient::default()
+            .discover(&site, &[], Some(&secret))
+            .await;
+        server.join().expect("server joins");
+
+        assert!(matches!(result, Err(ModelCatalogError::Protocol)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn classifies_a_stalled_response_as_a_timeout() {
+        let (base_url, server) = spawn_raw_server(|stream| {
+            thread::sleep(Duration::from_millis(200));
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}",
+            );
+        });
+        let mut site = fixture_site("site-a", 0);
+        site.base_url = base_url;
+        let secret = SecretValue::new("fixture-secret").expect("secret is valid");
+        let client = ModelCatalogClient {
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(1))
+                .timeout(Duration::from_millis(50))
+                .build()
+                .expect("test client builds"),
+        };
+
+        let result = client.discover(&site, &[], Some(&secret)).await;
+        server.join().expect("server joins");
+
+        assert!(matches!(result, Err(ModelCatalogError::Timeout)));
+    }
+
     fn spawn_server(
         responses: Vec<(u16, &'static str)>,
     ) -> (String, thread::JoinHandle<Vec<String>>) {
@@ -383,22 +504,7 @@ mod tests {
             let mut requests = Vec::new();
             for (status, body) in responses {
                 let (mut stream, _) = listener.accept().expect("test request accepted");
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .expect("read timeout configured");
-                let mut buffer = [0_u8; 8 * 1024];
-                let mut request = Vec::new();
-                loop {
-                    let read = stream.read(&mut buffer).expect("test request read");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                requests.push(String::from_utf8(request).expect("request is UTF-8"));
+                requests.push(read_request(&mut stream));
                 let reason = match status {
                     200 => "OK",
                     401 => "Unauthorized",
@@ -416,5 +522,38 @@ mod tests {
             requests
         });
         (format!("http://{address}"), server)
+    }
+
+    fn spawn_raw_server(
+        write_response: impl FnOnce(&mut TcpStream) + Send + 'static,
+    ) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server binds");
+        let address = listener.local_addr().expect("test server has address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test request accepted");
+            let request = read_request(&mut stream);
+            write_response(&mut stream);
+            request
+        });
+        (format!("http://{address}"), server)
+    }
+
+    fn read_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout configured");
+        let mut buffer = [0_u8; 8 * 1024];
+        let mut request = Vec::new();
+        loop {
+            let read = stream.read(&mut buffer).expect("test request read");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        String::from_utf8(request).expect("request is UTF-8")
     }
 }

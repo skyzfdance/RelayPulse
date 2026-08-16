@@ -3,7 +3,7 @@ use rusqlite_migration::{Migrations, M};
 
 use super::{DatabaseError, Result};
 
-pub const LATEST_SCHEMA_VERSION: u32 = 5;
+pub const LATEST_SCHEMA_VERSION: u32 = 6;
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -12,6 +12,7 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("migrations/v3.sql")).foreign_key_check(),
         M::up(include_str!("migrations/v4.sql")).foreign_key_check(),
         M::up(include_str!("migrations/v5.sql")).foreign_key_check(),
+        M::up(include_str!("migrations/v6.sql")).foreign_key_check(),
     ])
 }
 
@@ -174,6 +175,72 @@ mod tests {
 
         assert_eq!(site_name, "existing-site");
         assert_eq!(intelligence_settings, (false, 60));
+        assert_eq!(
+            schema_version(&connection).expect("version is readable"),
+            LATEST_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn upgrading_v5_preserves_credential_operations_and_adds_recovery_failed_status() {
+        let mut connection = Connection::open_in_memory().expect("database opens");
+        let migrations_through_v5 = Migrations::new(vec![
+            M::up(include_str!("migrations/v1.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v2.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v3.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v4.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v5.sql")).foreign_key_check(),
+        ]);
+        migrations_through_v5
+            .to_latest(&mut connection)
+            .expect("v5 schema migrates");
+        connection
+            .execute(
+                "INSERT INTO credential_operations (
+                   id, site_id, action, status, new_credential_ref,
+                   created_at_ms, updated_at_ms
+                 ) VALUES (
+                   'operation-a', 'site-a', 'create', 'intent_recorded',
+                   'credential-a', 10, 10
+                 )",
+                [],
+            )
+            .expect("credential operation is stored");
+
+        migrate_to_latest(&mut connection).expect("v5 schema migrates to latest");
+        connection
+            .execute(
+                "UPDATE credential_operations
+                 SET status = 'recovery_failed', updated_at_ms = 20, completed_at_ms = 20
+                 WHERE id = 'operation-a'",
+                [],
+            )
+            .expect("recovery failure status is accepted");
+        let operation = connection
+            .query_row(
+                "SELECT site_id, new_credential_ref, status, completed_at_ms
+                 FROM credential_operations WHERE id = 'operation-a'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .expect("migrated operation is readable");
+
+        assert_eq!(
+            operation,
+            (
+                "site-a".to_owned(),
+                "credential-a".to_owned(),
+                "recovery_failed".to_owned(),
+                20,
+            )
+        );
         assert_eq!(
             schema_version(&connection).expect("version is readable"),
             LATEST_SCHEMA_VERSION

@@ -17,6 +17,8 @@ struct Inner {
     secrets: Mutex<HashMap<EntityId, SecretValue>>,
     next_error: Mutex<Option<CredentialError>>,
     next_delete_error: Mutex<Option<CredentialError>>,
+    next_put_after_write_error: Mutex<Option<CredentialError>>,
+    next_delete_after_delete_error: Mutex<Option<CredentialError>>,
 }
 
 impl InMemoryCredentialStore {
@@ -34,6 +36,24 @@ impl InMemoryCredentialStore {
             .next_delete_error
             .lock()
             .expect("credential delete failure mutex poisoned") = Some(error);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_put_after_write(&self, error: CredentialError) {
+        *self
+            .inner
+            .next_put_after_write_error
+            .lock()
+            .expect("credential post-write failure mutex poisoned") = Some(error);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_delete_after_delete(&self, error: CredentialError) {
+        *self
+            .inner
+            .next_delete_after_delete_error
+            .lock()
+            .expect("credential post-delete failure mutex poisoned") = Some(error);
     }
 
     #[cfg(test)]
@@ -68,7 +88,16 @@ impl CredentialStore for InMemoryCredentialStore {
             .lock()
             .map_err(|_| CredentialError::Unavailable)?
             .insert(reference.clone(), secret);
-        Ok(())
+        match self
+            .inner
+            .next_put_after_write_error
+            .lock()
+            .map_err(|_| CredentialError::Unavailable)?
+            .take()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn get(&self, reference: &EntityId) -> Result<SecretValue> {
@@ -110,6 +139,15 @@ impl CredentialStore for InMemoryCredentialStore {
             .lock()
             .map_err(|_| CredentialError::Unavailable)?
             .remove(reference);
-        Ok(())
+        match self
+            .inner
+            .next_delete_after_delete_error
+            .lock()
+            .map_err(|_| CredentialError::Unavailable)?
+            .take()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }

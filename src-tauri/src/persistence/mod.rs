@@ -5,7 +5,10 @@ mod sql_types;
 
 pub use database::Database;
 pub use migrations::{schema_version, LATEST_SCHEMA_VERSION};
-pub use repository::{CleanupResult, ProbeCursor, ProbePage, ProbePageRequest, Repository};
+pub use repository::{
+    CleanupResult, ProbeCursor, ProbePage, ProbePageRequest, ProbeRecordOutcome, Repository,
+    RepositorySnapshot,
+};
 
 use thiserror::Error;
 

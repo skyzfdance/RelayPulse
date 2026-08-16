@@ -1,27 +1,34 @@
 use std::{
     collections::{HashMap, HashSet},
     future::pending,
+    panic::AssertUnwindSafe,
     sync::Arc,
     time::Duration,
 };
 
-use futures_util::{stream::FuturesUnordered, StreamExt};
+use futures_util::{stream::FuturesUnordered, FutureExt, StreamExt};
 use tauri::async_runtime::{self, JoinHandle};
 use tokio::{
-    sync::watch,
-    time::{interval, MissedTickBehavior},
+    sync::{mpsc, watch},
+    time::{interval, timeout, MissedTickBehavior},
 };
 use uuid::Uuid;
 
 use crate::{
-    diagnostics::ProbeBatchSummary,
-    domain::{EntityId, LatestModelStatus, ProbeStatus, ProbeTimingPolicy, TimestampMs},
+    diagnostics::{Diagnostics, ProbeBatchSummary},
+    domain::{EntityId, ProbeStatus, TimestampMs},
 };
 
 use super::{ApplicationService, ApplicationSnapshot};
 
 const SCHEDULER_TICK: Duration = Duration::from_secs(15);
 const RESUME_GAP_MS: i64 = 45_000;
+const MAX_CONCURRENT_PROBES: usize = 4;
+const SCHEDULED_PROBE_TIMEOUT: Duration = Duration::from_secs(150);
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDLE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(12);
+const SNAPSHOT_QUEUE_CAPACITY: usize = 16;
+const SNAPSHOT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduledModel {
@@ -53,15 +60,149 @@ struct BatchProgress {
     remaining: usize,
 }
 
+enum ProbeAttempt {
+    Finished(super::config_service::Result<Option<(ApplicationSnapshot, ProbeStatus)>>),
+    TimedOut,
+}
+
+#[derive(Clone, Copy)]
+enum BatchOutcome {
+    Completed,
+    Failed,
+    Skipped,
+}
+
+struct SnapshotDispatcher {
+    sender: mpsc::Sender<ApplicationSnapshot>,
+    worker: JoinHandle<()>,
+    diagnostics: Option<Diagnostics>,
+}
+
+impl SnapshotDispatcher {
+    fn start(
+        on_snapshot: Arc<dyn Fn(ApplicationSnapshot) + Send + Sync>,
+        diagnostics: Option<Diagnostics>,
+    ) -> Self {
+        let (sender, mut receiver) = mpsc::channel(SNAPSHOT_QUEUE_CAPACITY);
+        let worker_diagnostics = diagnostics.clone();
+        let worker = async_runtime::spawn(async move {
+            while let Some(snapshot) = receiver.recv().await {
+                let callback = on_snapshot.clone();
+                let result = async_runtime::spawn_blocking(move || {
+                    std::panic::catch_unwind(AssertUnwindSafe(|| callback(snapshot)))
+                })
+                .await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => {
+                        if let Some(diagnostics) = &worker_diagnostics {
+                            diagnostics.record_background_error(
+                                "scheduler-snapshot-callback",
+                                "snapshot_callback_panicked",
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        if let Some(diagnostics) = &worker_diagnostics {
+                            diagnostics.record_background_error(
+                                "scheduler-snapshot-callback",
+                                "snapshot_callback_worker_failed",
+                            );
+                        }
+                    }
+                }
+            }
+        });
+        Self {
+            sender,
+            worker,
+            diagnostics,
+        }
+    }
+
+    fn dispatch(&self, snapshot: ApplicationSnapshot) {
+        if let Err(error) = self.sender.try_send(snapshot) {
+            if let Some(diagnostics) = &self.diagnostics {
+                let error_code = match error {
+                    mpsc::error::TrySendError::Full(_) => "snapshot_queue_full",
+                    mpsc::error::TrySendError::Closed(_) => "snapshot_consumer_stopped",
+                };
+                diagnostics.record_background_error("scheduler-snapshot-delivery", error_code);
+            }
+        }
+    }
+
+    async fn shutdown(self) {
+        let Self {
+            sender,
+            mut worker,
+            diagnostics,
+        } = self;
+        drop(sender);
+        match timeout(SNAPSHOT_SHUTDOWN_TIMEOUT, &mut worker).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                if let Some(diagnostics) = &diagnostics {
+                    diagnostics.record_background_error(
+                        "scheduler-snapshot-callback",
+                        "snapshot_consumer_failed",
+                    );
+                }
+            }
+            Err(_) => {
+                if let Some(diagnostics) = &diagnostics {
+                    diagnostics.record_background_error(
+                        "scheduler-snapshot-callback",
+                        "snapshot_consumer_shutdown_timeout",
+                    );
+                }
+                worker.abort();
+                let _ = worker.await;
+            }
+        }
+    }
+}
+
 pub struct SchedulerHandle {
     shutdown: watch::Sender<bool>,
-    runner: JoinHandle<()>,
+    runner: Option<JoinHandle<()>>,
+    diagnostics: Option<Diagnostics>,
+}
+
+impl SchedulerHandle {
+    pub async fn shutdown(mut self) {
+        let _ = self.shutdown.send(true);
+        let Some(mut runner) = self.runner.take() else {
+            return;
+        };
+        match timeout(HANDLE_SHUTDOWN_TIMEOUT, &mut runner).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics
+                        .record_background_error("scheduler-shutdown", "scheduler_runner_failed");
+                }
+            }
+            Err(_) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.record_background_error(
+                        "scheduler-shutdown",
+                        "scheduler_shutdown_timeout",
+                    );
+                }
+                runner.abort();
+                let _ = runner.await;
+            }
+        }
+    }
 }
 
 impl Drop for SchedulerHandle {
     fn drop(&mut self) {
         let _ = self.shutdown.send(true);
-        self.runner.abort();
+        if let Some(runner) = self.runner.take() {
+            runner.abort();
+        }
     }
 }
 
@@ -70,8 +211,24 @@ where
     F: Fn(ApplicationSnapshot) + Send + Sync + 'static,
 {
     let (shutdown, receiver) = watch::channel(false);
-    let runner = async_runtime::spawn(run_scheduler(service, receiver, Arc::new(on_snapshot)));
-    SchedulerHandle { shutdown, runner }
+    let diagnostics = service.diagnostics().cloned();
+    let runner_diagnostics = diagnostics.clone();
+    let runner = async_runtime::spawn(async move {
+        if AssertUnwindSafe(run_scheduler(service, receiver, Arc::new(on_snapshot)))
+            .catch_unwind()
+            .await
+            .is_err()
+        {
+            if let Some(diagnostics) = runner_diagnostics {
+                diagnostics.record_background_error("scheduler-runner", "scheduler_panicked");
+            }
+        }
+    });
+    SchedulerHandle {
+        shutdown,
+        runner: Some(runner),
+        diagnostics,
+    }
 }
 
 async fn run_scheduler(
@@ -79,6 +236,8 @@ async fn run_scheduler(
     mut shutdown: watch::Receiver<bool>,
     on_snapshot: Arc<dyn Fn(ApplicationSnapshot) + Send + Sync>,
 ) {
+    let snapshot_dispatcher =
+        SnapshotDispatcher::start(on_snapshot, service.diagnostics().cloned());
     let mut ticker = interval(SCHEDULER_TICK);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut plans = HashMap::<EntityId, Plan>::new();
@@ -89,6 +248,7 @@ async fn run_scheduler(
 
     loop {
         tokio::select! {
+            biased;
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     break;
@@ -113,15 +273,12 @@ async fn run_scheduler(
                 last_tick = Some(snapshot.now);
                 reconcile_plans(&mut plans, &snapshot, resumed);
 
-                let due_models = plans
-                    .iter()
-                    .filter(|(model_id, plan)| {
-                        plan.due_at <= snapshot.now && !active.contains(*model_id)
-                    })
-                    .map(|(model_id, plan)| {
-                        (model_id.clone(), plan.site_id.clone(), plan.interval_minutes)
-                    })
-                    .collect::<Vec<_>>();
+                let due_models = select_due_models(
+                    &plans,
+                    &active,
+                    snapshot.now,
+                    MAX_CONCURRENT_PROBES.saturating_sub(active.len()),
+                );
 
                 let batch_id = format!("batch_{}", Uuid::new_v4().simple());
                 if !due_models.is_empty() {
@@ -156,9 +313,15 @@ async fn run_scheduler(
                     let probe_service = service.clone();
                     let probe_batch_id = batch_id.clone();
                     probes.push(async move {
-                        let result = probe_service
-                            .probe_scheduled_model(site_id, model_id.clone())
-                            .await;
+                        let result = match timeout(
+                            SCHEDULED_PROBE_TIMEOUT,
+                            probe_service.probe_scheduled_model(site_id, model_id.clone()),
+                        )
+                        .await
+                        {
+                            Ok(result) => ProbeAttempt::Finished(result),
+                            Err(_) => ProbeAttempt::TimedOut,
+                        };
                         (model_id, probe_batch_id, result)
                     });
                 }
@@ -170,65 +333,111 @@ async fn run_scheduler(
                     probes.next().await
                 }
             } => {
-                if let Some((model_id, batch_id, result)) = completed {
-                    active.remove(&model_id);
-                    let outcome = match result {
-                        Ok(Some((snapshot, ProbeStatus::Healthy | ProbeStatus::Slow))) => {
-                            on_snapshot(snapshot);
-                            "completed"
-                        }
-                        Ok(Some((snapshot, _))) => {
-                            on_snapshot(snapshot);
-                            "failed"
-                        }
-                        Ok(None) => "skipped",
-                        Err(_) => {
-                            if let Some(diagnostics) = service.diagnostics() {
-                                diagnostics.record_background_error(
-                                    "scheduled-probe",
-                                    "scheduled_probe_failed",
-                                );
-                            }
-                            "failed"
-                        }
-                    };
-                    let finished = if let Some(batch) = batches.get_mut(&batch_id) {
-                        match outcome {
-                            "completed" => {
-                                batch.completed_count = batch.completed_count.saturating_add(1)
-                            }
-                            "failed" => batch.failed_count = batch.failed_count.saturating_add(1),
-                            _ => batch.skipped_count = batch.skipped_count.saturating_add(1),
-                        }
-                        batch.remaining = batch.remaining.saturating_sub(1);
-                        batch.remaining == 0
-                    } else {
-                        false
-                    };
-                    if finished {
-                        let batch = batches.remove(&batch_id).expect("finished batch exists");
-                        if let Some(diagnostics) = service.diagnostics() {
-                            diagnostics.record_probe_batch_finished(
-                                Some(&batch_id),
-                                "automatic",
-                                ProbeBatchSummary {
-                                    site_count: u64::try_from(batch.site_count)
-                                        .unwrap_or(u64::MAX),
-                                    model_count: u64::try_from(batch.model_count)
-                                        .unwrap_or(u64::MAX),
-                                    completed_count: u64::try_from(batch.completed_count)
-                                        .unwrap_or(u64::MAX),
-                                    failed_count: u64::try_from(batch.failed_count)
-                                        .unwrap_or(u64::MAX),
-                                    skipped_count: u64::try_from(batch.skipped_count)
-                                        .unwrap_or(u64::MAX),
-                                },
-                            );
-                        }
-                    }
+                if let Some(completed) = completed {
+                    finish_probe(
+                        &service,
+                        &snapshot_dispatcher,
+                        &mut active,
+                        &mut batches,
+                        completed,
+                    );
                 }
             }
         }
+    }
+
+    let drained = timeout(SHUTDOWN_DRAIN_TIMEOUT, async {
+        while let Some(completed) = probes.next().await {
+            finish_probe(
+                &service,
+                &snapshot_dispatcher,
+                &mut active,
+                &mut batches,
+                completed,
+            );
+        }
+    })
+    .await
+    .is_ok();
+    if !drained {
+        if let Some(diagnostics) = service.diagnostics() {
+            diagnostics.record_background_error("scheduler-shutdown", "scheduled_probes_cancelled");
+        }
+        for batch in batches.values_mut() {
+            batch.failed_count = batch.failed_count.saturating_add(batch.remaining);
+            batch.remaining = 0;
+        }
+    }
+    drop(probes);
+    for (batch_id, batch) in batches.drain() {
+        record_batch_finished(&service, &batch_id, batch);
+    }
+    snapshot_dispatcher.shutdown().await;
+}
+
+fn finish_probe(
+    service: &ApplicationService,
+    snapshot_dispatcher: &SnapshotDispatcher,
+    active: &mut HashSet<EntityId>,
+    batches: &mut HashMap<String, BatchProgress>,
+    (model_id, batch_id, result): (EntityId, String, ProbeAttempt),
+) {
+    active.remove(&model_id);
+    let outcome = match result {
+        ProbeAttempt::Finished(Ok(Some((snapshot, ProbeStatus::Healthy | ProbeStatus::Slow)))) => {
+            snapshot_dispatcher.dispatch(snapshot);
+            BatchOutcome::Completed
+        }
+        ProbeAttempt::Finished(Ok(Some((snapshot, _)))) => {
+            snapshot_dispatcher.dispatch(snapshot);
+            BatchOutcome::Failed
+        }
+        ProbeAttempt::Finished(Ok(None)) => BatchOutcome::Skipped,
+        ProbeAttempt::Finished(Err(_)) => {
+            if let Some(diagnostics) = service.diagnostics() {
+                diagnostics.record_background_error("scheduled-probe", "scheduled_probe_failed");
+            }
+            BatchOutcome::Failed
+        }
+        ProbeAttempt::TimedOut => {
+            if let Some(diagnostics) = service.diagnostics() {
+                diagnostics.record_background_error("scheduled-probe", "scheduled_probe_timeout");
+            }
+            BatchOutcome::Failed
+        }
+    };
+    let finished = if let Some(batch) = batches.get_mut(&batch_id) {
+        match outcome {
+            BatchOutcome::Completed => {
+                batch.completed_count = batch.completed_count.saturating_add(1)
+            }
+            BatchOutcome::Failed => batch.failed_count = batch.failed_count.saturating_add(1),
+            BatchOutcome::Skipped => batch.skipped_count = batch.skipped_count.saturating_add(1),
+        }
+        batch.remaining = batch.remaining.saturating_sub(1);
+        batch.remaining == 0
+    } else {
+        false
+    };
+    if finished {
+        let batch = batches.remove(&batch_id).expect("finished batch exists");
+        record_batch_finished(service, &batch_id, batch);
+    }
+}
+
+fn record_batch_finished(service: &ApplicationService, batch_id: &str, batch: BatchProgress) {
+    if let Some(diagnostics) = service.diagnostics() {
+        diagnostics.record_probe_batch_finished(
+            Some(batch_id),
+            "automatic",
+            ProbeBatchSummary {
+                site_count: u64::try_from(batch.site_count).unwrap_or(u64::MAX),
+                model_count: u64::try_from(batch.model_count).unwrap_or(u64::MAX),
+                completed_count: u64::try_from(batch.completed_count).unwrap_or(u64::MAX),
+                failed_count: u64::try_from(batch.failed_count).unwrap_or(u64::MAX),
+                skipped_count: u64::try_from(batch.skipped_count).unwrap_or(u64::MAX),
+            },
+        );
     }
 }
 
@@ -245,15 +454,15 @@ fn reconcile_plans(
     plans.retain(|model_id, _| configured.contains(model_id));
 
     for model in &snapshot.models {
-        let interval_changed = plans
-            .get(&model.model_id)
-            .is_some_and(|plan| plan.interval_minutes != model.interval_minutes);
-        let needs_recompute = resumed || interval_changed;
+        let plan_changed = plans.get(&model.model_id).is_some_and(|plan| {
+            plan.interval_minutes != model.interval_minutes || plan.site_id != model.site_id
+        });
+        let needs_recompute = resumed || plan_changed;
         if needs_recompute {
             plans.remove(&model.model_id);
         }
         plans.entry(model.model_id.clone()).or_insert_with(|| {
-            let due_at = (!interval_changed)
+            let due_at = (!plan_changed)
                 .then_some(model.persisted_next_probe_at)
                 .flatten()
                 .filter(|due_at| *due_at > snapshot.now)
@@ -272,6 +481,32 @@ fn reconcile_plans(
             }
         });
     }
+}
+
+fn select_due_models(
+    plans: &HashMap<EntityId, Plan>,
+    active: &HashSet<EntityId>,
+    now: TimestampMs,
+    limit: usize,
+) -> Vec<(EntityId, EntityId, u16)> {
+    let mut due_models = plans
+        .iter()
+        .filter(|(model_id, plan)| plan.due_at <= now && !active.contains(*model_id))
+        .map(|(model_id, plan)| {
+            (
+                plan.due_at,
+                model_id.clone(),
+                plan.site_id.clone(),
+                plan.interval_minutes,
+            )
+        })
+        .collect::<Vec<_>>();
+    due_models.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    due_models.truncate(limit);
+    due_models
+        .into_iter()
+        .map(|(_, model_id, site_id, interval_minutes)| (model_id, site_id, interval_minutes))
+        .collect()
 }
 
 pub fn stable_next_probe_at(
@@ -306,52 +541,6 @@ fn stable_hash(site_id: &EntityId, model_id: &EntityId) -> u64 {
         })
 }
 
-pub fn aggregate_latest_status(
-    previous: Option<&LatestModelStatus>,
-    observed: ProbeStatus,
-    timing: &ProbeTimingPolicy,
-    model_id: EntityId,
-    probe_result_id: EntityId,
-    finished_at: TimestampMs,
-    next_probe_at: Option<TimestampMs>,
-) -> LatestModelStatus {
-    let success = matches!(observed, ProbeStatus::Healthy | ProbeStatus::Slow);
-    let consecutive_failures = if success {
-        0
-    } else {
-        previous.map_or(1, |status| status.consecutive_failures.saturating_add(1))
-    };
-    let consecutive_successes = if success {
-        previous.map_or(1, |status| status.consecutive_successes.saturating_add(1))
-    } else {
-        0
-    };
-    let status = if success {
-        if previous.is_some_and(|status| is_failure(status.status))
-            && consecutive_successes < u16::from(timing.recovery_threshold)
-        {
-            previous.map_or(observed, |status| status.status)
-        } else {
-            observed
-        }
-    } else if consecutive_failures < u16::from(timing.failure_threshold) {
-        previous.map_or(ProbeStatus::Unknown, |status| status.status)
-    } else {
-        observed
-    };
-
-    LatestModelStatus {
-        model_id,
-        probe_result_id: Some(probe_result_id),
-        status,
-        consecutive_failures,
-        consecutive_successes,
-        next_probe_at,
-        revision: 0,
-        updated_at: finished_at,
-    }
-}
-
 pub(crate) fn is_failure(status: ProbeStatus) -> bool {
     !matches!(
         status,
@@ -361,6 +550,8 @@ pub(crate) fn is_failure(status: ProbeStatus) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
 
     fn id(value: &str) -> EntityId {
@@ -447,6 +638,39 @@ mod tests {
     }
 
     #[test]
+    fn site_change_replaces_the_plan_and_discards_the_persisted_schedule() {
+        let now = timestamp(1_700_000_000_000);
+        let model = ScheduledModel {
+            site_id: id("site-b"),
+            model_id: id("model-a"),
+            interval_minutes: 10,
+            persisted_next_probe_at: Some(timestamp(now.as_i64() + 3_600_000)),
+        };
+        let mut plans = HashMap::from([(
+            model.model_id.clone(),
+            Plan {
+                site_id: id("site-a"),
+                interval_minutes: 10,
+                due_at: timestamp(now.as_i64() + 3_600_000),
+            },
+        )]);
+
+        reconcile_plans(
+            &mut plans,
+            &ScheduleSnapshot {
+                now,
+                models: vec![model],
+            },
+            false,
+        );
+
+        let plan = &plans[&id("model-a")];
+        assert_eq!(plan.site_id, id("site-b"));
+        assert!(plan.due_at > now);
+        assert!(plan.due_at.as_i64() - now.as_i64() <= 600_000);
+    }
+
+    #[test]
     fn reconciliation_removes_disabled_or_deleted_models() {
         let now = timestamp(1_700_000_000_000);
         let mut plans = HashMap::from([(
@@ -471,50 +695,48 @@ mod tests {
     }
 
     #[test]
-    fn failure_and_recovery_thresholds_prevent_single_result_flapping() {
-        let timing = ProbeTimingPolicy::default();
-        let first_failure = aggregate_latest_status(
-            None,
-            ProbeStatus::Timeout,
-            &timing,
-            id("model-a"),
-            id("result-1"),
-            timestamp(100),
-            None,
-        );
-        assert_eq!(first_failure.status, ProbeStatus::Unknown);
+    fn due_model_selection_is_bounded_and_prefers_the_oldest_work() {
+        let now = timestamp(1_700_000_000_000);
+        let plans = (0..6)
+            .map(|index| {
+                let model_id = id(&format!("model-{index}"));
+                (
+                    model_id,
+                    Plan {
+                        site_id: id("site-a"),
+                        interval_minutes: 10,
+                        due_at: timestamp(now.as_i64() - i64::from(6 - index)),
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let active = HashSet::from([id("model-0")]);
 
-        let second_failure = aggregate_latest_status(
-            Some(&first_failure),
-            ProbeStatus::Timeout,
-            &timing,
-            id("model-a"),
-            id("result-2"),
-            timestamp(200),
-            None,
-        );
-        assert_eq!(second_failure.status, ProbeStatus::Timeout);
+        let selected = select_due_models(&plans, &active, now, 2);
 
-        let first_recovery = aggregate_latest_status(
-            Some(&second_failure),
-            ProbeStatus::Healthy,
-            &timing,
-            id("model-a"),
-            id("result-3"),
-            timestamp(300),
-            None,
-        );
-        assert_eq!(first_recovery.status, ProbeStatus::Timeout);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].0, id("model-1"));
+        assert_eq!(selected[1].0, id("model-2"));
+    }
 
-        let second_recovery = aggregate_latest_status(
-            Some(&first_recovery),
-            ProbeStatus::Healthy,
-            &timing,
-            id("model-a"),
-            id("result-4"),
-            timestamp(400),
-            None,
-        );
-        assert_eq!(second_recovery.status, ProbeStatus::Healthy);
+    #[tokio::test]
+    async fn explicit_shutdown_waits_for_runner_cleanup() {
+        let (shutdown, mut receiver) = watch::channel(false);
+        let cleaned_up = Arc::new(AtomicBool::new(false));
+        let runner_cleaned_up = Arc::clone(&cleaned_up);
+        let runner = async_runtime::spawn(async move {
+            let _ = receiver.changed().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            runner_cleaned_up.store(true, Ordering::Release);
+        });
+        let handle = SchedulerHandle {
+            shutdown,
+            runner: Some(runner),
+            diagnostics: None,
+        };
+
+        handle.shutdown().await;
+
+        assert!(cleaned_up.load(Ordering::Acquire));
     }
 }

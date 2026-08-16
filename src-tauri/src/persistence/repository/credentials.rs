@@ -1,8 +1,9 @@
 use rusqlite::{params, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    CredentialAction, CredentialOperation, CredentialOperationStatus, EntityId, LifecycleState,
-    ProbePolicy, Site, TimestampMs,
+    AuthPreset, CredentialAction, CredentialOperation, CredentialOperationStatus, EntityId,
+    LifecycleState, ProbePolicy, Site, SiteProtocol, TimestampMs,
 };
 
 use super::{
@@ -10,6 +11,14 @@ use super::{
     config::{compact_site_sort_orders, insert_probe_policy, insert_site},
     require_changed, DatabaseError, Repository, Result,
 };
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CredentialSitePayload {
+    name: String,
+    protocol: String,
+    base_url: String,
+    auth_preset: String,
+}
 
 impl Repository {
     pub async fn begin_credential_site_create(
@@ -52,15 +61,24 @@ impl Repository {
         site_id: EntityId,
         action: CredentialAction,
         new_credential_ref: Option<EntityId>,
+        site_update: Option<Site>,
         now: TimestampMs,
     ) -> Result<CredentialOperation> {
         if action == CredentialAction::Create
             || (action == CredentialAction::Replace) != new_credential_ref.is_some()
+            || site_update
+                .as_ref()
+                .is_some_and(|site| site.id != site_id || action == CredentialAction::Delete)
         {
             return Err(DatabaseError::InvalidInput {
                 field: "credential_operation",
             });
         }
+        let non_secret_payload_json = site_update
+            .as_ref()
+            .map(encode_site_payload)
+            .transpose()?
+            .unwrap_or_else(|| "{}".to_owned());
 
         self.database
             .call(move |connection| {
@@ -91,7 +109,7 @@ impl Repository {
                     status: CredentialOperationStatus::IntentRecorded,
                     new_credential_ref,
                     old_credential_ref,
-                    non_secret_payload_json: "{}".to_owned(),
+                    non_secret_payload_json,
                     created_at: now,
                     updated_at: now,
                     completed_at: None,
@@ -158,6 +176,7 @@ impl Repository {
                         field: "credential_operation_status",
                     });
                 }
+                let site_update = decode_site_payload(&operation.non_secret_payload_json)?;
                 match operation.action {
                     CredentialAction::Create | CredentialAction::Replace => {
                         let credential_ref = operation.new_credential_ref.as_ref().ok_or(
@@ -165,22 +184,22 @@ impl Repository {
                                 field: "new_credential_ref",
                             },
                         )?;
-                        let changed = transaction.execute(
-                            "UPDATE sites SET credential_ref = ?1, lifecycle_state = 'ready',
-                                              updated_at_ms = ?2
-                             WHERE id = ?3",
-                            params![credential_ref, updated_at, operation.site_id],
+                        commit_site_configuration(
+                            &transaction,
+                            &operation.site_id,
+                            Some(credential_ref),
+                            site_update.as_ref(),
+                            updated_at,
                         )?;
-                        require_changed(changed, "site")?;
                     }
                     CredentialAction::Clear => {
-                        let changed = transaction.execute(
-                            "UPDATE sites SET credential_ref = NULL, lifecycle_state = 'ready',
-                                              updated_at_ms = ?1
-                             WHERE id = ?2",
-                            params![updated_at, operation.site_id],
+                        commit_site_configuration(
+                            &transaction,
+                            &operation.site_id,
+                            None,
+                            site_update.as_ref(),
+                            updated_at,
                         )?;
-                        require_changed(changed, "site")?;
                     }
                     CredentialAction::Delete => {
                         let changed = transaction
@@ -262,6 +281,41 @@ impl Repository {
             .await
     }
 
+    pub async fn quarantine_credential_operation(
+        &self,
+        operation_id: EntityId,
+        site_id: EntityId,
+        action: CredentialAction,
+        updated_at: TimestampMs,
+    ) -> Result<u64> {
+        self.database
+            .call(move |connection| {
+                let transaction = connection.transaction()?;
+                if action == CredentialAction::Create {
+                    transaction.execute("DELETE FROM sites WHERE id = ?1", [&site_id])?;
+                    compact_site_sort_orders(&transaction)?;
+                } else {
+                    transaction.execute(
+                        "UPDATE sites SET lifecycle_state = 'ready', updated_at_ms = ?1
+                         WHERE id = ?2",
+                        params![updated_at, site_id],
+                    )?;
+                }
+                let changed = transaction.execute(
+                    "UPDATE credential_operations
+                     SET status = 'recovery_failed', updated_at_ms = ?4, completed_at_ms = ?4
+                     WHERE id = ?1 AND site_id = ?2 AND action = ?3
+                       AND status IN ('intent_recorded', 'credential_written')",
+                    params![operation_id, site_id, action, updated_at],
+                )?;
+                require_changed(changed, "credential_operation")?;
+                let revision = bump_revision(&transaction)?;
+                transaction.commit()?;
+                Ok(revision)
+            })
+            .await
+    }
+
     pub async fn list_pending_credential_operations(&self) -> Result<Vec<CredentialOperation>> {
         self.database
             .call(|connection| {
@@ -270,7 +324,7 @@ impl Repository {
                             old_credential_ref, non_secret_payload_json, created_at_ms,
                             updated_at_ms, completed_at_ms
                      FROM credential_operations
-                     WHERE status != 'config_committed'
+                     WHERE status IN ('intent_recorded', 'credential_written', 'cleanup_pending')
                      ORDER BY created_at_ms, id",
                 )?;
                 let operations = statement
@@ -296,6 +350,111 @@ impl Repository {
                 Ok(operations)
             })
             .await
+    }
+}
+
+fn encode_site_payload(site: &Site) -> Result<String> {
+    serde_json::to_string(&CredentialSitePayload {
+        name: site.name.clone(),
+        protocol: protocol_name(site.protocol).to_owned(),
+        base_url: site.base_url.clone(),
+        auth_preset: auth_preset_name(site.auth_preset).to_owned(),
+    })
+    .map_err(|_| DatabaseError::InvalidInput {
+        field: "credential_payload",
+    })
+}
+
+fn decode_site_payload(value: &str) -> Result<Option<CredentialSitePayload>> {
+    if value.trim() == "{}" {
+        return Ok(None);
+    }
+    let payload = serde_json::from_str::<CredentialSitePayload>(value).map_err(|_| {
+        DatabaseError::InvalidInput {
+            field: "credential_payload",
+        }
+    })?;
+    if payload.name.trim().is_empty() || payload.base_url.trim().is_empty() {
+        return Err(DatabaseError::InvalidInput {
+            field: "credential_payload",
+        });
+    }
+    Ok(Some(payload))
+}
+
+fn commit_site_configuration(
+    connection: &rusqlite::Connection,
+    site_id: &EntityId,
+    credential_ref: Option<&EntityId>,
+    site_update: Option<&CredentialSitePayload>,
+    updated_at: TimestampMs,
+) -> Result<()> {
+    let changed = if let Some(site_update) = site_update {
+        let protocol = parse_protocol(&site_update.protocol)?;
+        let auth_preset = parse_auth_preset(&site_update.auth_preset)?;
+        connection.execute(
+            "UPDATE sites SET name = ?1, protocol = ?2, base_url = ?3, auth_preset = ?4,
+                              credential_ref = ?5, lifecycle_state = 'ready', updated_at_ms = ?6
+             WHERE id = ?7",
+            params![
+                site_update.name,
+                protocol,
+                site_update.base_url,
+                auth_preset,
+                credential_ref,
+                updated_at,
+                site_id,
+            ],
+        )?
+    } else {
+        connection.execute(
+            "UPDATE sites SET credential_ref = ?1, lifecycle_state = 'ready', updated_at_ms = ?2
+             WHERE id = ?3",
+            params![credential_ref, updated_at, site_id],
+        )?
+    };
+    require_changed(changed, "site")
+}
+
+fn protocol_name(value: SiteProtocol) -> &'static str {
+    match value {
+        SiteProtocol::OpenAiCompatible => "openai-compatible",
+        SiteProtocol::Anthropic => "anthropic",
+        SiteProtocol::OpenAiResponses => "openai-responses",
+        SiteProtocol::CustomHttp => "custom-http",
+    }
+}
+
+fn parse_protocol(value: &str) -> Result<SiteProtocol> {
+    match value {
+        "openai-compatible" => Ok(SiteProtocol::OpenAiCompatible),
+        "anthropic" => Ok(SiteProtocol::Anthropic),
+        "openai-responses" => Ok(SiteProtocol::OpenAiResponses),
+        "custom-http" => Ok(SiteProtocol::CustomHttp),
+        _ => Err(DatabaseError::InvalidInput {
+            field: "credential_payload",
+        }),
+    }
+}
+
+fn auth_preset_name(value: AuthPreset) -> &'static str {
+    match value {
+        AuthPreset::Bearer => "bearer",
+        AuthPreset::XApiKey => "x-api-key",
+        AuthPreset::ApiKey => "api-key",
+        AuthPreset::None => "none",
+    }
+}
+
+fn parse_auth_preset(value: &str) -> Result<AuthPreset> {
+    match value {
+        "bearer" => Ok(AuthPreset::Bearer),
+        "x-api-key" => Ok(AuthPreset::XApiKey),
+        "api-key" => Ok(AuthPreset::ApiKey),
+        "none" => Ok(AuthPreset::None),
+        _ => Err(DatabaseError::InvalidInput {
+            field: "credential_payload",
+        }),
     }
 }
 

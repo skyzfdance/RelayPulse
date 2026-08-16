@@ -52,6 +52,7 @@ pub fn run() {
             let application_service = state.application_service().cloned();
             let notification_service = state.notification_service().cloned();
             let notification_diagnostics = state.diagnostics().cloned();
+            let credential_diagnostics = state.diagnostics().cloned();
             let intelligence_ladder_service = state.intelligence_ladder_service().cloned();
             app.manage(state);
             if let Some(intelligence_ladder_service) = intelligence_ladder_service {
@@ -71,7 +72,18 @@ pub fn run() {
             }
             if let Some(credential_saga) = credential_saga {
                 tauri::async_runtime::spawn(async move {
-                    let _ = credential_saga.reconcile().await;
+                    let recovery_failed = match credential_saga.reconcile().await {
+                        Ok(summary) => summary.failed > 0,
+                        Err(_) => true,
+                    };
+                    if recovery_failed {
+                        if let Some(diagnostics) = credential_diagnostics {
+                            diagnostics.record_background_error(
+                                "credential-reconciliation",
+                                "credential_recovery_failed",
+                            );
+                        }
+                    }
                 });
             }
             if let Some(application_service) = application_service {
@@ -193,6 +205,9 @@ pub fn run() {
     app.run(|app, event| {
         if matches!(&event, tauri::RunEvent::Exit) {
             if let Some(state) = app.try_state::<startup::BackendState>() {
+                if let Some(scheduler) = state.take_scheduler() {
+                    tauri::async_runtime::block_on(scheduler.shutdown());
+                }
                 if let Some(diagnostics) = state.diagnostics() {
                     diagnostics.mark_clean_exit();
                 }

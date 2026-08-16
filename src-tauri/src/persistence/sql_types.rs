@@ -171,4 +171,5 @@ sqlite_enum!(CredentialOperationStatus, "credential_operation.status", {
     CredentialOperationStatus::CredentialWritten => "credential_written",
     CredentialOperationStatus::ConfigCommitted => "config_committed",
     CredentialOperationStatus::CleanupPending => "cleanup_pending",
+    CredentialOperationStatus::RecoveryFailed => "recovery_failed",
 });

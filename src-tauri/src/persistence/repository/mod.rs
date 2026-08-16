@@ -3,12 +3,16 @@ mod credentials;
 mod intelligence_ladder;
 mod notifications;
 mod probes;
+mod snapshot;
 #[cfg(test)]
 pub(crate) mod test_support;
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
-use crate::domain::{EntityId, ProbeStatus, TimestampMs};
+use crate::domain::{
+    EntityId, GeneralSettings, LatestModelStatus, Model, ProbeCapture, ProbeParameter, ProbePolicy,
+    ProbeResult, ProbeStatus, RequestHeader, Site, TimestampMs,
+};
 
 use super::{Database, DatabaseError, Result};
 
@@ -27,7 +31,9 @@ impl Repository {
     }
 
     pub async fn revision(&self) -> Result<u64> {
-        self.database.call(current_revision).await
+        self.database
+            .call(|connection| current_revision(connection))
+            .await
     }
 }
 
@@ -70,7 +76,28 @@ pub struct CleanupResult {
     pub revision: u64,
 }
 
-fn current_revision(connection: &mut Connection) -> Result<u64> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositorySnapshot {
+    pub revision: u64,
+    pub sites: Vec<Site>,
+    pub models: Vec<Model>,
+    pub probe_policies: Vec<(ProbePolicy, Vec<ProbeParameter>)>,
+    pub site_headers: Vec<RequestHeader>,
+    pub general_settings: GeneralSettings,
+    pub latest_model_statuses: Vec<LatestModelStatus>,
+    pub latest_model_results: Vec<ProbeResult>,
+    pub probe_records: Vec<(ProbeResult, ProbeCapture)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeRecordOutcome {
+    pub revision: u64,
+    pub previous_status: Option<LatestModelStatus>,
+    pub latest_status: LatestModelStatus,
+    pub became_latest: bool,
+}
+
+pub(super) fn current_revision(connection: &Connection) -> Result<u64> {
     let value = connection.query_row(
         "SELECT revision FROM app_state WHERE singleton = 1",
         [],
@@ -120,11 +147,7 @@ fn require_changed(changed: usize, entity: &'static str) -> Result<()> {
     Ok(())
 }
 
-fn entity_exists(
-    transaction: &Transaction<'_>,
-    table: &'static str,
-    id: &EntityId,
-) -> Result<bool> {
+fn entity_exists(transaction: &Connection, table: &'static str, id: &EntityId) -> Result<bool> {
     let sql = match table {
         "sites" => "SELECT 1 FROM sites WHERE id = ?1",
         "models" => "SELECT 1 FROM models WHERE id = ?1",

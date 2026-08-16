@@ -18,11 +18,11 @@ use crate::{
     notifications::{
         ModelFailureReason, ModelRecoveryState, NotificationService, PreparedNotificationEvent,
     },
-    persistence::{CleanupResult, DatabaseError, ProbePageRequest, Repository},
+    persistence::{CleanupResult, DatabaseError, Repository},
 };
 
 use super::{
-    scheduler::{aggregate_latest_status, is_failure, stable_next_probe_at},
+    scheduler::{is_failure, stable_next_probe_at},
     CredentialSaga, CredentialSagaError, DiscoveredModel, ModelCatalogClient, ModelCatalogError,
     ProbeExecutor, ScheduleSnapshot, ScheduledModel,
 };
@@ -277,37 +277,63 @@ impl ApplicationService {
     }
 
     pub async fn snapshot(&self) -> Result<ApplicationSnapshot> {
-        let revision = self.repository.revision().await?;
-        let general_settings = self.repository.load_general_settings().await?;
-        let latest_model_statuses = self.repository.list_latest_model_statuses().await?;
-        let latest_model_results = self.repository.list_latest_probe_results().await?;
-        let mut aggregates = Vec::new();
-        for site in self.repository.list_sites().await? {
-            aggregates.push(self.load_site_aggregate(site).await?);
-        }
-        let page = self
-            .repository
-            .page_probe_results(ProbePageRequest {
-                limit: 100,
-                ..ProbePageRequest::default()
-            })
-            .await?;
-        let mut probe_records = Vec::with_capacity(page.records.len());
-        for result in page.records {
-            let capture = self
-                .repository
-                .load_probe_capture(result.id.clone())
-                .await?
+        let snapshot = self.repository.snapshot().await?;
+        let mut sites = Vec::with_capacity(snapshot.sites.len());
+        for site in snapshot.sites {
+            let policies = snapshot
+                .probe_policies
+                .iter()
+                .filter(|(policy, _)| policy.site_id == site.id)
+                .cloned()
+                .collect::<Vec<_>>();
+            let (default_policy, default_parameters) = policies
+                .iter()
+                .find(|(policy, _)| policy.model_id.is_none())
+                .cloned()
                 .ok_or(ApplicationError::Internal)?;
-            probe_records.push(ProbeRecordAggregate { result, capture });
+            let models = snapshot
+                .models
+                .iter()
+                .filter(|model| model.site_id == site.id)
+                .cloned()
+                .map(|model| {
+                    let policy = policies
+                        .iter()
+                        .find(|(policy, _)| policy.model_id.as_ref() == Some(&model.id));
+                    ModelAggregate {
+                        model,
+                        policy: policy.map(|(policy, _)| policy.clone()),
+                        parameters: policy
+                            .map(|(_, parameters)| parameters.clone())
+                            .unwrap_or_default(),
+                    }
+                })
+                .collect();
+            let headers = snapshot
+                .site_headers
+                .iter()
+                .filter(|header| header.site_id == site.id)
+                .cloned()
+                .collect();
+            sites.push(SiteAggregate {
+                site,
+                default_policy,
+                default_parameters,
+                headers,
+                models,
+            });
         }
         Ok(ApplicationSnapshot {
-            revision,
-            sites: aggregates,
-            general_settings,
-            latest_model_statuses,
-            latest_model_results,
-            probe_records,
+            revision: snapshot.revision,
+            sites,
+            general_settings: snapshot.general_settings,
+            latest_model_statuses: snapshot.latest_model_statuses,
+            latest_model_results: snapshot.latest_model_results,
+            probe_records: snapshot
+                .probe_records
+                .into_iter()
+                .map(|(result, capture)| ProbeRecordAggregate { result, capture })
+                .collect(),
         })
     }
 
@@ -592,12 +618,6 @@ impl ApplicationService {
                 request_id: execution.request_id,
                 revision: 0,
             };
-            let previous = self
-                .repository
-                .list_latest_model_statuses()
-                .await?
-                .into_iter()
-                .find(|status| status.model_id == model.model.id);
             let next_probe_at = site.site.timing.interval_minutes.map(|interval_minutes| {
                 stable_next_probe_at(
                     finished_at,
@@ -606,32 +626,6 @@ impl ApplicationService {
                     interval_minutes,
                 )
             });
-            let latest = aggregate_latest_status(
-                previous.as_ref(),
-                execution.status,
-                &site.site.timing,
-                model.model.id.clone(),
-                result_id.clone(),
-                finished_at,
-                next_probe_at,
-            );
-            let notification_event = if site.site.enabled && model.model.enabled {
-                prepare_probe_notification(
-                    previous.as_ref(),
-                    &latest,
-                    execution.status,
-                    &result_id,
-                    finished_at,
-                    &site.site.name,
-                    model
-                        .model
-                        .display_name
-                        .as_deref()
-                        .unwrap_or(&model.model.model_key),
-                )
-            } else {
-                None
-            };
             let general_settings = self.repository.load_general_settings().await?;
             let mut capture = execution.capture;
             capture.probe_result_id = result_id.clone();
@@ -646,9 +640,39 @@ impl ApplicationService {
                 capture.response_captured_bytes = 0;
                 capture.response_truncated = false;
             }
-            self.repository
-                .record_probe(result, capture, latest)
+            let record = self
+                .repository
+                .record_probe(result, capture, site.site.timing.clone(), next_probe_at)
                 .await?;
+            let notification_event =
+                if record.became_latest && site.site.enabled && model.model.enabled {
+                    match prepare_probe_notification(
+                        record.previous_status.as_ref(),
+                        &record.latest_status,
+                        execution.status,
+                        &result_id,
+                        finished_at,
+                        &site.site.name,
+                        model
+                            .model
+                            .display_name
+                            .as_deref()
+                            .unwrap_or(&model.model.model_key),
+                    ) {
+                        Ok(event) => event,
+                        Err(_) => {
+                            if let Some(diagnostics) = &self.diagnostics {
+                                diagnostics.record_background_error(
+                                    "notification-publisher",
+                                    "notification_prepare_failed",
+                                );
+                            }
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
             if let (Some(service), Some(event)) =
                 (self.notification_service.as_ref(), notification_event)
             {
@@ -661,8 +685,18 @@ impl ApplicationService {
                     }
                 }
             }
-            self.clear_expired_probe_records(general_settings.history_retention_days, finished_at)
-                .await?;
+            if self
+                .clear_expired_probe_records(general_settings.history_retention_days, finished_at)
+                .await
+                .is_err()
+            {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.record_background_error(
+                        "probe-history-cleanup",
+                        "probe_history_cleanup_failed",
+                    );
+                }
+            }
             Ok(())
         }
         .await;
@@ -785,27 +819,22 @@ impl ApplicationService {
         require_text(&input.name, "name")?;
         require_text(&input.base_url, "base_url")?;
         let mut site = self.require_site(&input.site_id).await?;
-
-        match input.credential {
-            CredentialIntent::Keep => {}
-            CredentialIntent::Replace(secret) => {
-                self.credentials
-                    .replace_site_secret(input.site_id.clone(), secret)
-                    .await?;
-                site = self.require_site(&input.site_id).await?;
-            }
-            CredentialIntent::Clear => {
-                self.credentials
-                    .clear_site_secret(input.site_id.clone())
-                    .await?;
-                site = self.require_site(&input.site_id).await?;
-            }
-        }
+        apply_protocol_change(&mut site, input.protocol);
         site.name = input.name.trim().to_owned();
-        site.protocol = input.protocol;
         site.base_url = input.base_url.trim().to_owned();
         site.updated_at = self.clock.now();
-        self.repository.update_site(site).await?;
+
+        match input.credential {
+            CredentialIntent::Keep => {
+                self.repository.update_site(site).await?;
+            }
+            CredentialIntent::Replace(secret) => {
+                self.credentials.replace_site_secret(site, secret).await?;
+            }
+            CredentialIntent::Clear => {
+                self.credentials.clear_site_secret(site).await?;
+            }
+        }
         self.snapshot().await
     }
 
@@ -930,10 +959,7 @@ impl ApplicationService {
     ) -> Result<ApplicationSnapshot> {
         require_text(&input.models_endpoint, "models_endpoint")?;
         require_text(&input.probe_endpoint, "probe_endpoint")?;
-        let mut site = self.require_site(&input.site_id).await?;
-        site.models_endpoint = input.models_endpoint;
-        site.probe_endpoint = input.probe_endpoint;
-        site.timing = ProbeTimingPolicy::new(
+        let timing = ProbeTimingPolicy::new(
             input.interval_minutes,
             input.slow_first_token_ms,
             input.slow_total_ms,
@@ -943,9 +969,6 @@ impl ApplicationService {
         .map_err(|error| ApplicationError::InvalidInput {
             field: error.field().unwrap_or("probe_timing"),
         })?;
-        site.updated_at = self.clock.now();
-        self.repository.update_site(site).await?;
-
         let headers = input
             .headers
             .into_iter()
@@ -962,8 +985,13 @@ impl ApplicationService {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let mut site = self.require_site(&input.site_id).await?;
+        site.models_endpoint = input.models_endpoint;
+        site.probe_endpoint = input.probe_endpoint;
+        site.timing = timing;
+        site.updated_at = self.clock.now();
         self.repository
-            .replace_site_headers(input.site_id, headers)
+            .update_site_with_headers(site, headers)
             .await?;
         self.snapshot().await
     }
@@ -1285,7 +1313,8 @@ fn prepare_probe_notification(
     occurred_at: TimestampMs,
     site_name: &str,
     model_name: &str,
-) -> Option<PreparedNotificationEvent> {
+) -> std::result::Result<Option<PreparedNotificationEvent>, crate::notifications::NotificationError>
+{
     let was_failure = previous.is_some_and(|status| is_failure(status.status));
     let has_failed = is_failure(latest.status);
     if !was_failure && has_failed {
@@ -1298,7 +1327,7 @@ fn prepare_probe_notification(
             model_name,
             failure_reason(observed),
         )
-        .ok()
+        .map(Some)
     } else if was_failure && matches!(latest.status, ProbeStatus::Healthy | ProbeStatus::Slow) {
         let state = if latest.status == ProbeStatus::Slow {
             ModelRecoveryState::Slow
@@ -1314,9 +1343,9 @@ fn prepare_probe_notification(
             model_name,
             state,
         )
-        .ok()
+        .map(Some)
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -1380,6 +1409,19 @@ fn protocol_probe_defaults(protocol: SiteProtocol) -> (&'static str, AuthPreset)
     }
 }
 
+fn apply_protocol_change(site: &mut Site, protocol: SiteProtocol) {
+    if site.protocol == protocol {
+        return;
+    }
+    let previous_default_endpoint = protocol_probe_defaults(site.protocol).0;
+    let (next_default_endpoint, auth_preset) = protocol_probe_defaults(protocol);
+    if site.probe_endpoint == previous_default_endpoint {
+        site.probe_endpoint = next_default_endpoint.to_owned();
+    }
+    site.protocol = protocol;
+    site.auth_preset = auth_preset;
+}
+
 fn effective_probe_policy(
     site_default: &ProbePolicy,
     model_policy: Option<&ProbePolicy>,
@@ -1387,7 +1429,12 @@ fn effective_probe_policy(
     let mut effective = model_policy
         .cloned()
         .unwrap_or_else(|| site_default.clone());
-    effective.mode = ProbeMode::DisabledThinking;
+    if effective.mode == ProbeMode::Inherit {
+        effective.mode = match site_default.mode {
+            ProbeMode::Inherit => ProbeMode::DisabledThinking,
+            mode => mode,
+        };
+    }
     effective
 }
 
@@ -1438,7 +1485,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_probe_policy_always_uses_the_low_reasoning_default() {
+    fn effective_probe_policy_resolves_model_inheritance() {
         let site_id = EntityId::parse("site-a").expect("site id is valid");
         let model_id = EntityId::parse("model-a").expect("model id is valid");
         let timestamp = TimestampMs::new(100).expect("timestamp is valid");
@@ -1462,7 +1509,32 @@ mod tests {
 
         let effective = effective_probe_policy(&site_default, Some(&model_policy));
 
-        assert_eq!(effective.mode, ProbeMode::DisabledThinking);
+        assert_eq!(effective.mode, ProbeMode::MinimumReasoning);
+
+        model_policy.mode = ProbeMode::DisabledThinking;
+        assert_eq!(
+            effective_probe_policy(&site_default, Some(&model_policy)).mode,
+            ProbeMode::DisabledThinking
+        );
+        assert_eq!(
+            effective_probe_policy(&site_default, None).mode,
+            ProbeMode::MinimumReasoning
+        );
+    }
+
+    #[test]
+    fn protocol_changes_migrate_defaults_and_preserve_custom_endpoints() {
+        let mut site = crate::persistence::repository::test_support::site("site-a", 0);
+
+        apply_protocol_change(&mut site, SiteProtocol::Anthropic);
+        assert_eq!(site.probe_endpoint, "/messages");
+        assert_eq!(site.protocol, SiteProtocol::Anthropic);
+        assert_eq!(site.auth_preset, AuthPreset::XApiKey);
+
+        site.probe_endpoint = "/custom-probe".to_owned();
+        apply_protocol_change(&mut site, SiteProtocol::OpenAiResponses);
+        assert_eq!(site.probe_endpoint, "/custom-probe");
+        assert_eq!(site.auth_preset, AuthPreset::Bearer);
     }
 
     #[test]
@@ -1495,6 +1567,7 @@ mod tests {
             "Site A",
             "Model A",
         )
+        .expect("notification preparation succeeds")
         .expect("healthy to failed creates an event");
         assert_eq!(failure.event_type, "probe.model_failed");
         assert!(prepare_probe_notification(
@@ -1506,6 +1579,7 @@ mod tests {
             "Site A",
             "Model A",
         )
+        .expect("notification preparation succeeds")
         .is_none());
 
         let recovery = prepare_probe_notification(
@@ -1517,8 +1591,20 @@ mod tests {
             "Site A",
             "Model A",
         )
+        .expect("notification preparation succeeds")
         .expect("failed to healthy creates an event");
         assert_eq!(recovery.event_type, "probe.model_recovered");
+
+        assert!(prepare_probe_notification(
+            Some(&healthy),
+            &failed,
+            ProbeStatus::Timeout,
+            &probe_id,
+            occurred_at,
+            &"x".repeat(121),
+            "Model A",
+        )
+        .is_err());
     }
 
     fn serve_probe() -> (String, thread::JoinHandle<()>) {
@@ -1703,7 +1789,7 @@ mod tests {
             .update_site(UpdateSite {
                 site_id: EntityId::parse("site-a").expect("fixture id is valid"),
                 name: "Renamed Site".to_owned(),
-                protocol: SiteProtocol::OpenAiCompatible,
+                protocol: SiteProtocol::Anthropic,
                 base_url: "https://renamed.example.test/v1".to_owned(),
                 credential: CredentialIntent::Keep,
             })
@@ -1711,17 +1797,29 @@ mod tests {
             .expect("site updated with existing credential");
         assert_eq!(snapshot.sites[0].site.name, "Renamed Site");
         assert!(snapshot.sites[0].site.credential_ref.is_some());
+        assert_eq!(snapshot.sites[0].site.auth_preset, AuthPreset::XApiKey);
+        assert_eq!(snapshot.sites[0].site.probe_endpoint, "/messages");
 
         let snapshot = service
             .update_site(UpdateSite {
                 site_id: EntityId::parse("site-a").expect("fixture id is valid"),
-                name: "Renamed Site".to_owned(),
-                protocol: SiteProtocol::OpenAiCompatible,
-                base_url: "https://renamed.example.test/v1".to_owned(),
+                name: "Cleared Site".to_owned(),
+                protocol: SiteProtocol::OpenAiResponses,
+                base_url: "https://responses.example.test/v1".to_owned(),
                 credential: CredentialIntent::Clear,
             })
             .await
             .expect("credential cleared");
+        assert_eq!(snapshot.sites[0].site.name, "Cleared Site");
+        assert_eq!(
+            snapshot.sites[0].site.protocol,
+            SiteProtocol::OpenAiResponses
+        );
+        assert_eq!(snapshot.sites[0].site.auth_preset, AuthPreset::Bearer);
+        assert_eq!(
+            snapshot.sites[0].site.base_url,
+            "https://responses.example.test/v1"
+        );
         assert!(snapshot.sites[0].site.credential_ref.is_none());
         assert!(!store.matches(
             &EntityId::parse("credential-a").expect("fixture id is valid"),

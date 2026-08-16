@@ -127,6 +127,7 @@ pub enum CredentialOperationStatus {
     CredentialWritten,
     ConfigCommitted,
     CleanupPending,
+    RecoveryFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

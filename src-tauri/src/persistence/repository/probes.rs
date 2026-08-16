@@ -1,10 +1,14 @@
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 
-use crate::domain::{LatestModelStatus, ProbeCapture, ProbeResult, TimestampMs, TokenUsage};
+use crate::domain::{
+    LatestModelStatus, ProbeCapture, ProbeResult, ProbeStatus, ProbeTimingPolicy, TimestampMs,
+    TokenUsage,
+};
 
 use super::{
     bump_revision, optional_sqlite_i64, sqlite_i64, unchanged_revision, CleanupResult,
-    DatabaseError, ProbeCursor, ProbePage, ProbePageRequest, Repository, Result,
+    DatabaseError, ProbeCursor, ProbePage, ProbePageRequest, ProbeRecordOutcome, Repository,
+    Result,
 };
 
 impl Repository {
@@ -12,22 +16,57 @@ impl Repository {
         &self,
         result: ProbeResult,
         capture: ProbeCapture,
-        latest: LatestModelStatus,
-    ) -> Result<u64> {
-        if capture.probe_result_id != result.id
-            || latest.model_id != result.model_id
-            || latest.probe_result_id.as_ref() != Some(&result.id)
-        {
+        timing: ProbeTimingPolicy,
+        next_probe_at: Option<TimestampMs>,
+    ) -> Result<ProbeRecordOutcome> {
+        if capture.probe_result_id != result.id {
             return Err(DatabaseError::InvalidInput {
                 field: "probe_record",
             });
         }
+        let finished_at = result.finished_at.ok_or(DatabaseError::InvalidInput {
+            field: "finished_at",
+        })?;
 
         self.database
             .call(move |connection| {
-                let transaction = connection.transaction()?;
+                let transaction =
+                    connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let previous_status = transaction
+                    .query_row(
+                        "SELECT model_id, probe_result_id, status, consecutive_failures,
+                                consecutive_successes, next_probe_at_ms, revision, updated_at_ms
+                         FROM latest_model_status WHERE model_id = ?1",
+                        [&result.model_id],
+                        latest_status_from_row,
+                    )
+                    .optional()?;
+                let became_latest = previous_status.as_ref().is_none_or(|previous| {
+                    finished_at > previous.updated_at
+                        || (finished_at == previous.updated_at
+                            && previous
+                                .probe_result_id
+                                .as_ref()
+                                .is_none_or(|previous_id| result.id > *previous_id))
+                });
                 let revision = bump_revision(&transaction)?;
                 let revision_sql = sqlite_i64(revision, "revision")?;
+                let latest_status = if became_latest {
+                    aggregate_latest_status(
+                        previous_status.as_ref(),
+                        result.status,
+                        &timing,
+                        result.model_id.clone(),
+                        result.id.clone(),
+                        finished_at,
+                        next_probe_at,
+                        revision,
+                    )
+                } else {
+                    previous_status
+                        .clone()
+                        .expect("a stale result has an existing latest status")
+                };
                 let input_tokens =
                     optional_sqlite_i64(result.token_usage.input_tokens, "input_tokens")?;
                 let output_tokens =
@@ -101,33 +140,39 @@ impl Repository {
                         capture.response_truncated,
                     ],
                 )?;
-                transaction.execute(
-                    "INSERT INTO latest_model_status (
-                       model_id, probe_result_id, status, consecutive_failures,
-                       consecutive_successes, next_probe_at_ms, revision, updated_at_ms
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                     ON CONFLICT(model_id) DO UPDATE SET
-                       probe_result_id = excluded.probe_result_id,
-                       status = excluded.status,
-                       consecutive_failures = excluded.consecutive_failures,
-                       consecutive_successes = excluded.consecutive_successes,
-                       next_probe_at_ms = excluded.next_probe_at_ms,
-                       revision = excluded.revision,
-                       updated_at_ms = excluded.updated_at_ms
-                     WHERE excluded.revision >= latest_model_status.revision",
-                    params![
-                        latest.model_id,
-                        latest.probe_result_id,
-                        latest.status,
-                        latest.consecutive_failures,
-                        latest.consecutive_successes,
-                        latest.next_probe_at,
-                        revision_sql,
-                        latest.updated_at,
-                    ],
-                )?;
+                if became_latest {
+                    transaction.execute(
+                        "INSERT INTO latest_model_status (
+                           model_id, probe_result_id, status, consecutive_failures,
+                           consecutive_successes, next_probe_at_ms, revision, updated_at_ms
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                         ON CONFLICT(model_id) DO UPDATE SET
+                           probe_result_id = excluded.probe_result_id,
+                           status = excluded.status,
+                           consecutive_failures = excluded.consecutive_failures,
+                           consecutive_successes = excluded.consecutive_successes,
+                           next_probe_at_ms = excluded.next_probe_at_ms,
+                           revision = excluded.revision,
+                           updated_at_ms = excluded.updated_at_ms",
+                        params![
+                            latest_status.model_id,
+                            latest_status.probe_result_id,
+                            latest_status.status,
+                            latest_status.consecutive_failures,
+                            latest_status.consecutive_successes,
+                            latest_status.next_probe_at,
+                            revision_sql,
+                            latest_status.updated_at,
+                        ],
+                    )?;
+                }
                 transaction.commit()?;
-                Ok(revision)
+                Ok(ProbeRecordOutcome {
+                    revision,
+                    previous_status,
+                    latest_status,
+                    became_latest,
+                })
             })
             .await
     }
@@ -300,7 +345,62 @@ impl Repository {
     }
 }
 
-fn probe_result_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeResult> {
+#[allow(clippy::too_many_arguments)]
+fn aggregate_latest_status(
+    previous: Option<&LatestModelStatus>,
+    observed: ProbeStatus,
+    timing: &ProbeTimingPolicy,
+    model_id: crate::domain::EntityId,
+    probe_result_id: crate::domain::EntityId,
+    finished_at: TimestampMs,
+    next_probe_at: Option<TimestampMs>,
+    revision: u64,
+) -> LatestModelStatus {
+    let success = matches!(observed, ProbeStatus::Healthy | ProbeStatus::Slow);
+    let consecutive_failures = if success {
+        0
+    } else {
+        previous.map_or(1, |status| status.consecutive_failures.saturating_add(1))
+    };
+    let consecutive_successes = if success {
+        previous.map_or(1, |status| status.consecutive_successes.saturating_add(1))
+    } else {
+        0
+    };
+    let status = if success {
+        if previous.is_some_and(|status| is_failure(status.status))
+            && consecutive_successes < u16::from(timing.recovery_threshold)
+        {
+            previous.map_or(observed, |status| status.status)
+        } else {
+            observed
+        }
+    } else if consecutive_failures < u16::from(timing.failure_threshold) {
+        previous.map_or(ProbeStatus::Unknown, |status| status.status)
+    } else {
+        observed
+    };
+
+    LatestModelStatus {
+        model_id,
+        probe_result_id: Some(probe_result_id),
+        status,
+        consecutive_failures,
+        consecutive_successes,
+        next_probe_at,
+        revision,
+        updated_at: finished_at,
+    }
+}
+
+fn is_failure(status: ProbeStatus) -> bool {
+    !matches!(
+        status,
+        ProbeStatus::Healthy | ProbeStatus::Slow | ProbeStatus::Unknown
+    )
+}
+
+pub(super) fn probe_result_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeResult> {
     Ok(ProbeResult {
         id: row.get(0)?,
         site_id: row.get(1)?,
@@ -333,26 +433,35 @@ fn probe_result_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeResul
     })
 }
 
-fn probe_capture_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeCapture> {
+pub(super) fn probe_capture_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeCapture> {
+    probe_capture_from_row_at(row, 0)
+}
+
+pub(super) fn probe_capture_from_row_at(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<ProbeCapture> {
     Ok(ProbeCapture {
-        probe_result_id: row.get(0)?,
-        request_headers_json: row.get(1)?,
-        request_body: row.get(2)?,
-        request_captured_bytes: row.get(3)?,
-        request_limit_bytes: row.get(4)?,
-        request_truncated: row.get(5)?,
-        response_mode: row.get(6)?,
-        response_content_type: row.get(7)?,
-        response_headers_json: row.get(8)?,
-        response_body: row.get(9)?,
-        response_chunks_json: row.get(10)?,
-        response_captured_bytes: row.get(11)?,
-        response_limit_bytes: row.get(12)?,
-        response_truncated: row.get(13)?,
+        probe_result_id: row.get(offset)?,
+        request_headers_json: row.get(offset + 1)?,
+        request_body: row.get(offset + 2)?,
+        request_captured_bytes: row.get(offset + 3)?,
+        request_limit_bytes: row.get(offset + 4)?,
+        request_truncated: row.get(offset + 5)?,
+        response_mode: row.get(offset + 6)?,
+        response_content_type: row.get(offset + 7)?,
+        response_headers_json: row.get(offset + 8)?,
+        response_body: row.get(offset + 9)?,
+        response_chunks_json: row.get(offset + 10)?,
+        response_captured_bytes: row.get(offset + 11)?,
+        response_limit_bytes: row.get(offset + 12)?,
+        response_truncated: row.get(offset + 13)?,
     })
 }
 
-fn latest_status_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LatestModelStatus> {
+pub(super) fn latest_status_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<LatestModelStatus> {
     Ok(LatestModelStatus {
         model_id: row.get(0)?,
         probe_result_id: row.get(1)?,
@@ -415,7 +524,12 @@ mod tests {
         invalid_capture.request_captured_bytes = invalid_capture.request_limit_bytes + 1;
 
         assert!(repository
-            .record_probe(result.clone(), invalid_capture, latest(&result))
+            .record_probe(
+                result.clone(),
+                invalid_capture,
+                ProbeTimingPolicy::default(),
+                latest(&result).next_probe_at,
+            )
             .await
             .is_err());
         assert_eq!(repository.revision().await.expect("revision read"), 2);
@@ -433,6 +547,163 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn status_aggregation_is_atomic_and_stale_results_cannot_overwrite_latest() {
+        let (repository, site_id, model_id) = repository_with_model().await;
+        let timing = ProbeTimingPolicy::default();
+
+        let first_failure = probe_result(
+            "result-failure-1",
+            &site_id,
+            &model_id,
+            100,
+            ProbeStatus::Timeout,
+        );
+        let first = repository
+            .record_probe(
+                first_failure.clone(),
+                capture(&first_failure.id),
+                timing.clone(),
+                None,
+            )
+            .await
+            .expect("first failure recorded");
+        assert!(first.became_latest);
+        assert_eq!(first.latest_status.status, ProbeStatus::Unknown);
+        assert_eq!(first.latest_status.consecutive_failures, 1);
+
+        let second_failure = probe_result(
+            "result-failure-2",
+            &site_id,
+            &model_id,
+            300,
+            ProbeStatus::Timeout,
+        );
+        let second = repository
+            .record_probe(
+                second_failure.clone(),
+                capture(&second_failure.id),
+                timing.clone(),
+                None,
+            )
+            .await
+            .expect("second failure recorded");
+        assert_eq!(second.previous_status, Some(first.latest_status));
+        assert_eq!(second.latest_status.status, ProbeStatus::Timeout);
+        assert_eq!(second.latest_status.consecutive_failures, 2);
+
+        let stale_success = probe_result(
+            "result-stale-success",
+            &site_id,
+            &model_id,
+            200,
+            ProbeStatus::Healthy,
+        );
+        let stale = repository
+            .record_probe(
+                stale_success.clone(),
+                capture(&stale_success.id),
+                timing.clone(),
+                None,
+            )
+            .await
+            .expect("stale result is retained as history");
+        assert!(!stale.became_latest);
+        assert_eq!(stale.latest_status, second.latest_status);
+
+        let first_recovery = probe_result(
+            "result-recovery-1",
+            &site_id,
+            &model_id,
+            400,
+            ProbeStatus::Healthy,
+        );
+        let recovery = repository
+            .record_probe(
+                first_recovery.clone(),
+                capture(&first_recovery.id),
+                timing,
+                None,
+            )
+            .await
+            .expect("recovery recorded");
+        assert_eq!(recovery.latest_status.status, ProbeStatus::Timeout);
+        assert_eq!(recovery.latest_status.consecutive_successes, 1);
+
+        let page = repository
+            .page_probe_results(ProbePageRequest {
+                limit: 10,
+                ..ProbePageRequest::default()
+            })
+            .await
+            .expect("probe history read");
+        assert_eq!(page.records.len(), 4);
+        assert!(page
+            .records
+            .iter()
+            .any(|result| result.id == stale_success.id));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn independent_repository_connections_serialize_status_updates() {
+        let directory = tempfile::tempdir().expect("tempdir created");
+        let path = directory.path().join("relaypulse.sqlite3");
+        let first_repository = Repository::new(Database::open(&path).expect("database opens"));
+        let site = site("site-a", 0);
+        let model = model("model-a", &site.id, 0);
+        first_repository
+            .create_site(site.clone(), site_policy(&site.id))
+            .await
+            .expect("site created");
+        first_repository
+            .create_model(model.clone())
+            .await
+            .expect("model created");
+        let second_repository = Repository::new(Database::open(&path).expect("database reopens"));
+
+        let earlier = probe_result(
+            "result-earlier",
+            &site.id,
+            &model.id,
+            100,
+            ProbeStatus::Timeout,
+        );
+        let later = probe_result(
+            "result-later",
+            &site.id,
+            &model.id,
+            200,
+            ProbeStatus::Healthy,
+        );
+        let (earlier_outcome, later_outcome) = tokio::join!(
+            first_repository.record_probe(
+                earlier.clone(),
+                capture(&earlier.id),
+                ProbeTimingPolicy::default(),
+                None,
+            ),
+            second_repository.record_probe(
+                later.clone(),
+                capture(&later.id),
+                ProbeTimingPolicy::default(),
+                None,
+            ),
+        );
+        earlier_outcome.expect("earlier result recorded");
+        later_outcome.expect("later result recorded");
+
+        let latest = first_repository
+            .list_latest_model_statuses()
+            .await
+            .expect("latest status read");
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].probe_result_id, Some(later.id));
+        assert_eq!(
+            latest[0].updated_at,
+            later.finished_at.expect("probe finished")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn probe_pages_are_stable_and_cleanup_cascades_captures() {
         let (repository, site_id, model_id) = repository_with_model().await;
         for (value, started_at, status) in [
@@ -442,7 +713,12 @@ mod tests {
         ] {
             let result = probe_result(value, &site_id, &model_id, started_at, status);
             repository
-                .record_probe(result.clone(), capture(&result.id), latest(&result))
+                .record_probe(
+                    result.clone(),
+                    capture(&result.id),
+                    ProbeTimingPolicy::default(),
+                    latest(&result).next_probe_at,
+                )
                 .await
                 .expect("probe recorded");
         }
@@ -554,7 +830,12 @@ mod tests {
                 .expect("site created");
             repository.create_model(model).await.expect("model created");
             repository
-                .record_probe(result.clone(), capture.clone(), latest(&result))
+                .record_probe(
+                    result.clone(),
+                    capture.clone(),
+                    ProbeTimingPolicy::default(),
+                    latest(&result).next_probe_at,
+                )
                 .await
                 .expect("probe recorded");
         }

@@ -53,57 +53,7 @@ impl Repository {
         self.database
             .call(move |connection| {
                 let transaction = connection.transaction()?;
-                let previous_interval = transaction
-                    .query_row(
-                        "SELECT probe_interval_minutes FROM sites WHERE id = ?1",
-                        [&site.id],
-                        |row| row.get::<_, Option<u16>>(0),
-                    )
-                    .optional()?
-                    .ok_or(DatabaseError::NotFound { entity: "site" })?;
-                let changed = transaction.execute(
-                    "UPDATE sites SET
-                       name = ?2, protocol = ?3, base_url = ?4, credential_ref = ?5,
-                       enabled = ?6, models_method = ?7, models_endpoint = ?8,
-                       probe_method = ?9, probe_endpoint = ?10, content_type = ?11,
-                       auth_preset = ?12, stream_enabled = ?13,
-                       probe_interval_minutes = ?14, slow_first_token_ms = ?15,
-                       slow_total_ms = ?16, failure_threshold = ?17,
-                       recovery_threshold = ?18, lifecycle_state = ?19,
-                       updated_at_ms = ?20
-                     WHERE id = ?1",
-                    params![
-                        site.id,
-                        site.name,
-                        site.protocol,
-                        site.base_url,
-                        site.credential_ref,
-                        site.enabled,
-                        site.models_method,
-                        site.models_endpoint,
-                        site.probe_method,
-                        site.probe_endpoint,
-                        site.content_type,
-                        site.auth_preset,
-                        site.stream_enabled,
-                        site.timing.interval_minutes,
-                        site.timing.slow_first_token_ms,
-                        site.timing.slow_total_ms,
-                        site.timing.failure_threshold,
-                        site.timing.recovery_threshold,
-                        site.lifecycle_state,
-                        site.updated_at,
-                    ],
-                )?;
-                require_changed(changed, "site")?;
-                if previous_interval != site.timing.interval_minutes {
-                    transaction.execute(
-                        "UPDATE latest_model_status
-                         SET next_probe_at_ms = NULL
-                         WHERE model_id IN (SELECT id FROM models WHERE site_id = ?1)",
-                        [&site.id],
-                    )?;
-                }
+                update_site_inner(&transaction, &site)?;
                 let revision = bump_revision(&transaction)?;
                 transaction.commit()?;
                 Ok(revision)
@@ -459,24 +409,28 @@ impl Repository {
         self.database
             .call(move |connection| {
                 let transaction = connection.transaction()?;
-                if !entity_exists(&transaction, "sites", &site_id)? {
-                    return Err(DatabaseError::NotFound { entity: "site" });
-                }
-                transaction.execute("DELETE FROM site_headers WHERE site_id = ?1", [&site_id])?;
-                for header in &headers {
-                    transaction.execute(
-                        "INSERT INTO site_headers (
-                           id, site_id, header_name, value_template, sort_order
-                         ) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![
-                            header.id,
-                            header.site_id,
-                            header.name,
-                            header.value_template,
-                            header.sort_order,
-                        ],
-                    )?;
-                }
+                replace_site_headers_inner(&transaction, &site_id, &headers)?;
+                let revision = bump_revision(&transaction)?;
+                transaction.commit()?;
+                Ok(revision)
+            })
+            .await
+    }
+
+    pub async fn update_site_with_headers(
+        &self,
+        site: Site,
+        headers: Vec<RequestHeader>,
+    ) -> Result<u64> {
+        if headers.iter().any(|header| header.site_id != site.id) {
+            return Err(DatabaseError::InvalidInput { field: "headers" });
+        }
+
+        self.database
+            .call(move |connection| {
+                let transaction = connection.transaction()?;
+                update_site_inner(&transaction, &site)?;
+                replace_site_headers_inner(&transaction, &site.id, &headers)?;
                 let revision = bump_revision(&transaction)?;
                 transaction.commit()?;
                 Ok(revision)
@@ -553,6 +507,87 @@ impl Repository {
             })
             .await
     }
+}
+
+fn update_site_inner(connection: &Connection, site: &Site) -> Result<()> {
+    let previous_interval = connection
+        .query_row(
+            "SELECT probe_interval_minutes FROM sites WHERE id = ?1",
+            [&site.id],
+            |row| row.get::<_, Option<u16>>(0),
+        )
+        .optional()?
+        .ok_or(DatabaseError::NotFound { entity: "site" })?;
+    let changed = connection.execute(
+        "UPDATE sites SET
+           name = ?2, protocol = ?3, base_url = ?4, credential_ref = ?5,
+           enabled = ?6, models_method = ?7, models_endpoint = ?8,
+           probe_method = ?9, probe_endpoint = ?10, content_type = ?11,
+           auth_preset = ?12, stream_enabled = ?13,
+           probe_interval_minutes = ?14, slow_first_token_ms = ?15,
+           slow_total_ms = ?16, failure_threshold = ?17,
+           recovery_threshold = ?18, lifecycle_state = ?19,
+           updated_at_ms = ?20
+         WHERE id = ?1",
+        params![
+            site.id,
+            site.name,
+            site.protocol,
+            site.base_url,
+            site.credential_ref,
+            site.enabled,
+            site.models_method,
+            site.models_endpoint,
+            site.probe_method,
+            site.probe_endpoint,
+            site.content_type,
+            site.auth_preset,
+            site.stream_enabled,
+            site.timing.interval_minutes,
+            site.timing.slow_first_token_ms,
+            site.timing.slow_total_ms,
+            site.timing.failure_threshold,
+            site.timing.recovery_threshold,
+            site.lifecycle_state,
+            site.updated_at,
+        ],
+    )?;
+    require_changed(changed, "site")?;
+    if previous_interval != site.timing.interval_minutes {
+        connection.execute(
+            "UPDATE latest_model_status
+             SET next_probe_at_ms = NULL
+             WHERE model_id IN (SELECT id FROM models WHERE site_id = ?1)",
+            [&site.id],
+        )?;
+    }
+    Ok(())
+}
+
+fn replace_site_headers_inner(
+    connection: &Connection,
+    site_id: &EntityId,
+    headers: &[RequestHeader],
+) -> Result<()> {
+    if !entity_exists(connection, "sites", site_id)? {
+        return Err(DatabaseError::NotFound { entity: "site" });
+    }
+    connection.execute("DELETE FROM site_headers WHERE site_id = ?1", [site_id])?;
+    for header in headers {
+        connection.execute(
+            "INSERT INTO site_headers (
+               id, site_id, header_name, value_template, sort_order
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                header.id,
+                header.site_id,
+                header.name,
+                header.value_template,
+                header.sort_order,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn compact_site_sort_orders(connection: &Connection) -> Result<()> {
@@ -764,7 +799,7 @@ pub(super) fn insert_probe_policy(connection: &Connection, policy: &ProbePolicy)
     Ok(())
 }
 
-fn site_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Site> {
+pub(super) fn site_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Site> {
     Ok(Site {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -793,7 +828,7 @@ fn site_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Site> {
     })
 }
 
-fn model_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model> {
+pub(super) fn model_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model> {
     Ok(Model {
         id: row.get(0)?,
         site_id: row.get(1)?,
@@ -808,7 +843,7 @@ fn model_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Model> {
     })
 }
 
-fn policy_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbePolicy> {
+pub(super) fn policy_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbePolicy> {
     Ok(ProbePolicy {
         id: row.get(0)?,
         site_id: row.get(1)?,
@@ -824,7 +859,7 @@ fn policy_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbePolicy> {
     })
 }
 
-fn parameter_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeParameter> {
+pub(super) fn parameter_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeParameter> {
     Ok(ProbeParameter {
         id: row.get(0)?,
         policy_id: row.get(1)?,
@@ -835,7 +870,7 @@ fn parameter_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProbeParamete
     })
 }
 
-fn header_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestHeader> {
+pub(super) fn header_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestHeader> {
     Ok(RequestHeader {
         id: row.get(0)?,
         site_id: row.get(1)?,
@@ -1010,7 +1045,12 @@ mod tests {
 
         let result = probe_result("result-a", &site.id, &model.id, 100, ProbeStatus::Healthy);
         repository
-            .record_probe(result.clone(), capture(&result.id), latest(&result))
+            .record_probe(
+                result.clone(),
+                capture(&result.id),
+                ProbeTimingPolicy::default(),
+                latest(&result).next_probe_at,
+            )
             .await
             .expect("probe recorded");
         assert!(repository
@@ -1045,6 +1085,68 @@ mod tests {
             .expect("statuses read")[0]
             .next_probe_at
             .is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn site_and_header_update_rolls_back_as_one_transaction() {
+        let repository = Repository::new(Database::open_in_memory().expect("database opens"));
+        let site = site("site-a", 0);
+        repository
+            .create_site(site.clone(), site_policy(&site.id))
+            .await
+            .expect("site created");
+        let existing_header = RequestHeader {
+            id: id("header-existing"),
+            site_id: site.id.clone(),
+            name: "X-Existing".to_owned(),
+            value_template: "existing".to_owned(),
+            sort_order: 0,
+        };
+        repository
+            .replace_site_headers(site.id.clone(), vec![existing_header.clone()])
+            .await
+            .expect("existing header stored");
+        let revision = repository.revision().await.expect("revision read");
+
+        let mut updated_site = site.clone();
+        updated_site.name = "Partially Applied".to_owned();
+        updated_site.updated_at = timestamp(10);
+        let duplicate_headers = vec![
+            RequestHeader {
+                id: id("header-a"),
+                site_id: site.id.clone(),
+                name: "X-Duplicate".to_owned(),
+                value_template: "first".to_owned(),
+                sort_order: 0,
+            },
+            RequestHeader {
+                id: id("header-b"),
+                site_id: site.id.clone(),
+                name: "X-Duplicate".to_owned(),
+                value_template: "second".to_owned(),
+                sort_order: 1,
+            },
+        ];
+
+        assert!(repository
+            .update_site_with_headers(updated_site, duplicate_headers)
+            .await
+            .is_err());
+        assert_eq!(
+            repository.revision().await.expect("revision read"),
+            revision
+        );
+        assert_eq!(
+            repository.list_sites().await.expect("sites read"),
+            vec![site.clone()]
+        );
+        assert_eq!(
+            repository
+                .list_site_headers(site.id)
+                .await
+                .expect("headers read"),
+            vec![existing_header]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

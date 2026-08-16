@@ -231,6 +231,10 @@ impl BackendState {
         }
     }
 
+    pub fn take_scheduler(&self) -> Option<SchedulerHandle> {
+        self.scheduler.lock().ok()?.take()
+    }
+
     pub fn set_intelligence_ladder_scheduler(&self, scheduler: IntelligenceLadderSchedulerHandle) {
         if let Ok(mut current) = self.intelligence_ladder_scheduler.lock() {
             *current = Some(scheduler);

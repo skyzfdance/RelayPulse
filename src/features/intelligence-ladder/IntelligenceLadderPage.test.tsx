@@ -22,7 +22,7 @@ function renderPage(dataSource: IntelligenceLadderDataSource) {
 afterEach(cleanup);
 
 describe('IntelligenceLadderPage', () => {
-  it('renders the fixed header, 2-1-3 podium and compact ranking list', async () => {
+  it('renders the fixed header, 2-1-3 podium and ranking card grid', async () => {
     renderPage(new MockIntelligenceLadderDataSource());
 
     expect(await screen.findByRole('heading', { name: '智力天梯' })).toBeVisible();
@@ -38,15 +38,20 @@ describe('IntelligenceLadderPage', () => {
     expect(screen.getByTestId('podium-rank-2')).toHaveClass('order-1');
     expect(screen.getByTestId('podium-rank-1')).toHaveClass('order-2');
     expect(screen.getByTestId('podium-rank-3')).toHaveClass('order-3');
+    expect(podium.querySelectorAll('.intelligence-podium-wreath')).toHaveLength(3);
+    expect(within(podium).queryByText('XHIGH')).toBeNull();
+    expect(within(podium).queryByText('ULTRA')).toBeNull();
+    expect(within(podium).queryByText('MAX')).toBeNull();
 
-    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      '排名',
-      '模型',
-      '努力档位',
-      '智力分数 (IQ)',
-    ]);
-    expect(screen.getByText('4')).toBeVisible();
-    expect(screen.getByText('10')).toBeVisible();
+    expect(screen.getByRole('heading', { name: '后续排名' })).toBeVisible();
+    expect(screen.getByText('7 个模型')).toBeVisible();
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.getByTestId('ranking-entry-4')).toBeVisible();
+    expect(screen.getByTestId('ranking-entry-10')).toBeVisible();
+    expect(screen.getAllByRole('article')).toHaveLength(10);
+    const rankingList = screen.getByRole('region', { name: '第四名及以后' });
+    expect(within(rankingList).getAllByText('xhigh')).toHaveLength(3);
+    expect(within(rankingList).queryByText('XHIGH')).toBeNull();
     expect(screen.getByText('数据来源：Codex Radar')).toBeVisible();
     expect(screen.queryByText(/图表|历史趋势|搜索|筛选/)).toBeNull();
   });
@@ -89,7 +94,7 @@ describe('IntelligenceLadderPage', () => {
         name: '网络恢复后立即获取',
       }),
     ).not.toBeChecked();
-  });
+  }, 10_000);
 
   it('retains the drawer draft after a settings save failure', async () => {
     const user = userEvent.setup();

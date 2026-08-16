@@ -21,6 +21,13 @@ import {
 } from '../features/operation-history/mock-operation-history-data-source';
 import type { OperationHistoryDataSource } from '../features/operation-history/operation-history-types';
 import { TauriOperationHistoryDataSource } from '../features/operation-history/tauri-operation-history-data-source';
+import {
+  intelligenceLadderScenarioFromSearch,
+  MockIntelligenceLadderDataSource,
+} from '../features/intelligence-ladder/mock-intelligence-ladder-data-source';
+import type { IntelligenceLadderDataSource } from '../features/intelligence-ladder/intelligence-ladder-types';
+import { TauriIntelligenceLadderDataSource } from '../features/intelligence-ladder/tauri-intelligence-ladder-data-source';
+import { UnavailableIntelligenceLadderDataSource } from '../features/intelligence-ladder/unavailable-intelligence-ladder-data-source';
 import { RelayPulseContext } from './relay-pulse-context';
 import type { RelayPulseContextValue } from './relay-pulse-context';
 
@@ -59,6 +66,18 @@ function createDefaultOperationHistoryDataSource(): OperationHistoryDataSource {
 
 const defaultOperationHistoryDataSource = createDefaultOperationHistoryDataSource();
 
+function createDefaultIntelligenceLadderDataSource(): IntelligenceLadderDataSource {
+  if (isTauri()) return new TauriIntelligenceLadderDataSource();
+  if (import.meta.env.DEV) {
+    return new MockIntelligenceLadderDataSource(
+      intelligenceLadderScenarioFromSearch(window.location.search),
+    );
+  }
+  return new UnavailableIntelligenceLadderDataSource();
+}
+
+const defaultIntelligenceLadderDataSource = createDefaultIntelligenceLadderDataSource();
+
 function preserveSelection(current: AppSnapshot | null, next: AppSnapshot): AppSnapshot {
   const selectedSiteId = current?.selectedSiteId;
   return {
@@ -74,10 +93,12 @@ export function RelayPulseProvider({
   dataSource = defaultDataSource,
   notificationDataSource = defaultNotificationDataSource,
   operationHistoryDataSource = defaultOperationHistoryDataSource,
+  intelligenceLadderDataSource = defaultIntelligenceLadderDataSource,
 }: PropsWithChildren<{
   dataSource?: RelayPulseDataSource;
   notificationDataSource?: NotificationDataSource;
   operationHistoryDataSource?: OperationHistoryDataSource;
+  intelligenceLadderDataSource?: IntelligenceLadderDataSource;
 }>) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -131,6 +152,7 @@ export function RelayPulseProvider({
     () => ({
       notificationDataSource,
       operationHistoryDataSource,
+      intelligenceLadderDataSource,
       snapshot,
       loading,
       error,
@@ -185,7 +207,16 @@ export function RelayPulseProvider({
       exportDiagnostics: () => dataSource.exportDiagnostics(),
       openMainWindow: (view) => dataSource.openMainWindow(view),
     }),
-    [dataSource, error, loading, notificationDataSource, operationHistoryDataSource, run, snapshot],
+    [
+      dataSource,
+      error,
+      intelligenceLadderDataSource,
+      loading,
+      notificationDataSource,
+      operationHistoryDataSource,
+      run,
+      snapshot,
+    ],
   );
 
   return <RelayPulseContext.Provider value={value}>{children}</RelayPulseContext.Provider>;

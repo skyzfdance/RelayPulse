@@ -64,7 +64,7 @@ function IntelligenceLadderContent({
   }
 
   return (
-    <div className="mx-auto w-full max-w-260">
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-260 flex-col">
       {snapshot.runtime.state === 'running' ? (
         <Alert className="mb-4" showIcon title="数据刷新中..." type="info" />
       ) : snapshot.lastError ? (
@@ -82,7 +82,7 @@ function IntelligenceLadderContent({
       <IntelligencePodium entries={snapshot.entries} />
       <IntelligenceRankingList entries={snapshot.entries} />
 
-      <footer className="flex min-h-12 flex-wrap items-center justify-center gap-x-5 gap-y-1 py-3 text-xs text-rp-tertiary">
+      <footer className="flex min-h-12 flex-none flex-wrap items-center justify-center gap-x-5 gap-y-1 py-3 text-xs text-rp-tertiary">
         <span>数据来源：Codex Radar</span>
         <span>
           上次成功：
@@ -107,13 +107,21 @@ export function IntelligenceLadderPage({
   const notConnected = snapshot?.runtime.state === 'not_connected';
 
   async function handleRefresh() {
-    const result = await refresh();
-    if (result.status === 'already_running') {
-      message.info({ key: 'intelligence-refresh', content: '数据刷新中...', duration: 3 });
-    } else if (result.status === 'scraper_unavailable') {
+    try {
+      const result = await refresh();
+      if (result.status === 'already_running') {
+        message.info({ key: 'intelligence-refresh', content: '数据刷新中...', duration: 3 });
+      } else if (result.status === 'scraper_unavailable') {
+        message.error({
+          key: 'intelligence-refresh',
+          content: '采集服务暂不可用',
+          duration: 4,
+        });
+      }
+    } catch {
       message.error({
         key: 'intelligence-refresh',
-        content: '采集服务暂不可用',
+        content: '智力天梯刷新失败',
         duration: 4,
       });
     }
@@ -171,7 +179,7 @@ export function IntelligenceLadderPage({
       </header>
 
       <main
-        className="min-h-0 flex-1 overflow-y-auto px-6 py-5"
+        className="min-h-0 flex-1 overflow-hidden px-6 py-5"
         data-testid="intelligence-ladder-content"
       >
         <IntelligenceLadderContent loadError={loadError} loading={loading} snapshot={snapshot} />

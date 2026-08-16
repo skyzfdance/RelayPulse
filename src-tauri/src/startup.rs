@@ -12,6 +12,9 @@ use crate::{
     credentials::{CredentialService, LocalCredentialStore},
     diagnostics::Diagnostics,
     domain::{SystemClock, UuidGenerator},
+    intelligence_ladder::{
+        IntelligenceLadderSchedulerHandle, IntelligenceLadderService, ProcessIntelligenceScraper,
+    },
     notifications::NotificationService,
     persistence::{Database, DatabaseError, Repository},
 };
@@ -86,15 +89,24 @@ pub struct BackendState {
     database: Option<Database>,
     application_service: Option<ApplicationService>,
     notification_service: Option<NotificationService>,
+    intelligence_ladder_service: Option<IntelligenceLadderService>,
     credential_saga: Option<CredentialSaga>,
     startup_failure: Option<StartupFailure>,
     diagnostics: Option<Diagnostics>,
     continue_in_background: AtomicBool,
     scheduler: Mutex<Option<SchedulerHandle>>,
+    intelligence_ladder_scheduler: Mutex<Option<IntelligenceLadderSchedulerHandle>>,
 }
 
 impl BackendState {
     pub fn initialize(data_directory: PathBuf) -> Self {
+        Self::initialize_with_intelligence_callback(data_directory, |_| {})
+    }
+
+    pub fn initialize_with_intelligence_callback<F>(data_directory: PathBuf, on_change: F) -> Self
+    where
+        F: Fn(u64) + Send + Sync + 'static,
+    {
         if fs::create_dir_all(&data_directory).is_err() {
             return Self::blocked(StartupFailure::data_directory());
         }
@@ -124,6 +136,13 @@ impl BackendState {
                     ids.clone(),
                     clock.clone(),
                 );
+                let intelligence_ladder_service = IntelligenceLadderService::with_dependencies(
+                    repository.clone(),
+                    Arc::new(ProcessIntelligenceScraper),
+                    clock.clone(),
+                    on_change,
+                )
+                .with_diagnostics(diagnostics.clone());
                 let application_service =
                     ApplicationService::new(repository, credential_saga.clone(), ids, clock)
                         .with_diagnostics(diagnostics.clone())
@@ -132,11 +151,13 @@ impl BackendState {
                     database: Some(database),
                     application_service: Some(application_service),
                     notification_service: Some(notification_service),
+                    intelligence_ladder_service: Some(intelligence_ladder_service),
                     credential_saga: Some(credential_saga),
                     startup_failure: None,
                     diagnostics,
                     continue_in_background: AtomicBool::new(true),
                     scheduler: Mutex::new(None),
+                    intelligence_ladder_scheduler: Mutex::new(None),
                 }
             }
             Err(error) => Self::blocked_with_diagnostics(
@@ -158,11 +179,13 @@ impl BackendState {
             database: None,
             application_service: None,
             notification_service: None,
+            intelligence_ladder_service: None,
             credential_saga: None,
             startup_failure: Some(failure),
             diagnostics,
             continue_in_background: AtomicBool::new(false),
             scheduler: Mutex::new(None),
+            intelligence_ladder_scheduler: Mutex::new(None),
         }
     }
 
@@ -186,6 +209,10 @@ impl BackendState {
         self.notification_service.as_ref()
     }
 
+    pub fn intelligence_ladder_service(&self) -> Option<&IntelligenceLadderService> {
+        self.intelligence_ladder_service.as_ref()
+    }
+
     pub fn diagnostics(&self) -> Option<&Diagnostics> {
         self.diagnostics.as_ref()
     }
@@ -200,6 +227,12 @@ impl BackendState {
 
     pub fn set_scheduler(&self, scheduler: SchedulerHandle) {
         if let Ok(mut current) = self.scheduler.lock() {
+            *current = Some(scheduler);
+        }
+    }
+
+    pub fn set_intelligence_ladder_scheduler(&self, scheduler: IntelligenceLadderSchedulerHandle) {
+        if let Ok(mut current) = self.intelligence_ladder_scheduler.lock() {
             *current = Some(scheduler);
         }
     }
@@ -227,6 +260,7 @@ mod tests {
         assert!(state.database().is_some());
         assert!(state.application_service().is_some());
         assert!(state.notification_service().is_some());
+        assert!(state.intelligence_ladder_service().is_some());
         assert!(state.credential_saga().is_some());
         assert!(state.startup_failure().is_none());
     }

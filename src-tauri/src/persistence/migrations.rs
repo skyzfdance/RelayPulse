@@ -3,7 +3,7 @@ use rusqlite_migration::{Migrations, M};
 
 use super::{DatabaseError, Result};
 
-pub const LATEST_SCHEMA_VERSION: u32 = 4;
+pub const LATEST_SCHEMA_VERSION: u32 = 5;
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -11,6 +11,7 @@ fn migrations() -> Migrations<'static> {
         M::up(include_str!("migrations/v2.sql")).foreign_key_check(),
         M::up(include_str!("migrations/v3.sql")).foreign_key_check(),
         M::up(include_str!("migrations/v4.sql")).foreign_key_check(),
+        M::up(include_str!("migrations/v5.sql")).foreign_key_check(),
     ])
 }
 
@@ -49,6 +50,9 @@ mod tests {
         "credential_operations",
         "custom_probe_parameters",
         "general_settings",
+        "intelligence_ladder_entries",
+        "intelligence_ladder_settings",
+        "intelligence_ladder_snapshot",
         "latest_model_status",
         "models",
         "notification_events",
@@ -134,6 +138,46 @@ mod tests {
         assert_eq!(settings, (7, false, 1234));
         assert_eq!(rule, (true, "system".to_owned()));
         assert_eq!(template_table_count, 1);
+    }
+
+    #[test]
+    fn upgrading_v4_preserves_existing_application_data() {
+        let mut connection = Connection::open_in_memory().expect("database opens");
+        let migrations_through_v4 = Migrations::new(vec![
+            M::up(include_str!("migrations/v1.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v2.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v3.sql")).foreign_key_check(),
+            M::up(include_str!("migrations/v4.sql")).foreign_key_check(),
+        ]);
+        migrations_through_v4
+            .to_latest(&mut connection)
+            .expect("v4 schema migrates");
+        insert_site(&connection, "existing-site", 0).expect("existing site is stored");
+
+        migrate_to_latest(&mut connection).expect("v4 schema migrates to latest");
+
+        let site_name = connection
+            .query_row(
+                "SELECT name FROM sites WHERE id = 'existing-site'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("existing site remains readable");
+        let intelligence_settings = connection
+            .query_row(
+                "SELECT enabled, interval_minutes FROM intelligence_ladder_settings
+                 WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, u32>(1)?)),
+            )
+            .expect("intelligence settings are seeded");
+
+        assert_eq!(site_name, "existing-site");
+        assert_eq!(intelligence_settings, (false, 60));
+        assert_eq!(
+            schema_version(&connection).expect("version is readable"),
+            LATEST_SCHEMA_VERSION
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -374,6 +374,79 @@ impl Diagnostics {
         }));
     }
 
+    pub(crate) fn record_intelligence_ladder_refresh_started(
+        &self,
+        refresh_id: &str,
+        trigger: &'static str,
+        revision: u64,
+    ) {
+        self.append(json!({
+            "level": "info",
+            "event": "intelligence-ladder-refresh-started",
+            "refreshId": refresh_id,
+            "trigger": trigger,
+            "revision": revision,
+        }));
+    }
+
+    pub(crate) fn record_intelligence_ladder_refresh_skipped(
+        &self,
+        trigger: &'static str,
+        reason: &'static str,
+    ) {
+        self.append(json!({
+            "level": if reason == "circuit_open" { "error" } else { "info" },
+            "event": "intelligence-ladder-refresh-skipped",
+            "trigger": trigger,
+            "reason": reason,
+        }));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_intelligence_ladder_refresh_finished(
+        &self,
+        refresh_id: &str,
+        trigger: &'static str,
+        duration_ms: u64,
+        outcome: &'static str,
+        error_code: Option<&'static str>,
+        entry_count: Option<u64>,
+        revision: Option<u64>,
+        circuit_open: bool,
+    ) {
+        self.append(json!({
+            "level": if outcome == "succeeded" { "info" } else { "error" },
+            "event": "intelligence-ladder-refresh-finished",
+            "refreshId": refresh_id,
+            "trigger": trigger,
+            "outcome": outcome,
+            "durationMs": duration_ms,
+            "errorCode": error_code,
+            "entryCount": entry_count,
+            "revision": revision,
+            "circuitOpen": circuit_open,
+        }));
+    }
+
+    pub(crate) fn record_intelligence_ladder_settings_updated(
+        &self,
+        revision: u64,
+        enabled: bool,
+        interval_minutes: u32,
+        fetch_on_app_start: bool,
+        fetch_on_network_restore: bool,
+    ) {
+        self.append(json!({
+            "level": "info",
+            "event": "intelligence-ladder-settings-updated",
+            "revision": revision,
+            "enabled": enabled,
+            "intervalMinutes": interval_minutes,
+            "fetchOnAppStart": fetch_on_app_start,
+            "fetchOnNetworkRestore": fetch_on_network_restore,
+        }));
+    }
+
     pub(crate) fn record_operation_started(
         &self,
         operation_id: &str,
@@ -965,7 +1038,13 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 .filter(|domain| {
                     matches!(
                         *domain,
-                        "sites" | "models" | "records" | "status" | "settings" | "notifications"
+                        "sites"
+                            | "models"
+                            | "records"
+                            | "status"
+                            | "settings"
+                            | "notifications"
+                            | "intelligence-ladder"
                     )
                 })
                 .collect::<Vec<_>>();
@@ -1043,6 +1122,71 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 )),
             }))
         }
+        "intelligence-ladder-refresh-started" => {
+            let trigger = intelligence_ladder_trigger(value.get("trigger")?.as_str()?)?;
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "refreshId": value.get("refreshId")?.as_str().and_then(sanitize_audit_identifier)?,
+                "trigger": trigger,
+                "revision": value.get("revision")?.as_u64()?,
+            }))
+        }
+        "intelligence-ladder-refresh-skipped" => {
+            let trigger = intelligence_ladder_trigger(value.get("trigger")?.as_str()?)?;
+            let reason = value.get("reason")?.as_str()?;
+            if !matches!(
+                reason,
+                "already_running" | "circuit_open" | "trigger_disabled"
+            ) {
+                return None;
+            }
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "trigger": trigger,
+                "reason": reason,
+            }))
+        }
+        "intelligence-ladder-refresh-finished" => {
+            let trigger = intelligence_ladder_trigger(value.get("trigger")?.as_str()?)?;
+            let outcome = value.get("outcome")?.as_str()?;
+            if !matches!(outcome, "succeeded" | "failed") {
+                return None;
+            }
+            let error_code = value
+                .get("errorCode")
+                .and_then(Value::as_str)
+                .filter(|code| is_intelligence_ladder_error_code(code));
+            if outcome == "failed" && error_code.is_none() {
+                return None;
+            }
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "refreshId": value.get("refreshId")?.as_str().and_then(sanitize_audit_identifier)?,
+                "trigger": trigger,
+                "outcome": outcome,
+                "durationMs": value.get("durationMs")?.as_u64()?,
+                "errorCode": error_code,
+                "entryCount": value.get("entryCount").and_then(Value::as_u64),
+                "revision": value.get("revision").and_then(Value::as_u64),
+                "circuitOpen": value.get("circuitOpen")?.as_bool()?,
+            }))
+        }
+        "intelligence-ladder-settings-updated" => Some(json!({
+            "timestamp": timestamp,
+            "sessionId": session_id,
+            "event": event,
+            "revision": value.get("revision")?.as_u64()?,
+            "enabled": value.get("enabled")?.as_bool()?,
+            "intervalMinutes": value.get("intervalMinutes")?.as_u64()?,
+            "fetchOnAppStart": value.get("fetchOnAppStart")?.as_bool()?,
+            "fetchOnNetworkRestore": value.get("fetchOnNetworkRestore")?.as_bool()?,
+        })),
         "window-opened" => {
             let window = value.get("window")?.as_str()?;
             if !matches!(window, "main" | "status-panel") {
@@ -1175,6 +1319,32 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
         })),
         _ => None,
     }
+}
+
+fn intelligence_ladder_trigger(value: &str) -> Option<&str> {
+    matches!(
+        value,
+        "manual" | "scheduled" | "application_start" | "network_restore"
+    )
+    .then_some(value)
+}
+
+fn is_intelligence_ladder_error_code(value: &str) -> bool {
+    matches!(
+        value,
+        "network"
+            | "render_timeout"
+            | "render_unavailable"
+            | "target_not_found"
+            | "worker_crashed"
+            | "worker_protocol_invalid"
+            | "invalid_snapshot"
+            | "worker_timeout"
+            | "worker_kill_failed"
+            | "cancelled"
+            | "database"
+            | "internal"
+    )
 }
 
 fn recent_probe_failures(snapshot: &ApplicationSnapshot) -> Vec<Value> {
@@ -1469,6 +1639,47 @@ mod tests {
         assert!(log.contains("application-started"));
         assert!(log.contains("state-changed"));
         assert!(log.contains("\"revision\":7"));
+    }
+
+    #[test]
+    fn intelligence_ladder_export_events_keep_only_safe_operational_fields() {
+        let value = json!({
+            "timestamp": "2026-08-13T09:00:00Z",
+            "sessionId": "session_fixture",
+            "event": "intelligence-ladder-refresh-finished",
+            "refreshId": "iq_fixture",
+            "trigger": "scheduled",
+            "outcome": "failed",
+            "durationMs": 40000,
+            "errorCode": "worker_timeout",
+            "entryCount": null,
+            "revision": 9,
+            "circuitOpen": false,
+            "rawHtml": "<html>secret</html>",
+            "model": "private-model",
+            "iq": 123.4,
+            "pid": 4242,
+        });
+
+        let sanitized = sanitize_log_event(value).expect("event is exported");
+        assert_eq!(sanitized["refreshId"], "iq_fixture");
+        assert_eq!(sanitized["errorCode"], "worker_timeout");
+        assert!(sanitized.get("rawHtml").is_none());
+        assert!(sanitized.get("model").is_none());
+        assert!(sanitized.get("iq").is_none());
+        assert!(sanitized.get("pid").is_none());
+
+        assert!(sanitize_log_event(json!({
+            "timestamp": "2026-08-13T09:00:00Z",
+            "event": "intelligence-ladder-refresh-finished",
+            "refreshId": "iq_fixture",
+            "trigger": "scheduled",
+            "outcome": "failed",
+            "durationMs": 1,
+            "errorCode": "third_party_raw_error",
+            "circuitOpen": false,
+        }))
+        .is_none());
     }
 
     #[test]

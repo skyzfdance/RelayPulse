@@ -10,10 +10,14 @@ export function useIntelligenceLadder(dataSource: IntelligenceLadderDataSource) 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const applySnapshot = useCallback((next: IntelligenceLadderSnapshot) => {
+    setSnapshot((current) => (current && current.revision > next.revision ? current : next));
+  }, []);
+
   const reload = useCallback(async () => {
     try {
       const next = await dataSource.getSnapshot();
-      setSnapshot(next);
+      applySnapshot(next);
       setLoadError(null);
       return next;
     } catch (cause) {
@@ -22,7 +26,7 @@ export function useIntelligenceLadder(dataSource: IntelligenceLadderDataSource) 
     } finally {
       setLoading(false);
     }
-  }, [dataSource]);
+  }, [applySnapshot, dataSource]);
 
   useEffect(() => {
     let disposed = false;
@@ -32,7 +36,7 @@ export function useIntelligenceLadder(dataSource: IntelligenceLadderDataSource) 
       void dataSource.getSnapshot().then(
         (next) => {
           if (disposed) return;
-          setSnapshot(next);
+          applySnapshot(next);
           setLoadError(null);
           setLoading(false);
         },
@@ -44,22 +48,30 @@ export function useIntelligenceLadder(dataSource: IntelligenceLadderDataSource) 
       );
     };
 
-    loadSnapshot();
     if (dataSource.subscribeToChanges) {
       void dataSource
         .subscribeToChanges(() => {
           if (!disposed) loadSnapshot();
         })
         .then((stop) => {
-          if (disposed) stop();
-          else unsubscribe = stop;
+          if (disposed) {
+            stop();
+            return;
+          }
+          unsubscribe = stop;
+          loadSnapshot();
+        })
+        .catch(() => {
+          if (!disposed) loadSnapshot();
         });
+    } else {
+      loadSnapshot();
     }
     return () => {
       disposed = true;
       unsubscribe?.();
     };
-  }, [dataSource]);
+  }, [applySnapshot, dataSource]);
 
   const refresh = useCallback(async () => {
     const result = await dataSource.refresh();
@@ -70,11 +82,11 @@ export function useIntelligenceLadder(dataSource: IntelligenceLadderDataSource) 
   const updateSettings = useCallback(
     async (settings: IntelligenceAutoFetchSettings) => {
       const next = await dataSource.updateAutoFetchSettings(settings);
-      setSnapshot(next);
+      applySnapshot(next);
       setLoadError(null);
       return next;
     },
-    [dataSource],
+    [applySnapshot, dataSource],
   );
 
   return { snapshot, loading, loadError, refresh, reload, updateSettings };

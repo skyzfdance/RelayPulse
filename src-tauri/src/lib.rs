@@ -4,12 +4,17 @@ pub mod credentials;
 pub mod desktop;
 pub mod diagnostics;
 pub mod domain;
+pub mod intelligence_ladder;
 pub mod notifications;
 pub mod persistence;
 pub mod startup;
 
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
+
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -30,15 +35,33 @@ pub fn run() {
         .on_menu_event(desktop::handle_app_menu_event);
     let app = builder
         .setup(|app| {
+            let intelligence_app = app.handle().clone();
             let state = match app.path().app_data_dir() {
-                Ok(data_directory) => startup::BackendState::initialize(data_directory),
+                Ok(data_directory) => startup::BackendState::initialize_with_intelligence_callback(
+                    data_directory,
+                    move |revision| {
+                        commands::intelligence_ladder::publish_intelligence_ladder_changed(
+                            &intelligence_app,
+                            revision,
+                        );
+                    },
+                ),
                 Err(_) => startup::BackendState::blocked(startup::StartupFailure::data_directory()),
             };
             let credential_saga = state.credential_saga().cloned();
             let application_service = state.application_service().cloned();
             let notification_service = state.notification_service().cloned();
             let notification_diagnostics = state.diagnostics().cloned();
+            let intelligence_ladder_service = state.intelligence_ladder_service().cloned();
             app.manage(state);
+            if let Some(intelligence_ladder_service) = intelligence_ladder_service {
+                let scheduler = intelligence_ladder::start_intelligence_ladder_scheduler(
+                    intelligence_ladder_service,
+                );
+                if let Some(state) = app.try_state::<startup::BackendState>() {
+                    state.set_intelligence_ladder_scheduler(scheduler);
+                }
+            }
             if let Some(notification_service) = notification_service {
                 notifications::start_dispatcher(
                     app.handle().clone(),
@@ -159,8 +182,12 @@ pub fn run() {
             commands::request_notification_permission,
             commands::send_test_notification,
             commands::send_notification_template_test,
+            commands::intelligence_ladder::get_intelligence_ladder_snapshot,
+            commands::intelligence_ladder::refresh_intelligence_ladder,
+            commands::intelligence_ladder::update_intelligence_auto_fetch_settings,
+            commands::intelligence_ladder::notify_intelligence_network_restored,
         ])
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building RelayPulse");
 
     app.run(|app, event| {

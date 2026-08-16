@@ -17,10 +17,12 @@ import type {
 } from '../data/relay-pulse-data-source';
 import type { NotificationDataSource } from '../features/notifications/notification-types';
 import type { OperationHistoryDataSource } from '../features/operation-history/operation-history-types';
+import type { IntelligenceLadderDataSource } from '../features/intelligence-ladder/intelligence-ladder-types';
 
 export interface RelayPulseContextValue {
   notificationDataSource: NotificationDataSource;
   operationHistoryDataSource: OperationHistoryDataSource;
+  intelligenceLadderDataSource: IntelligenceLadderDataSource;
   snapshot: AppSnapshot | null;
   loading: boolean;
   error: string | null;

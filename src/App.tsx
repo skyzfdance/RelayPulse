@@ -19,11 +19,6 @@ import {
 import type { ThemeMode, ViewName } from './domain/types';
 import { GeneralPage } from './features/general/GeneralPage';
 import { IntelligenceLadderPage } from './features/intelligence-ladder/IntelligenceLadderPage';
-import {
-  intelligenceLadderScenarioFromSearch,
-  MockIntelligenceLadderDataSource,
-} from './features/intelligence-ladder/mock-intelligence-ladder-data-source';
-import { UnavailableIntelligenceLadderDataSource } from './features/intelligence-ladder/unavailable-intelligence-ladder-data-source';
 import { ModelSettingsDrawer } from './features/models/ModelSettingsDrawer';
 import { NotificationsPage } from './features/notifications/NotificationsPage';
 import { OperationHistoryPage } from './features/operation-history/OperationHistoryPage';
@@ -33,13 +28,6 @@ import { DeleteSiteModal } from './features/sites/DeleteSiteModal';
 import { EmptyPage } from './features/sites/EmptyPage';
 import { SitesPage } from './features/sites/SitesPage';
 import { TrayPage } from './features/tray/TrayPage';
-
-const intelligenceLadderDataSource =
-  !isTauri() && import.meta.env.DEV
-    ? new MockIntelligenceLadderDataSource(
-        intelligenceLadderScenarioFromSearch(window.location.search),
-      )
-    : new UnavailableIntelligenceLadderDataSource();
 
 function useActiveView() {
   const windowLabel = isTauri() ? getCurrentWebviewWindow().label : null;
@@ -159,7 +147,12 @@ function ThemeSurface({
 }
 
 function MainView({ view }: { view: ViewName }) {
-  const { notificationDataSource, operationHistoryDataSource, snapshot } = useRelayPulse();
+  const {
+    intelligenceLadderDataSource,
+    notificationDataSource,
+    operationHistoryDataSource,
+    snapshot,
+  } = useRelayPulse();
   const baseView =
     view === 'site-advanced'
       ? 'site-advanced'

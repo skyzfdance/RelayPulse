@@ -1,3 +1,5 @@
+pub(crate) mod intelligence_ladder;
+
 use std::{collections::HashMap, fs, future::Future, time::Instant};
 
 use serde::{Deserialize, Serialize};

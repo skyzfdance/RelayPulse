@@ -73,12 +73,16 @@ test('intelligence ladder renders the 2-1-3 podium and saves drawer settings', a
   await expect(page.getByTestId('podium-rank-2')).toHaveClass(/order-1/);
   await expect(page.getByTestId('podium-rank-1')).toHaveClass(/order-2/);
   await expect(page.getByTestId('podium-rank-3')).toHaveClass(/order-3/);
-  await expect(page.getByRole('columnheader').allTextContents()).resolves.toEqual([
-    '排名',
-    '模型',
-    '努力档位',
-    '智力分数 (IQ)',
-  ]);
+  await expect(page.locator('.intelligence-podium-wreath')).toHaveCount(3);
+  await expect(page.getByRole('region', { name: '前三名' }).getByText('XHIGH')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '后续排名' })).toBeVisible();
+  await expect(page.getByText('7 个模型')).toBeVisible();
+  await expect(page.locator('.intelligence-ranking-card')).toHaveCount(7);
+  await expect(page.locator('.ant-table')).toHaveCount(0);
+  await expect(page.locator('.intelligence-ranking-grid')).toHaveCSS(
+    'grid-template-columns',
+    /.+ .+ .+/,
+  );
 
   await page.getByRole('button', { name: '打开自动获取设置' }).click();
   const drawer = page.getByRole('dialog', { name: '自动获取设置' });
@@ -108,6 +112,55 @@ test('intelligence ladder keeps its old ranking while a refresh is running', asy
     page.getByTestId('intelligence-ladder-content').getByText('数据刷新中...', { exact: true }),
   ).toBeVisible();
   await expect(page.getByTestId('podium-rank-1')).toBeVisible();
+});
+
+test('intelligence ladder uses a two-column scrolling card grid at narrow height', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 960, height: 640 });
+  await page.goto('/?view=intelligence-ladder&theme=light');
+
+  const content = page.getByTestId('intelligence-ladder-content');
+  const ranking = page.getByRole('region', { name: '第四名及以后' });
+  const rankingHeader = page.getByRole('heading', { name: '后续排名' });
+  const podium = page.getByRole('region', { name: '前三名' });
+  const podiumTop = await podium.evaluate((element) => element.getBoundingClientRect().top);
+  const rankingHeaderTop = await rankingHeader.evaluate(
+    (element) => element.getBoundingClientRect().top,
+  );
+
+  await expect(content).toHaveCSS('overflow-y', 'hidden');
+  await expect(ranking).toHaveCSS('overflow-y', 'auto');
+  await expect(page.locator('.intelligence-ranking-grid')).toHaveCSS(
+    'grid-template-columns',
+    /.+ .+/,
+  );
+  expect(await ranking.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+    true,
+  );
+  const visibleCards = await page.locator('.intelligence-ranking-card').evaluateAll((cards) => {
+    const scroller = document.querySelector('[data-testid="intelligence-ranking-scroll"]');
+    if (!scroller) return 0;
+    const scrollBounds = scroller.getBoundingClientRect();
+    return cards.filter((card) => {
+      const bounds = card.getBoundingClientRect();
+      return bounds.top >= scrollBounds.top && bounds.bottom <= scrollBounds.bottom;
+    }).length;
+  });
+  expect(visibleCards).toBeGreaterThanOrEqual(4);
+  await ranking.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+
+  expect(await ranking.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  expect(await content.evaluate((element) => element.scrollTop)).toBe(0);
+  expect(await podium.evaluate((element) => element.getBoundingClientRect().top)).toBe(podiumTop);
+  expect(await rankingHeader.evaluate((element) => element.getBoundingClientRect().top)).toBe(
+    rankingHeaderTop,
+  );
+  const displayedEfforts = await ranking.locator('.intelligence-ranking-effort').allTextContents();
+  expect(displayedEfforts).toContain('xhigh');
+  expect(displayedEfforts).not.toContain('XHIGH');
 });
 
 test('intelligence ladder distinguishes empty, failed and unavailable states', async ({ page }) => {

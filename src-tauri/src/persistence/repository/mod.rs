@@ -1,5 +1,6 @@
 mod config;
 mod credentials;
+mod intelligence_ladder;
 mod notifications;
 mod probes;
 #[cfg(test)]

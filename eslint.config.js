@@ -24,9 +24,14 @@ export default tseslint.config(
     },
   },
   eslint.configs.recommended,
-  ...tseslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
   {
     files: ['**/*.{ts,tsx}'],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+      },
+    },
     rules: {
       '@typescript-eslint/consistent-type-imports': [
         'error',
@@ -36,7 +41,23 @@ export default tseslint.config(
         },
       ],
       '@typescript-eslint/no-import-type-side-effects': 'error',
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/unbound-method': 'off',
     },
+  },
+  {
+    files: ['**/*.test.{ts,tsx}', 'tests/**/*.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+    },
+  },
+  {
+    files: ['*.{js,mjs,cjs,ts,tsx}', 'scripts/**/*.{js,mjs,cjs,ts,tsx}', 'tests/**/*.{ts,tsx}'],
+    extends: [tseslint.configs.disableTypeChecked],
   },
   {
     files: ['src/**/*.{ts,tsx}'],

@@ -6,4 +6,3 @@ node_modules/
 src-tauri/gen/
 src-tauri/target/
 pnpm-lock.yaml
-**/*.md

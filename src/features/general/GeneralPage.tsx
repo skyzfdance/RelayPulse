@@ -402,7 +402,7 @@ export function GeneralPage() {
                   okText="清理"
                   cancelText="取消"
                   okType="danger"
-                  onConfirm={clearLogs}
+                  onConfirm={() => void clearLogs()}
                   disabled={pendingDesktopAction !== null && pendingDesktopAction !== 'clear'}
                 >
                   <Button

@@ -26,7 +26,7 @@ describe('OperationHistoryPage', () => {
     renderPage(new MockOperationHistoryDataSource());
 
     expect(await screen.findByText('调整站点配置')).toBeVisible();
-    const table = screen.getAllByRole('table')[0]!;
+    const table = screen.getAllByRole('table')[0];
     expect(
       within(table)
         .getAllByRole('columnheader')

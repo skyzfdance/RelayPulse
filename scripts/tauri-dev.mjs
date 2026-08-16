@@ -30,12 +30,43 @@ const child = spawn(command, ['exec', 'tauri', 'dev', ...process.argv.slice(2)],
   stdio: 'inherit',
 });
 
+const terminationSignals =
+  process.platform === 'win32' ? ['SIGINT', 'SIGTERM'] : ['SIGHUP', 'SIGINT', 'SIGTERM'];
+const signalHandlers = new Map();
+let childFinished = false;
+let forwardedSignal = null;
+
+function removeSignalHandlers() {
+  for (const [signal, handler] of signalHandlers) {
+    process.removeListener(signal, handler);
+  }
+  signalHandlers.clear();
+}
+
+function forwardSignal(signal) {
+  if (childFinished || forwardedSignal !== null) return;
+  forwardedSignal = signal;
+  child.kill(signal);
+}
+
+for (const signal of terminationSignals) {
+  const handler = () => forwardSignal(signal);
+  signalHandlers.set(signal, handler);
+  process.on(signal, handler);
+}
+
 child.on('error', (error) => {
+  if (childFinished) return;
+  childFinished = true;
+  removeSignalHandlers();
   console.error(error);
   process.exit(1);
 });
 
 child.on('exit', (code, signal) => {
+  if (childFinished) return;
+  childFinished = true;
+  removeSignalHandlers();
   if (signal) {
     process.kill(process.pid, signal);
     return;

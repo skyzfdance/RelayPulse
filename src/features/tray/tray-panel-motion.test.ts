@@ -42,14 +42,22 @@ describe('useTrayPanelMotion', () => {
 
     expect(result.current).toBe('closed');
     await act(async () => undefined);
-    act(() => vi.advanceTimersByTime(32));
+    await act(async () => {
+      vi.advanceTimersByTime(32);
+    });
     expect(result.current).toBe('open');
 
-    act(() => eventListeners.get(STATUS_PANEL_CLOSING_EVENT)?.());
+    await act(async () => {
+      eventListeners.get(STATUS_PANEL_CLOSING_EVENT)?.();
+    });
     expect(result.current).toBe('closed');
 
-    act(() => eventListeners.get(STATUS_PANEL_OPENING_EVENT)?.());
-    act(() => vi.advanceTimersByTime(32));
+    await act(async () => {
+      eventListeners.get(STATUS_PANEL_OPENING_EVENT)?.();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(32);
+    });
     expect(result.current).toBe('open');
 
     unmount();

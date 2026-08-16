@@ -28,20 +28,22 @@ export function DeleteSiteModal() {
       confirmLoading={deleting}
       cancelText="取消"
       onCancel={() => navigateToView('sites')}
-      onOk={async () => {
-        setDeleting(true);
-        try {
-          const deleted = await runBackendAction(() => deleteSite(site.id), {
-            key: `delete-site-${site.id}`,
-            successTitle: '站点已删除',
-            successDescription: `“${site.name}”及其本地探测记录已删除。`,
-            errorTitle: '站点删除失败',
-            errorDescription: '站点仍然保留，请稍后重试。',
-          });
-          if (deleted) navigateToView('sites');
-        } finally {
-          setDeleting(false);
-        }
+      onOk={() => {
+        void (async () => {
+          setDeleting(true);
+          try {
+            const deleted = await runBackendAction(() => deleteSite(site.id), {
+              key: `delete-site-${site.id}`,
+              successTitle: '站点已删除',
+              successDescription: `“${site.name}”及其本地探测记录已删除。`,
+              errorTitle: '站点删除失败',
+              errorDescription: '站点仍然保留，请稍后重试。',
+            });
+            if (deleted) navigateToView('sites');
+          } finally {
+            setDeleting(false);
+          }
+        })();
       }}
     >
       <div className="flex items-start gap-3.5 pt-2 pb-0.5">

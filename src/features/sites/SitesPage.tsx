@@ -688,7 +688,7 @@ const SiteDetail = forwardRef<
         requiredMark={false}
         className="flex h-full flex-col"
         onValuesChange={() => {
-          updateDirty(hasFormChanges(form.getFieldsValue(true), baseline));
+          updateDirty(hasFormChanges(form.getFieldsValue(), baseline));
         }}
       >
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-20 max-[1180px]:px-4.5">
@@ -715,7 +715,7 @@ const SiteDetail = forwardRef<
             <BasicFields
               credential={site.credential}
               onCredentialIntentChange={() => {
-                updateDirty(hasFormChanges(form.getFieldsValue(true), baseline));
+                updateDirty(hasFormChanges(form.getFieldsValue(), baseline));
               }}
             />
           </section>

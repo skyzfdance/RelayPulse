@@ -108,7 +108,7 @@ export function ModelTable({
             cancelText="取消"
             okButtonProps={{ danger: true }}
             disabled={Boolean(siteProbeRunning || (busyModelId && deletingModelId !== model.id))}
-            onConfirm={() => onDelete(model.id)}
+            onConfirm={() => void onDelete(model.id)}
           >
             <Button
               type="text"

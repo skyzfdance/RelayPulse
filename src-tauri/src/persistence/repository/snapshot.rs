@@ -14,42 +14,58 @@ impl Repository {
         self.database
             .call(|connection| {
                 let transaction = connection.transaction()?;
-                let sites = transaction
-                    .prepare(
+                let sites = {
+                    let mut statement = transaction.prepare(
                         "SELECT id, name, protocol, base_url, credential_ref, enabled, sort_order,
                                 models_method, models_endpoint, probe_method, probe_endpoint,
                                 content_type, auth_preset, stream_enabled, probe_interval_minutes,
                                 slow_first_token_ms, slow_total_ms, failure_threshold,
                                 recovery_threshold, lifecycle_state, created_at_ms, updated_at_ms
                          FROM sites ORDER BY sort_order, id",
-                    )?
-                    .query_map([], site_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                let models = transaction
-                    .prepare(
+                    )?;
+                    let values = statement
+                        .query_map([], site_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    values
+                };
+                let models = {
+                    let mut statement = transaction.prepare(
                         "SELECT id, site_id, model_key, display_name, source, discovery_status,
                                 enabled, sort_order, created_at_ms, updated_at_ms
                          FROM models ORDER BY site_id, sort_order, id",
-                    )?
-                    .query_map([], model_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                let policies = transaction
-                    .prepare(
+                    )?;
+                    let values = statement
+                        .query_map([], model_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    values
+                };
+                let policies = {
+                    let mut statement = transaction.prepare(
                         "SELECT id, site_id, model_id, mode, max_output_tokens, prompt,
                                 custom_endpoint, custom_method, custom_stream_enabled,
                                 created_at_ms, updated_at_ms
                          FROM probe_policies
                          ORDER BY site_id, model_id IS NOT NULL, model_id, id",
-                    )?
-                    .query_map([], policy_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                let parameters = transaction
-                    .prepare(
+                    )?;
+                    let values = statement
+                        .query_map([], policy_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    values
+                };
+                let parameters = {
+                    let mut statement = transaction.prepare(
                         "SELECT id, policy_id, parameter_key, value_type, value_json, sort_order
                          FROM custom_probe_parameters ORDER BY policy_id, sort_order, id",
-                    )?
-                    .query_map([], parameter_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                    )?;
+                    let values = statement
+                        .query_map([], parameter_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    values
+                };
                 let mut parameters_by_policy =
                     HashMap::<crate::domain::EntityId, Vec<ProbeParameter>>::new();
                 for parameter in parameters {
@@ -66,13 +82,17 @@ impl Repository {
                         (policy, parameters)
                     })
                     .collect();
-                let site_headers = transaction
-                    .prepare(
+                let site_headers = {
+                    let mut statement = transaction.prepare(
                         "SELECT id, site_id, header_name, value_template, sort_order
                          FROM site_headers ORDER BY site_id, sort_order, id",
-                    )?
-                    .query_map([], header_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                    )?;
+                    let values = statement
+                        .query_map([], header_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    values
+                };
                 let general_settings = transaction.query_row(
                     "SELECT launch_at_startup, continue_in_background, tray_action, theme,
                             history_retention_days, diagnostic_capture_enabled, updated_at_ms
@@ -90,16 +110,20 @@ impl Repository {
                         })
                     },
                 )?;
-                let latest_model_statuses = transaction
-                    .prepare(
+                let latest_model_statuses = {
+                    let mut statement = transaction.prepare(
                         "SELECT model_id, probe_result_id, status, consecutive_failures,
                                 consecutive_successes, next_probe_at_ms, revision, updated_at_ms
                          FROM latest_model_status ORDER BY model_id",
-                    )?
-                    .query_map([], latest_status_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                let latest_model_results = transaction
-                    .prepare(
+                    )?;
+                    let values = statement
+                        .query_map([], latest_status_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    values
+                };
+                let latest_model_results = {
+                    let mut statement = transaction.prepare(
                         "SELECT result.id, result.site_id, result.model_id, result.run_kind,
                                 result.started_at_ms, result.finished_at_ms, result.status,
                                 result.response_headers_ms, result.first_token_ms,
@@ -112,11 +136,15 @@ impl Repository {
                          FROM latest_model_status AS latest
                          JOIN probe_results AS result ON result.id = latest.probe_result_id
                          ORDER BY result.model_id",
-                    )?
-                    .query_map([], probe_result_from_row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                let probe_records = transaction
-                    .prepare(
+                    )?;
+                    let values = statement
+                        .query_map([], probe_result_from_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    values
+                };
+                let probe_records = {
+                    let mut statement = transaction.prepare(
                         "SELECT result.id, result.site_id, result.model_id, result.run_kind,
                                 result.started_at_ms, result.finished_at_ms, result.status,
                                 result.response_headers_ms, result.first_token_ms,
@@ -137,14 +165,18 @@ impl Repository {
                          JOIN probe_captures AS capture ON capture.probe_result_id = result.id
                          ORDER BY result.started_at_ms DESC, result.id DESC
                          LIMIT 100",
-                    )?
-                    .query_map([], |row| {
-                        Ok((
-                            probe_result_from_row(row)?,
-                            probe_capture_from_row_at(row, 26)?,
-                        ))
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                    )?;
+                    let values = statement
+                        .query_map([], |row| {
+                            Ok((
+                                probe_result_from_row(row)?,
+                                probe_capture_from_row_at(row, 26)?,
+                            ))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    drop(statement);
+                    values
+                };
                 let revision = current_revision(&transaction)?;
                 transaction.commit()?;
                 Ok(RepositorySnapshot {
@@ -160,5 +192,29 @@ impl Repository {
                 })
             })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::persistence::Database;
+
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn empty_repository_snapshot_commits_after_all_statements_are_released() {
+        let repository =
+            Repository::new(Database::open_in_memory().expect("in-memory database opens"));
+
+        let snapshot = repository.snapshot().await.expect("snapshot loads");
+
+        assert_eq!(snapshot.revision, 0);
+        assert!(snapshot.sites.is_empty());
+        assert!(snapshot.models.is_empty());
+        assert!(snapshot.probe_policies.is_empty());
+        assert!(snapshot.site_headers.is_empty());
+        assert!(snapshot.latest_model_statuses.is_empty());
+        assert!(snapshot.latest_model_results.is_empty());
+        assert!(snapshot.probe_records.is_empty());
     }
 }

@@ -1,4 +1,5 @@
 import { Card, Tag } from 'antd';
+import type { PointerEvent } from 'react';
 import {
   formatIntelligenceIq,
   formatIntelligenceModelName,
@@ -8,29 +9,33 @@ import type { IntelligenceRankingEntry } from './intelligence-ladder-types';
 
 const rankingAccentClasses = [
   'intelligence-ranking-card--blue',
-  'intelligence-ranking-card--silver',
+  'intelligence-ranking-card--gray',
   'intelligence-ranking-card--green',
-  'intelligence-ranking-card--violet',
+  'intelligence-ranking-card--purple',
   'intelligence-ranking-card--cyan',
-  'intelligence-ranking-card--bronze',
-  'intelligence-ranking-card--gold',
+  'intelligence-ranking-card--orange',
+  'intelligence-ranking-card--red',
 ] as const;
 
-function effortClassName(effort: string) {
-  switch (effort.toLowerCase()) {
-    case 'ultra':
-      return 'intelligence-ranking-effort--ultra';
-    case 'xhigh':
-      return 'intelligence-ranking-effort--xhigh';
-    case 'high':
-      return 'intelligence-ranking-effort--high';
-    case 'medium':
-      return 'intelligence-ranking-effort--medium';
-    case 'max':
-      return 'intelligence-ranking-effort--max';
-    default:
-      return 'intelligence-ranking-effort--default';
-  }
+function resetCardReflection(card: HTMLElement) {
+  card.style.setProperty('--ranking-pointer-x', '50%');
+  card.style.setProperty('--ranking-pointer-y', '50%');
+  card.style.setProperty('--ranking-tilt-x', '0deg');
+  card.style.setProperty('--ranking-tilt-y', '0deg');
+}
+
+function handleCardPointerMove(event: PointerEvent<HTMLDivElement>) {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+
+  const card = event.currentTarget;
+  const bounds = card.getBoundingClientRect();
+  const x = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
+  const y = Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height));
+
+  card.style.setProperty('--ranking-pointer-x', `${(x * 100).toFixed(2)}%`);
+  card.style.setProperty('--ranking-pointer-y', `${(y * 100).toFixed(2)}%`);
+  card.style.setProperty('--ranking-tilt-x', `${((0.5 - y) * 2.4).toFixed(2)}deg`);
+  card.style.setProperty('--ranking-tilt-y', `${((x - 0.5) * 3.2).toFixed(2)}deg`);
 }
 
 export function IntelligenceRankingList({ entries }: { entries: IntelligenceRankingEntry[] }) {
@@ -70,6 +75,9 @@ export function IntelligenceRankingList({ entries }: { entries: IntelligenceRank
               data-testid={`ranking-entry-${entry.rank}`}
               hoverable
               key={`${entry.rank}-${entry.model}-${entry.effort}`}
+              onPointerCancel={(event) => resetCardReflection(event.currentTarget)}
+              onPointerLeave={(event) => resetCardReflection(event.currentTarget)}
+              onPointerMove={handleCardPointerMove}
               role="article"
               size="small"
               variant="outlined"
@@ -80,18 +88,11 @@ export function IntelligenceRankingList({ entries }: { entries: IntelligenceRank
                 </strong>
                 <span aria-hidden="true" />
               </div>
-              <div className="min-w-0">
-                <strong
-                  className="block truncate text-base leading-6 font-semibold"
-                  title={entry.model}
-                >
-                  {formatIntelligenceModelName(entry.model)}
-                </strong>
-                <Tag
-                  className={`${effortClassName(entry.effort)} intelligence-ranking-effort mt-2 mb-0 max-w-full truncate rounded-sm px-2.5 text-center text-xs leading-6 font-medium`}
-                  title={entry.effort}
-                  variant="filled"
-                >
+              <span aria-hidden="true" className="intelligence-ranking-card__divider" />
+              <div className="intelligence-ranking-card__model">
+                <strong title={entry.model}>{formatIntelligenceModelName(entry.model)}</strong>
+                <Tag className="intelligence-ranking-effort" title={entry.effort} variant="filled">
+                  <b>推理档位</b>
                   {formatIntelligenceTableEffort(entry.effort)}
                 </Tag>
               </div>

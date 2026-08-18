@@ -39,6 +39,11 @@ describe('IntelligenceLadderPage', () => {
     expect(screen.getByTestId('podium-rank-1')).toHaveClass('order-2');
     expect(screen.getByTestId('podium-rank-3')).toHaveClass('order-3');
     expect(podium.querySelectorAll('.intelligence-podium-wreath')).toHaveLength(3);
+    expect(podium.querySelectorAll('#intelligence-podium-wreath-symbol path')).toHaveLength(15);
+    expect(podium.querySelectorAll('.intelligence-podium-wreath__prism')).toHaveLength(3);
+    expect(within(podium).getByText('xhigh')).toBeVisible();
+    expect(within(podium).getByText('ultra')).toBeVisible();
+    expect(within(podium).getByText('max')).toBeVisible();
     expect(within(podium).queryByText('XHIGH')).toBeNull();
     expect(within(podium).queryByText('ULTRA')).toBeNull();
     expect(within(podium).queryByText('MAX')).toBeNull();

@@ -15,7 +15,10 @@ const cases = [
   ['tray-alerts', 520, 520],
 ] as const;
 
-test.use({ colorScheme: 'dark', reducedMotion: 'reduce' });
+test.use({
+  colorScheme: 'dark',
+  contextOptions: { reducedMotion: 'reduce' },
+});
 
 for (const [view, width, height] of cases) {
   test(`${view} uses a coherent dark surface`, async ({ page }) => {

@@ -74,15 +74,23 @@ test('intelligence ladder renders the 2-1-3 podium and saves drawer settings', a
   await expect(page.getByTestId('podium-rank-1')).toHaveClass(/order-2/);
   await expect(page.getByTestId('podium-rank-3')).toHaveClass(/order-3/);
   await expect(page.locator('.intelligence-podium-wreath')).toHaveCount(3);
-  await expect(page.getByRole('region', { name: '前三名' }).getByText('XHIGH')).toHaveCount(0);
+  await expect(
+    page.getByRole('region', { name: '前三名' }).getByText('xhigh', { exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole('heading', { name: '后续排名' })).toBeVisible();
   await expect(page.getByText('7 个模型')).toBeVisible();
   await expect(page.locator('.intelligence-ranking-card')).toHaveCount(7);
   await expect(page.locator('.ant-table')).toHaveCount(0);
   await expect(page.locator('.intelligence-ranking-grid')).toHaveCSS(
     'grid-template-columns',
-    /.+ .+ .+/,
+    /^\S+ \S+$/,
   );
+
+  const firstCard = page.getByTestId('ranking-entry-4');
+  await firstCard.hover({ position: { x: 48, y: 28 } });
+  await expect
+    .poll(() => firstCard.evaluate((card) => card.style.getPropertyValue('--ranking-pointer-x')))
+    .not.toBe('50%');
 
   await page.getByRole('button', { name: '打开自动获取设置' }).click();
   const drawer = page.getByRole('dialog', { name: '自动获取设置' });
@@ -159,7 +167,7 @@ test('intelligence ladder uses a two-column scrolling card grid at narrow height
     rankingHeaderTop,
   );
   const displayedEfforts = await ranking.locator('.intelligence-ranking-effort').allTextContents();
-  expect(displayedEfforts).toContain('xhigh');
+  expect(displayedEfforts).toContain('推理档位xhigh');
   expect(displayedEfforts).not.toContain('XHIGH');
 });
 

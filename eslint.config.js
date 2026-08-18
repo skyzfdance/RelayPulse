@@ -5,6 +5,8 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
+const nodeScriptFiles = ['*.{js,mjs,cjs,ts,tsx}', 'scripts/**/*.{js,mjs,cjs,ts,tsx}'];
+
 export default tseslint.config(
   {
     ignores: [
@@ -56,7 +58,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['*.{js,mjs,cjs,ts,tsx}', 'scripts/**/*.{js,mjs,cjs,ts,tsx}', 'tests/**/*.{ts,tsx}'],
+    files: nodeScriptFiles,
     extends: [tseslint.configs.disableTypeChecked],
   },
   {
@@ -76,7 +78,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['*.{js,mjs,ts}', 'scripts/**/*.{js,mjs,ts}'],
+    files: nodeScriptFiles,
     languageOptions: {
       globals: {
         ...globals.node,

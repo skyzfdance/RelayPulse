@@ -134,6 +134,8 @@ enum RefreshTrigger {
     NetworkRestore,
 }
 
+type ChangeCallback = dyn Fn(u64, Option<&str>) + Send + Sync;
+
 impl RefreshTrigger {
     const fn as_str(self) -> &'static str {
         match self {
@@ -155,7 +157,7 @@ struct ServiceInner {
     scraper: Arc<dyn IntelligenceScraper>,
     clock: Arc<dyn Clock>,
     runtime: Mutex<RuntimeState>,
-    on_change: Arc<dyn Fn(u64) + Send + Sync>,
+    on_change: Arc<ChangeCallback>,
     diagnostics: Option<Diagnostics>,
 }
 
@@ -166,7 +168,7 @@ pub struct IntelligenceLadderService {
 
 impl IntelligenceLadderService {
     pub fn new(repository: Repository, scraper: Arc<dyn IntelligenceScraper>) -> Self {
-        Self::with_dependencies(repository, scraper, Arc::new(SystemClock), |_| {})
+        Self::with_dependencies(repository, scraper, Arc::new(SystemClock), |_, _| {})
     }
 
     pub fn with_dependencies<F>(
@@ -176,7 +178,7 @@ impl IntelligenceLadderService {
         on_change: F,
     ) -> Self
     where
-        F: Fn(u64) + Send + Sync + 'static,
+        F: Fn(u64, Option<&str>) + Send + Sync + 'static,
     {
         Self {
             inner: Arc::new(ServiceInner {
@@ -232,12 +234,21 @@ impl IntelligenceLadderService {
     }
 
     pub async fn refresh(&self) -> Result<IntelligenceRefreshResult, IntelligenceLadderError> {
-        self.refresh_with_trigger(RefreshTrigger::Manual).await
+        self.refresh_with_operation(None).await
+    }
+
+    pub async fn refresh_with_operation(
+        &self,
+        operation_id: Option<String>,
+    ) -> Result<IntelligenceRefreshResult, IntelligenceLadderError> {
+        self.refresh_with_trigger(RefreshTrigger::Manual, operation_id)
+            .await
     }
 
     async fn refresh_with_trigger(
         &self,
         trigger: RefreshTrigger,
+        operation_id: Option<String>,
     ) -> Result<IntelligenceRefreshResult, IntelligenceLadderError> {
         let acquisition = {
             let mut runtime = self
@@ -257,6 +268,7 @@ impl IntelligenceLadderService {
         if acquisition != IntelligenceRefreshResult::Started {
             if let Some(diagnostics) = &self.inner.diagnostics {
                 diagnostics.record_intelligence_ladder_refresh_skipped(
+                    operation_id.as_deref(),
                     trigger.as_str(),
                     match acquisition {
                         IntelligenceRefreshResult::AlreadyRunning => "already_running",
@@ -287,15 +299,16 @@ impl IntelligenceLadderService {
         let refresh_id = format!("iq_{}", Uuid::new_v4().simple());
         if let Some(diagnostics) = &self.inner.diagnostics {
             diagnostics.record_intelligence_ladder_refresh_started(
+                operation_id.as_deref(),
                 &refresh_id,
                 trigger.as_str(),
                 revision,
             );
         }
-        (self.inner.on_change)(revision);
+        (self.inner.on_change)(revision, operation_id.as_deref());
         let service = self.clone();
         async_runtime::spawn(async move {
-            service.run_refresh(refresh_id, trigger).await;
+            service.run_refresh(refresh_id, trigger, operation_id).await;
         });
         Ok(IntelligenceRefreshResult::Started)
     }
@@ -303,6 +316,14 @@ impl IntelligenceLadderService {
     pub async fn update_settings(
         &self,
         settings: IntelligenceAutoFetchSettings,
+    ) -> Result<IntelligenceLadderSnapshot, IntelligenceLadderError> {
+        self.update_settings_with_operation(settings, None).await
+    }
+
+    pub async fn update_settings_with_operation(
+        &self,
+        settings: IntelligenceAutoFetchSettings,
+        operation_id: Option<String>,
     ) -> Result<IntelligenceLadderSnapshot, IntelligenceLadderError> {
         validate_settings(&settings)?;
         let revision = self
@@ -312,6 +333,7 @@ impl IntelligenceLadderService {
             .await?;
         if let Some(diagnostics) = &self.inner.diagnostics {
             diagnostics.record_intelligence_ladder_settings_updated(
+                operation_id.as_deref(),
                 revision,
                 settings.enabled,
                 settings.interval_minutes,
@@ -327,14 +349,16 @@ impl IntelligenceLadderService {
                 .map_err(|_| IntelligenceLadderError::DatabaseUnavailable)?;
             runtime.next_scheduled_at = next_scheduled_at(self.inner.clock.now(), &settings);
         }
-        (self.inner.on_change)(revision);
+        (self.inner.on_change)(revision, operation_id.as_deref());
         self.snapshot().await
     }
 
     pub async fn try_automatic_refresh(&self) -> Result<(), IntelligenceLadderError> {
         let settings = self.snapshot().await?.settings;
         if settings.enabled {
-            let _ = self.refresh_with_trigger(RefreshTrigger::Scheduled).await?;
+            let _ = self
+                .refresh_with_trigger(RefreshTrigger::Scheduled, None)
+                .await?;
         }
         Ok(())
     }
@@ -344,13 +368,14 @@ impl IntelligenceLadderService {
         if !settings.enabled || !settings.fetch_on_network_restore {
             if let Some(diagnostics) = &self.inner.diagnostics {
                 diagnostics.record_intelligence_ladder_refresh_skipped(
+                    None,
                     RefreshTrigger::NetworkRestore.as_str(),
                     "trigger_disabled",
                 );
             }
         } else {
             let _ = self
-                .refresh_with_trigger(RefreshTrigger::NetworkRestore)
+                .refresh_with_trigger(RefreshTrigger::NetworkRestore, None)
                 .await?;
         }
         Ok(())
@@ -369,7 +394,12 @@ impl IntelligenceLadderService {
         Ok(settings)
     }
 
-    async fn run_refresh(&self, refresh_id: String, trigger: RefreshTrigger) {
+    async fn run_refresh(
+        &self,
+        refresh_id: String,
+        trigger: RefreshTrigger,
+        operation_id: Option<String>,
+    ) {
         let started_at = Instant::now();
         let result = self.inner.scraper.scrape().await.and_then(|raw| {
             parse_rankings(raw).map_err(|error| match error {
@@ -393,6 +423,7 @@ impl IntelligenceLadderService {
                     self.set_session(SessionState::Idle);
                     if let Some(diagnostics) = &self.inner.diagnostics {
                         diagnostics.record_intelligence_ladder_refresh_finished(
+                            operation_id.as_deref(),
                             &refresh_id,
                             trigger.as_str(),
                             elapsed_millis(started_at),
@@ -403,7 +434,7 @@ impl IntelligenceLadderService {
                             false,
                         );
                     }
-                    (self.inner.on_change)(revision);
+                    (self.inner.on_change)(revision, operation_id.as_deref());
                 } else {
                     self.finish_with_error(
                         IntelligenceScrapeError::Internal,
@@ -411,14 +442,22 @@ impl IntelligenceLadderService {
                         &refresh_id,
                         trigger,
                         started_at,
+                        operation_id.as_deref(),
                     )
                     .await;
                 }
             }
             Err(error) => {
                 let error_code = scrape_error_code(&error);
-                self.finish_with_error(error, error_code, &refresh_id, trigger, started_at)
-                    .await;
+                self.finish_with_error(
+                    error,
+                    error_code,
+                    &refresh_id,
+                    trigger,
+                    started_at,
+                    operation_id.as_deref(),
+                )
+                .await;
             }
         }
     }
@@ -430,6 +469,7 @@ impl IntelligenceLadderService {
         refresh_id: &str,
         trigger: RefreshTrigger,
         started_at: Instant,
+        operation_id: Option<&str>,
     ) {
         let circuit_open = error == IntelligenceScrapeError::WorkerKillFailed;
         let safe_error = safe_error(error);
@@ -446,6 +486,7 @@ impl IntelligenceLadderService {
         if let Ok(revision) = revision {
             if let Some(diagnostics) = &self.inner.diagnostics {
                 diagnostics.record_intelligence_ladder_refresh_finished(
+                    operation_id,
                     refresh_id,
                     trigger.as_str(),
                     elapsed_millis(started_at),
@@ -456,9 +497,10 @@ impl IntelligenceLadderService {
                     circuit_open,
                 );
             }
-            (self.inner.on_change)(revision);
+            (self.inner.on_change)(revision, operation_id);
         } else if let Some(diagnostics) = &self.inner.diagnostics {
             diagnostics.record_intelligence_ladder_refresh_finished(
+                operation_id,
                 refresh_id,
                 trigger.as_str(),
                 elapsed_millis(started_at),
@@ -472,8 +514,18 @@ impl IntelligenceLadderService {
     }
 
     fn set_session(&self, session: SessionState) {
-        if let Ok(mut runtime) = self.inner.runtime.lock() {
-            runtime.session = session;
+        match self.inner.runtime.lock() {
+            Ok(mut runtime) => runtime.session = session,
+            Err(_) => self.record_scheduler_error(
+                "intelligence-ladder-runtime-state",
+                "runtime_state_lock_failed",
+            ),
+        }
+    }
+
+    fn record_scheduler_error(&self, operation: &'static str, error_code: &'static str) {
+        if let Some(diagnostics) = &self.inner.diagnostics {
+            diagnostics.record_background_error(operation, error_code);
         }
     }
 }
@@ -481,6 +533,39 @@ impl IntelligenceLadderService {
 pub struct IntelligenceLadderSchedulerHandle {
     shutdown: watch::Sender<bool>,
     runner: Option<JoinHandle<()>>,
+    diagnostics: Option<Diagnostics>,
+}
+
+impl IntelligenceLadderSchedulerHandle {
+    pub async fn shutdown(mut self) -> bool {
+        let _ = self.shutdown.send(true);
+        let Some(mut runner) = self.runner.take() else {
+            return true;
+        };
+        match tokio::time::timeout(Duration::from_secs(5), &mut runner).await {
+            Ok(Ok(())) => true,
+            Ok(Err(_)) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.record_background_error(
+                        "intelligence-ladder-scheduler-shutdown",
+                        "scheduler_runner_failed",
+                    );
+                }
+                false
+            }
+            Err(_) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.record_background_error(
+                        "intelligence-ladder-scheduler-shutdown",
+                        "scheduler_shutdown_timeout",
+                    );
+                }
+                runner.abort();
+                let _ = runner.await;
+                false
+            }
+        }
+    }
 }
 
 impl Drop for IntelligenceLadderSchedulerHandle {
@@ -496,22 +581,37 @@ pub fn start_intelligence_ladder_scheduler(
     service: IntelligenceLadderService,
 ) -> IntelligenceLadderSchedulerHandle {
     let (shutdown, receiver) = watch::channel(false);
+    let diagnostics = service.inner.diagnostics.clone();
     let runner = async_runtime::spawn(run_scheduler(service, receiver));
     IntelligenceLadderSchedulerHandle {
         shutdown,
         runner: Some(runner),
+        diagnostics,
     }
 }
 
 async fn run_scheduler(service: IntelligenceLadderService, mut shutdown: watch::Receiver<bool>) {
     let settings = match service.reconcile_schedule().await {
         Ok(settings) => settings,
-        Err(_) => return,
+        Err(_) => {
+            service.record_scheduler_error(
+                "intelligence-ladder-scheduler-start",
+                "schedule_reconcile_failed",
+            );
+            return;
+        }
     };
-    if settings.enabled && settings.fetch_on_app_start {
-        let _ = service
-            .refresh_with_trigger(RefreshTrigger::ApplicationStart)
-            .await;
+    if settings.enabled
+        && settings.fetch_on_app_start
+        && service
+            .refresh_with_trigger(RefreshTrigger::ApplicationStart, None)
+            .await
+            .is_err()
+    {
+        service.record_scheduler_error(
+            "intelligence-ladder-application-start-refresh",
+            "refresh_start_failed",
+        );
     }
     let mut interval = tokio::time::interval(Duration::from_secs(30));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -524,7 +624,13 @@ async fn run_scheduler(service: IntelligenceLadderService, mut shutdown: watch::
             _ = interval.tick() => {
                 let snapshot = match service.snapshot().await {
                     Ok(snapshot) => snapshot,
-                    Err(_) => continue,
+                    Err(_) => {
+                        service.record_scheduler_error(
+                            "intelligence-ladder-scheduler-snapshot",
+                            "snapshot_unavailable",
+                        );
+                        continue;
+                    },
                 };
                 if !snapshot.settings.enabled { continue; }
                 let due = snapshot
@@ -533,10 +639,22 @@ async fn run_scheduler(service: IntelligenceLadderService, mut shutdown: watch::
                     .and_then(parse_timestamp)
                     .is_some_and(|scheduled| scheduled <= service.inner.clock.now());
                 if due {
-                    let _ = service.reconcile_schedule().await;
-                    let _ = service
-                        .refresh_with_trigger(RefreshTrigger::Scheduled)
-                        .await;
+                    if service.reconcile_schedule().await.is_err() {
+                        service.record_scheduler_error(
+                            "intelligence-ladder-scheduler-reconcile",
+                            "schedule_reconcile_failed",
+                        );
+                    }
+                    if service
+                        .refresh_with_trigger(RefreshTrigger::Scheduled, None)
+                        .await
+                        .is_err()
+                    {
+                        service.record_scheduler_error(
+                            "intelligence-ladder-scheduled-refresh",
+                            "refresh_start_failed",
+                        );
+                    }
                 }
             }
         }
@@ -717,7 +835,7 @@ mod tests {
             Arc::new(FixedClock::new(
                 TimestampMs::new(1_700_000_000_000).expect("timestamp is valid"),
             )),
-            |_| {},
+            |_, _| {},
         )
     }
 
@@ -913,11 +1031,17 @@ mod tests {
         let service = service_with_diagnostics(scraper.clone(), diagnostics.clone());
 
         assert_eq!(
-            service.refresh().await.expect("refresh starts"),
+            service
+                .refresh_with_operation(Some("op_intelligence_refresh".to_owned()))
+                .await
+                .expect("refresh starts"),
             IntelligenceRefreshResult::Started
         );
         assert_eq!(
-            service.refresh().await.expect("busy is reported"),
+            service
+                .refresh_with_operation(Some("op_intelligence_busy".to_owned()))
+                .await
+                .expect("busy is reported"),
             IntelligenceRefreshResult::AlreadyRunning
         );
         scraper.release.notify_one();
@@ -934,25 +1058,31 @@ mod tests {
             tokio::task::yield_now().await;
         }
         service
-            .update_settings(IntelligenceAutoFetchSettings {
-                enabled: true,
-                interval_minutes: 180,
-                fetch_on_app_start: false,
-                fetch_on_network_restore: true,
-            })
+            .update_settings_with_operation(
+                IntelligenceAutoFetchSettings {
+                    enabled: true,
+                    interval_minutes: 180,
+                    fetch_on_app_start: false,
+                    fetch_on_network_restore: true,
+                },
+                Some("op_intelligence_settings".to_owned()),
+            )
             .await
             .expect("settings save");
 
         let log = fs::read_to_string(diagnostics.log_directory().join("relaypulse.log"))
             .expect("diagnostic log reads");
         assert!(log.contains(r#""event":"intelligence-ladder-refresh-started""#));
+        assert!(log.contains(r#""operationId":"op_intelligence_refresh""#));
         assert!(log.contains(r#""trigger":"manual""#));
         assert!(log.contains(r#""event":"intelligence-ladder-refresh-skipped""#));
         assert!(log.contains(r#""reason":"already_running""#));
+        assert!(log.contains(r#""operationId":"op_intelligence_busy""#));
         assert!(log.contains(r#""event":"intelligence-ladder-refresh-finished""#));
         assert!(log.contains(r#""outcome":"succeeded""#));
         assert!(log.contains(r#""entryCount":3"#));
         assert!(log.contains(r#""event":"intelligence-ladder-settings-updated""#));
+        assert!(log.contains(r#""operationId":"op_intelligence_settings""#));
         assert!(!log.contains(r#""model":"A""#));
         assert!(!log.contains(r#""iq":"#));
     }

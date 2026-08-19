@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { InvokeArgs } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { beginBackendOperation } from '../../app/frontend-diagnostics';
 import { backendError } from '../../data/tauri-relay-pulse-data-source';
 import type {
   IntelligenceAutoFetchSettings,
@@ -25,7 +26,11 @@ export class TauriIntelligenceLadderDataSource implements IntelligenceLadderData
   ) {
     if (monitorNetworkRestore) {
       window.addEventListener('online', () => {
-        void this.action<void>('notify_intelligence_network_restored').catch(() => undefined);
+        void this.action<void>(
+          'notify_intelligence_network_restored',
+          undefined,
+          'background-task',
+        ).catch(() => undefined);
       });
     }
   }
@@ -35,26 +40,39 @@ export class TauriIntelligenceLadderDataSource implements IntelligenceLadderData
   }
 
   refresh(): Promise<IntelligenceRefreshResult> {
-    return this.action('refresh_intelligence_ladder');
+    return this.action('refresh_intelligence_ladder', {
+      operationId: beginBackendOperation(),
+    });
   }
 
   updateAutoFetchSettings(
     settings: IntelligenceAutoFetchSettings,
   ): Promise<IntelligenceLadderSnapshot> {
-    return this.action('update_intelligence_auto_fetch_settings', { settings });
-  }
-
-  subscribeToChanges(listener: () => void): Promise<() => void> {
-    return this.subscribeCommand((event) => {
-      if (event.domains.includes('intelligence-ladder')) listener();
+    return this.action('update_intelligence_auto_fetch_settings', {
+      settings,
+      operationId: beginBackendOperation(),
     });
   }
 
-  private async action<T>(command: string, args?: IntelligenceLadderCommandArgs): Promise<T> {
+  async subscribeToChanges(listener: () => void): Promise<() => void> {
+    try {
+      return await this.subscribeCommand((event) => {
+        if (event.domains.includes('intelligence-ladder')) listener();
+      });
+    } catch (cause) {
+      throw backendError(cause, 'background-task');
+    }
+  }
+
+  private async action<T>(
+    command: string,
+    args?: IntelligenceLadderCommandArgs,
+    errorSource: 'backend-invocation' | 'background-task' = 'backend-invocation',
+  ): Promise<T> {
     try {
       return await this.invokeCommand<T>(command, args);
     } catch (cause) {
-      throw backendError(cause);
+      throw backendError(cause, errorSource);
     }
   }
 }

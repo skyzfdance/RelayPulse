@@ -1,6 +1,7 @@
 import { LoadingOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
 import { Alert, App as AntdApp, Button, Empty, Result, Spin, Tooltip } from 'antd';
 import { useState } from 'react';
+import { recordFrontendAction } from '../../app/frontend-diagnostics';
 import { formatLocalTimestamp } from '../../domain/time';
 import { pageHeaderClass } from '../../styles/tailwind';
 import { IntelligencePodium } from './IntelligencePodium';
@@ -107,6 +108,10 @@ export function IntelligenceLadderPage({
   const notConnected = snapshot?.runtime.state === 'not_connected';
 
   async function handleRefresh() {
+    recordFrontendAction('refresh-intelligence-ladder', {
+      targetType: 'intelligence-ladder',
+      targetId: 'ranking',
+    });
     try {
       const result = await refresh();
       if (result.status === 'already_running') {
@@ -128,6 +133,10 @@ export function IntelligenceLadderPage({
   }
 
   async function handleSave(settings: IntelligenceAutoFetchSettings) {
+    recordFrontendAction('save-intelligence-settings', {
+      targetType: 'intelligence-settings',
+      targetId: 'auto-fetch',
+    });
     setSaving(true);
     try {
       await updateSettings(settings);
@@ -171,7 +180,13 @@ export function IntelligenceLadderPage({
               aria-label="打开自动获取设置"
               disabled={loading || !snapshot}
               icon={<SettingOutlined />}
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => {
+                recordFrontendAction('open-intelligence-settings', {
+                  targetType: 'intelligence-settings',
+                  targetId: 'auto-fetch',
+                });
+                setSettingsOpen(true);
+              }}
               shape="circle"
             />
           </Tooltip>
@@ -189,7 +204,13 @@ export function IntelligenceLadderPage({
         <IntelligenceSettingsDrawer
           disabled={notConnected}
           onClose={() => {
-            if (!saving) setSettingsOpen(false);
+            if (!saving) {
+              recordFrontendAction('close-intelligence-settings', {
+                targetType: 'intelligence-settings',
+                targetId: 'auto-fetch',
+              });
+              setSettingsOpen(false);
+            }
           }}
           onSave={handleSave}
           open={settingsOpen}

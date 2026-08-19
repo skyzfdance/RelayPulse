@@ -75,6 +75,18 @@ pub fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
     }
 }
 
+pub(crate) fn record_desktop_error(
+    app: &AppHandle,
+    operation: &'static str,
+    error_code: &'static str,
+) {
+    if let Some(state) = app.try_state::<BackendState>() {
+        if let Some(diagnostics) = state.diagnostics() {
+            diagnostics.record_background_error(operation, error_code);
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 struct NavigateEvent<'a> {
     view: &'a str,
@@ -176,7 +188,13 @@ pub fn build_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 pub fn handle_app_menu_event(app: &AppHandle, event: MenuEvent) {
     let menu_id = event.id().as_ref();
     if let Some(view) = view_for_menu_id(menu_id) {
-        let _ = show_main_window_at(app, view);
+        if show_main_window_at(app, view).is_err() {
+            record_desktop_error(
+                app,
+                "application-menu-navigation",
+                "window_navigation_failed",
+            );
+        }
         return;
     }
 
@@ -186,12 +204,20 @@ pub fn handle_app_menu_event(app: &AppHandle, event: MenuEvent) {
         _ => None,
     };
     if let Some(action) = action {
-        let _ = show_main_window(app);
-        let _ = app.emit_to(
-            MAIN_WINDOW_LABEL,
-            DESKTOP_MENU_ACTION_EVENT,
-            DesktopMenuActionEvent { action },
-        );
+        if show_main_window(app).is_err() {
+            record_desktop_error(app, "application-menu-action", "window_show_failed");
+            return;
+        }
+        if app
+            .emit_to(
+                MAIN_WINDOW_LABEL,
+                DESKTOP_MENU_ACTION_EVENT,
+                DesktopMenuActionEvent { action },
+            )
+            .is_err()
+        {
+            record_desktop_error(app, "application-menu-action", "menu_action_emit_failed");
+        }
     }
 }
 
@@ -251,7 +277,9 @@ pub fn set_tray_enabled(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
             MAIN_WINDOW_MENU_ID => {
-                let _ = show_main_window(app);
+                if show_main_window(app).is_err() {
+                    record_desktop_error(app, "tray-main-window", "window_show_failed");
+                }
             }
             QUIT_MENU_ID => app.exit(0),
             _ => {}
@@ -372,9 +400,24 @@ fn schedule_status_panel_hide(
         if STATUS_PANEL_MOTION_GENERATION.load(Ordering::Relaxed) != generation {
             return;
         }
-        let should_hide = hide_even_if_focused || !window.is_focused().unwrap_or(false);
-        if should_hide {
-            let _ = window.hide();
+        let focused = match window.is_focused() {
+            Ok(focused) => focused,
+            Err(_) => {
+                record_desktop_error(
+                    window.app_handle(),
+                    "status-panel-focus-query",
+                    "window_focus_query_failed",
+                );
+                false
+            }
+        };
+        let should_hide = hide_even_if_focused || !focused;
+        if should_hide && window.hide().is_err() {
+            record_desktop_error(
+                window.app_handle(),
+                "status-panel-hide",
+                "window_hide_failed",
+            );
         }
     });
     Ok(())
@@ -536,14 +579,30 @@ fn status_icon(state: TrayIconState) -> Image<'static> {
 
 fn open_current_status_panel(app: AppHandle, anchor: StatusPanelAnchor) {
     if let Some(window) = app.get_webview_window(STATUS_WINDOW_LABEL) {
-        if window.is_visible().unwrap_or(false) {
+        let visible = match window.is_visible() {
+            Ok(visible) => visible,
+            Err(_) => {
+                record_desktop_error(
+                    &app,
+                    "status-panel-visibility-query",
+                    "window_visibility_query_failed",
+                );
+                false
+            }
+        };
+        if visible {
             if STATUS_PANEL_CLOSE_REQUESTED.load(Ordering::Relaxed) {
-                let _ = begin_status_panel_opening(&window);
-                let _ = window.show();
-                let _ = window.set_focus();
+                if begin_status_panel_opening(&window).is_err()
+                    || window.show().is_err()
+                    || window.set_focus().is_err()
+                {
+                    record_desktop_error(&app, "status-panel-reopen", "window_show_failed");
+                }
                 return;
             }
-            let _ = schedule_status_panel_hide(&window, true);
+            if schedule_status_panel_hide(&window, true).is_err() {
+                record_desktop_error(&app, "status-panel-toggle", "window_hide_failed");
+            }
             return;
         }
     }
@@ -558,8 +617,9 @@ fn open_current_status_panel(app: AppHandle, anchor: StatusPanelAnchor) {
     let generation = STATUS_PANEL_MOTION_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
 
     let alert_count = STATUS_PANEL_ALERT_COUNT.load(Ordering::Acquire);
-    let opened = STATUS_PANEL_MOTION_GENERATION.load(Ordering::Acquire) == generation
-        && show_status_panel(&app, alert_count, anchor).is_ok();
+    let current_generation = STATUS_PANEL_MOTION_GENERATION.load(Ordering::Acquire) == generation;
+    let open_result = current_generation.then(|| show_status_panel(&app, alert_count, anchor));
+    let opened = open_result.as_ref().is_some_and(Result::is_ok);
     STATUS_PANEL_OPEN_PENDING.store(false, Ordering::Release);
     if opened {
         if let Some(state) = app.try_state::<BackendState>() {
@@ -567,6 +627,8 @@ fn open_current_status_panel(app: AppHandle, anchor: StatusPanelAnchor) {
                 diagnostics.record_window_opened(None, "status-panel");
             }
         }
+    } else if open_result.is_some_and(|result| result.is_err()) {
+        record_desktop_error(&app, "status-panel-open", "window_show_failed");
     }
 }
 

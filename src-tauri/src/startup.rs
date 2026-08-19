@@ -100,12 +100,12 @@ pub struct BackendState {
 
 impl BackendState {
     pub fn initialize(data_directory: PathBuf) -> Self {
-        Self::initialize_with_intelligence_callback(data_directory, |_| {})
+        Self::initialize_with_intelligence_callback(data_directory, |_, _| {})
     }
 
     pub fn initialize_with_intelligence_callback<F>(data_directory: PathBuf, on_change: F) -> Self
     where
-        F: Fn(u64) + Send + Sync + 'static,
+        F: Fn(u64, Option<&str>) + Send + Sync + 'static,
     {
         if fs::create_dir_all(&data_directory).is_err() {
             return Self::blocked(StartupFailure::data_directory());
@@ -226,18 +226,56 @@ impl BackendState {
     }
 
     pub fn set_scheduler(&self, scheduler: SchedulerHandle) {
-        if let Ok(mut current) = self.scheduler.lock() {
-            *current = Some(scheduler);
+        match self.scheduler.lock() {
+            Ok(mut current) => *current = Some(scheduler),
+            Err(_) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics
+                        .record_background_error("scheduler-state", "scheduler_state_lock_failed");
+                }
+            }
         }
     }
 
     pub fn take_scheduler(&self) -> Option<SchedulerHandle> {
-        self.scheduler.lock().ok()?.take()
+        match self.scheduler.lock() {
+            Ok(mut scheduler) => scheduler.take(),
+            Err(_) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics
+                        .record_background_error("scheduler-state", "scheduler_state_lock_failed");
+                }
+                None
+            }
+        }
     }
 
     pub fn set_intelligence_ladder_scheduler(&self, scheduler: IntelligenceLadderSchedulerHandle) {
-        if let Ok(mut current) = self.intelligence_ladder_scheduler.lock() {
-            *current = Some(scheduler);
+        match self.intelligence_ladder_scheduler.lock() {
+            Ok(mut current) => *current = Some(scheduler),
+            Err(_) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.record_background_error(
+                        "intelligence-ladder-scheduler-state",
+                        "scheduler_state_lock_failed",
+                    );
+                }
+            }
+        }
+    }
+
+    pub fn take_intelligence_ladder_scheduler(&self) -> Option<IntelligenceLadderSchedulerHandle> {
+        match self.intelligence_ladder_scheduler.lock() {
+            Ok(mut scheduler) => scheduler.take(),
+            Err(_) => {
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.record_background_error(
+                        "intelligence-ladder-scheduler-state",
+                        "scheduler_state_lock_failed",
+                    );
+                }
+                None
+            }
         }
     }
 

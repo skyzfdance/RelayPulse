@@ -21,7 +21,13 @@ pub fn run() {
     diagnostics::install_panic_hook();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = desktop::show_main_window(app);
+            if desktop::show_main_window(app).is_err() {
+                desktop::record_desktop_error(
+                    app,
+                    "single-instance-activation",
+                    "window_show_failed",
+                );
+            }
         }))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -39,10 +45,11 @@ pub fn run() {
             let state = match app.path().app_data_dir() {
                 Ok(data_directory) => startup::BackendState::initialize_with_intelligence_callback(
                     data_directory,
-                    move |revision| {
+                    move |revision, operation_id| {
                         commands::intelligence_ladder::publish_intelligence_ladder_changed(
                             &intelligence_app,
                             revision,
+                            operation_id,
                         );
                     },
                 ),
@@ -72,16 +79,29 @@ pub fn run() {
             }
             if let Some(credential_saga) = credential_saga {
                 tauri::async_runtime::spawn(async move {
-                    let recovery_failed = match credential_saga.reconcile().await {
-                        Ok(summary) => summary.failed > 0,
-                        Err(_) => true,
-                    };
-                    if recovery_failed {
-                        if let Some(diagnostics) = credential_diagnostics {
-                            diagnostics.record_background_error(
-                                "credential-reconciliation",
-                                "credential_recovery_failed",
-                            );
+                    match credential_saga.reconcile().await {
+                        Ok(summary) => {
+                            if let Some(diagnostics) = credential_diagnostics {
+                                diagnostics.record_credential_reconciliation(
+                                    summary.recovered,
+                                    summary.failed,
+                                    summary.remaining,
+                                );
+                                if summary.failed > 0 || summary.remaining > 0 {
+                                    diagnostics.record_background_error(
+                                        "credential-reconciliation",
+                                        "credential_recovery_incomplete",
+                                    );
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            if let Some(diagnostics) = credential_diagnostics {
+                                diagnostics.record_background_error(
+                                    "credential-reconciliation",
+                                    "credential_recovery_failed",
+                                );
+                            }
                         }
                     }
                 });
@@ -104,10 +124,22 @@ pub fn run() {
                             );
                             let tray_enabled =
                                 snapshot.general_settings.tray_action == domain::TrayAction::Panel;
-                            if tray_enabled {
-                                let _ = desktop::prewarm_status_panel(&app_handle, &snapshot);
+                            if tray_enabled
+                                && desktop::prewarm_status_panel(&app_handle, &snapshot).is_err()
+                            {
+                                desktop::record_desktop_error(
+                                    &app_handle,
+                                    "status-panel-prewarm",
+                                    "window_create_failed",
+                                );
                             }
-                            let _ = desktop::set_tray_enabled(&app_handle, tray_enabled);
+                            if desktop::set_tray_enabled(&app_handle, tray_enabled).is_err() {
+                                desktop::record_desktop_error(
+                                    &app_handle,
+                                    "tray-reconciliation",
+                                    "tray_update_failed",
+                                );
+                            }
                             let succeeded = desktop::set_autostart(
                                 &app_handle,
                                 snapshot.general_settings.launch_at_startup,
@@ -131,8 +163,20 @@ pub fn run() {
                                     true,
                                 );
                             }
-                            let _ = desktop::update_status_projection(&app_handle, &snapshot);
+                            if desktop::update_status_projection(&app_handle, &snapshot).is_err() {
+                                desktop::record_desktop_error(
+                                    &app_handle,
+                                    "startup-status-projection",
+                                    "status_projection_update_failed",
+                                );
+                            }
                         }
+                    } else {
+                        desktop::record_desktop_error(
+                            &app_handle,
+                            "startup-snapshot",
+                            "snapshot_unavailable",
+                        );
                     }
                 });
             }
@@ -145,15 +189,33 @@ pub fn run() {
                     .is_some_and(|state| state.continue_in_background())
                 {
                     api.prevent_close();
-                    let _ = window.hide();
+                    if window.hide().is_err() {
+                        desktop::record_desktop_error(
+                            window.app_handle(),
+                            "main-window-close-to-background",
+                            "window_hide_failed",
+                        );
+                    }
                 }
             }
             WindowEvent::CloseRequested { api, .. } if window.label() == "status-panel" => {
                 api.prevent_close();
-                let _ = desktop::request_status_panel_hide(window.app_handle(), true);
+                if desktop::request_status_panel_hide(window.app_handle(), true).is_err() {
+                    desktop::record_desktop_error(
+                        window.app_handle(),
+                        "status-panel-close-request",
+                        "window_hide_failed",
+                    );
+                }
             }
             WindowEvent::Focused(false) if window.label() == "status-panel" => {
-                let _ = desktop::request_status_panel_hide(window.app_handle(), false);
+                if desktop::request_status_panel_hide(window.app_handle(), false).is_err() {
+                    desktop::record_desktop_error(
+                        window.app_handle(),
+                        "status-panel-focus-loss",
+                        "window_hide_failed",
+                    );
+                }
             }
             _ => {}
         })
@@ -205,18 +267,24 @@ pub fn run() {
     app.run(|app, event| {
         if matches!(&event, tauri::RunEvent::Exit) {
             if let Some(state) = app.try_state::<startup::BackendState>() {
-                if let Some(scheduler) = state.take_scheduler() {
-                    tauri::async_runtime::block_on(scheduler.shutdown());
-                }
+                let scheduler_stopped = state
+                    .take_scheduler()
+                    .is_none_or(|scheduler| tauri::async_runtime::block_on(scheduler.shutdown()));
+                let intelligence_scheduler_stopped = state
+                    .take_intelligence_ladder_scheduler()
+                    .is_none_or(|scheduler| tauri::async_runtime::block_on(scheduler.shutdown()));
                 if let Some(diagnostics) = state.diagnostics() {
-                    diagnostics.mark_clean_exit();
+                    diagnostics
+                        .mark_clean_exit(scheduler_stopped && intelligence_scheduler_stopped);
                 }
             }
         }
 
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = &event {
-            let _ = desktop::show_main_window(app);
+            if desktop::show_main_window(app).is_err() {
+                desktop::record_desktop_error(app, "application-reopen", "window_show_failed");
+            }
         }
 
         #[cfg(not(target_os = "macos"))]

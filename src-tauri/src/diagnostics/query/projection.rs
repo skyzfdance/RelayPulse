@@ -4,10 +4,10 @@ use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use super::types::{
-    ConfigurationChangeDto, DiagnosticsDetailsDto, LifecycleEvent, OccurredAtPrecision,
-    OccurredAtQualifier, OperationCategory, OperationExceptionDto, OperationOccurredAtDto,
-    OperationRecordDetailsDto, OperationRecordSpecificDetailsDto, OperationTrigger,
-    ProjectedRecord,
+    ConfigurationChangeDto, DataCollectionSource, DiagnosticsDetailsDto, LifecycleEvent,
+    OccurredAtPrecision, OccurredAtQualifier, OperationCategory, OperationExceptionDto,
+    OperationOccurredAtDto, OperationRecordDetailsDto, OperationRecordSpecificDetailsDto,
+    OperationTrigger, ProjectedRecord,
 };
 
 const MAX_PENDING_OPERATIONS: usize = 4_096;
@@ -16,6 +16,7 @@ const MAX_CONFIGURATION_CHANGES: usize = 16;
 pub(super) struct Projector {
     completed_startup_sessions: HashSet<String>,
     pending_legacy_operations: HashMap<String, Value>,
+    non_mutating_operations: HashSet<String>,
 }
 
 impl Projector {
@@ -23,6 +24,7 @@ impl Projector {
         Self {
             completed_startup_sessions: HashSet::new(),
             pending_legacy_operations: HashMap::new(),
+            non_mutating_operations: HashSet::new(),
         }
     }
 
@@ -32,10 +34,12 @@ impl Projector {
             "application-started" => self.startup(&event),
             "application-exited" => self.clean_exit(&event),
             "previous-session-terminated-unexpectedly" => self.abnormal_exit(&event),
-            "probe-batch-finished" => self.probe_batch(&event),
+            "intelligence-ladder-refresh-finished" => self.intelligence_collection_finished(&event),
+            "intelligence-ladder-refresh-skipped" => self.intelligence_collection_skipped(&event),
             "diagnostics-exported" => self.diagnostics_export(&event),
             "diagnostic-logs-cleared" => self.diagnostics_cleanup(&event),
             "diagnostic-log-limit-configured" => self.log_limit_change(&event),
+            "model-sync-confirmation-required" => self.model_sync_confirmation_required(&event),
             "operation-finished" => self.operation_finished(event),
             "operation-started" => self.legacy_operation_started(&event),
             _ => None,
@@ -149,43 +153,63 @@ impl Projector {
         )
     }
 
-    fn probe_batch(&self, event: &Value) -> Option<ProjectedRecord> {
-        let trigger = match event.get("trigger")?.as_str()? {
-            "user_action" => OperationTrigger::UserAction,
-            "automatic" => OperationTrigger::Automatic,
+    fn intelligence_collection_finished(&self, event: &Value) -> Option<ProjectedRecord> {
+        let trigger = intelligence_collection_trigger(event.get("trigger")?.as_str()?)?;
+        let outcome = event.get("outcome")?.as_str()?;
+        let (action_label, description, entry_count, exception) = match outcome {
+            "succeeded" => (
+                "采集智力天梯数据",
+                "RelayPulse 已更新智力天梯数据。",
+                Some(event.get("entryCount")?.as_u64()?),
+                None,
+            ),
+            "failed" => {
+                let error_code = event.get("errorCode")?.as_str()?;
+                (
+                    "采集智力天梯数据失败",
+                    "RelayPulse 未能更新智力天梯数据。",
+                    None,
+                    Some(intelligence_collection_exception(error_code)?),
+                )
+            }
             _ => return None,
-        };
-        let site_count = event.get("siteCount")?.as_u64()?;
-        let model_count = event.get("modelCount")?.as_u64()?;
-        let completed_count = event.get("completedCount")?.as_u64()?;
-        let failed_count = event.get("failedCount")?.as_u64()?;
-        let skipped_count = event.get("skippedCount")?.as_u64()?;
-        if completed_count
-            .saturating_add(failed_count)
-            .saturating_add(skipped_count)
-            != model_count
-        {
-            return None;
-        }
-        let (action_label, description) = if trigger == OperationTrigger::Automatic {
-            ("完成自动数据采集", "RelayPulse 已完成本轮自动数据采集。")
-        } else {
-            ("完成手动数据采集", "RelayPulse 已完成本轮手动数据采集。")
         };
         record(
             exact_time(event.get("timestamp")?.as_str()?)?,
             OperationCategory::DataCollection,
             trigger,
-            RecordMetadata::new(action_label, description, None),
+            RecordMetadata::new(action_label, description, Some("智力天梯".to_owned())),
             OperationRecordSpecificDetailsDto::DataCollection {
-                site_count,
-                model_count,
-                completed_count,
-                failed_count,
-                skipped_count,
-                can_open_probe_records: true,
+                source: DataCollectionSource::IntelligenceLadder,
+                entry_count,
             },
-            None,
+            exception,
+        )
+    }
+
+    fn intelligence_collection_skipped(&self, event: &Value) -> Option<ProjectedRecord> {
+        if event.get("reason")?.as_str()? != "circuit_open" {
+            return None;
+        }
+        record(
+            exact_time(event.get("timestamp")?.as_str()?)?,
+            OperationCategory::DataCollection,
+            intelligence_collection_trigger(event.get("trigger")?.as_str()?)?,
+            RecordMetadata::new(
+                "采集智力天梯数据失败",
+                "RelayPulse 暂时无法采集智力天梯数据。",
+                Some("智力天梯".to_owned()),
+            ),
+            OperationRecordSpecificDetailsDto::DataCollection {
+                source: DataCollectionSource::IntelligenceLadder,
+                entry_count: None,
+            },
+            Some(OperationExceptionDto {
+                reason: "智力天梯采集服务暂时不可用。".to_owned(),
+                safe_code: Some("circuit_open".to_owned()),
+                last_step: Some("启动智力天梯数据采集".to_owned()),
+                recommended_action: Some("请重新启动 RelayPulse 后重试。".to_owned()),
+            }),
         )
     }
 
@@ -269,12 +293,29 @@ impl Projector {
     }
 
     fn operation_finished(&mut self, event: Value) -> Option<ProjectedRecord> {
+        if event.get("operation").and_then(Value::as_str) == Some("refresh-intelligence-ladder") {
+            return intelligence_collection_operation_finished(&event);
+        }
+        if event.get("operation").and_then(Value::as_str) == Some("refresh-models") {
+            let operation_id = event.get("operationId")?.as_str()?;
+            if self.non_mutating_operations.remove(operation_id) {
+                return None;
+            }
+        }
         if event.get("fieldScope").and_then(Value::as_array).is_some() {
             return configuration_operation(&event);
         }
         let operation_id = event.get("operationId")?.as_str()?.to_owned();
         if self.pending_legacy_operations.len() < MAX_PENDING_OPERATIONS {
             self.pending_legacy_operations.insert(operation_id, event);
+        }
+        None
+    }
+
+    fn model_sync_confirmation_required(&mut self, event: &Value) -> Option<ProjectedRecord> {
+        let operation_id = event.get("operationId")?.as_str()?;
+        if self.non_mutating_operations.len() < MAX_PENDING_OPERATIONS {
+            self.non_mutating_operations.insert(operation_id.to_owned());
         }
         None
     }
@@ -418,6 +459,9 @@ fn operation_metadata(operation: &str) -> Option<OperationMetadata> {
         "update-general-settings" => ("调整通用设置", "修改通用设置"),
         "refresh-models" => ("同步模型目录", "同步模型目录"),
         "update-notification-settings" => ("调整通知设置", "修改通知设置"),
+        "update-intelligence-auto-fetch-settings" => {
+            ("调整智力天梯自动获取设置", "修改智力天梯自动获取设置")
+        }
         _ => return None,
     };
     Some(OperationMetadata {
@@ -457,6 +501,10 @@ fn field_change(field: &str, change_kind: &str, failed: bool) -> Option<Configur
         "diagnosticCaptureEnabled" => ("诊断采集", false),
         "notificationsEnabled" => ("消息通知", false),
         "rules" => ("通知规则", true),
+        "autoFetchEnabled" => ("自动获取", false),
+        "autoFetchIntervalMinutes" => ("自动获取间隔", false),
+        "fetchOnAppStart" => ("启动时获取", false),
+        "fetchOnNetworkRestore" => ("网络恢复时获取", false),
         _ => return None,
     };
     if failed {
@@ -533,12 +581,76 @@ fn safe_exception(operation: &str, code: &str) -> Option<OperationExceptionDto> 
     })
 }
 
+fn intelligence_collection_trigger(value: &str) -> Option<OperationTrigger> {
+    match value {
+        "manual" => Some(OperationTrigger::UserAction),
+        "scheduled" | "application_start" | "network_restore" => Some(OperationTrigger::Automatic),
+        _ => None,
+    }
+}
+
+fn intelligence_collection_exception(code: &str) -> Option<OperationExceptionDto> {
+    let (reason, recommendation) = match code {
+        "network" => ("获取智力天梯数据时网络不可用。", "请检查网络连接后重试。"),
+        "render_timeout" | "worker_timeout" => (
+            "智力天梯数据源处理超时。",
+            "请稍后重试；如果持续发生，请导出诊断包。",
+        ),
+        "render_unavailable"
+        | "target_not_found"
+        | "worker_crashed"
+        | "worker_protocol_invalid"
+        | "invalid_snapshot"
+        | "worker_kill_failed"
+        | "cancelled"
+        | "database"
+        | "internal" => (
+            "智力天梯数据采集未能完成。",
+            "请稍后重试；如果持续发生，请导出诊断包。",
+        ),
+        _ => return None,
+    };
+    Some(OperationExceptionDto {
+        reason: reason.to_owned(),
+        safe_code: Some(code.to_owned()),
+        last_step: Some("采集智力天梯数据".to_owned()),
+        recommended_action: Some(recommendation.to_owned()),
+    })
+}
+
+fn intelligence_collection_operation_finished(event: &Value) -> Option<ProjectedRecord> {
+    if event.get("outcome")?.as_str()? != "failed" {
+        return None;
+    }
+    let error_code = event.get("errorCode")?.as_str()?;
+    let exception = match error_code {
+        "database_unavailable" => intelligence_collection_exception("database")?,
+        _ => return None,
+    };
+    record(
+        exact_time(event.get("timestamp")?.as_str()?)?,
+        OperationCategory::DataCollection,
+        OperationTrigger::UserAction,
+        RecordMetadata::new(
+            "采集智力天梯数据失败",
+            "RelayPulse 未能启动智力天梯数据采集。",
+            Some("智力天梯".to_owned()),
+        ),
+        OperationRecordSpecificDetailsDto::DataCollection {
+            source: DataCollectionSource::IntelligenceLadder,
+            entry_count: None,
+        },
+        Some(exception),
+    )
+}
+
 fn subject_label(target_type: &str) -> Option<&'static str> {
     match target_type {
         "site" => Some("站点配置"),
         "model" => Some("模型配置"),
         "settings" => Some("RelayPulse 设置"),
         "notification-settings" => Some("通知设置"),
+        "intelligence-settings" => Some("智力天梯设置"),
         _ => None,
     }
 }
@@ -689,19 +801,163 @@ mod tests {
     }
 
     #[test]
-    fn rejects_inconsistent_probe_batch_counts() {
+    fn projects_intelligence_settings_without_copying_values() {
+        let event = json!({
+            "timestamp": "2026-08-18T08:00:00Z",
+            "event": "operation-finished",
+            "operationId": "op_intelligence_settings",
+            "operation": "update-intelligence-auto-fetch-settings",
+            "outcome": "succeeded",
+            "targetType": "intelligence-settings",
+            "changeKind": "update",
+            "fieldScope": ["autoFetchEnabled", "autoFetchIntervalMinutes"],
+            "enabled": true,
+            "intervalMinutes": 30,
+        });
+
+        let record = Projector::new().project(event).expect("record projects");
+        let serialized = serde_json::to_string(&record.details).expect("details serialize");
+        assert_eq!(record.details.action_label, "调整智力天梯自动获取设置");
+        assert!(serialized.contains("自动获取间隔"));
+        assert!(!serialized.contains("intervalMinutes"));
+    }
+
+    #[test]
+    fn model_sync_confirmation_is_not_reported_as_a_configuration_change() {
+        let mut projector = Projector::new();
+        assert!(projector
+            .project(json!({
+                "timestamp": "2026-08-18T08:00:00Z",
+                "event": "model-sync-confirmation-required",
+                "operationId": "op_model_sync",
+                "candidateRemovalCount": 2,
+            }))
+            .is_none());
+        assert!(projector
+            .project(json!({
+                "timestamp": "2026-08-18T08:00:01Z",
+                "event": "operation-finished",
+                "operationId": "op_model_sync",
+                "operation": "refresh-models",
+                "outcome": "succeeded",
+                "targetType": "site",
+                "changeKind": "sync",
+                "fieldScope": ["catalog"],
+            }))
+            .is_none());
+    }
+
+    #[test]
+    fn excludes_probe_batches_from_operation_history() {
         let event = json!({
             "timestamp": "2026-08-08T08:00:00Z",
             "event": "probe-batch-finished",
             "trigger": "automatic",
             "siteCount": 1,
             "modelCount": 2,
-            "completedCount": 1,
+            "completedCount": 2,
             "failedCount": 0,
             "skippedCount": 0,
         });
 
         assert!(Projector::new().project(event).is_none());
+    }
+
+    #[test]
+    fn projects_intelligence_ladder_collection_without_duration_or_internal_ids() {
+        let event = json!({
+            "timestamp": "2026-08-18T12:54:35Z",
+            "event": "intelligence-ladder-refresh-finished",
+            "operationId": "op_fixture",
+            "refreshId": "iq_fixture",
+            "trigger": "manual",
+            "outcome": "succeeded",
+            "durationMs": 7375,
+            "entryCount": 19,
+            "revision": 931,
+            "circuitOpen": false,
+        });
+
+        let record = Projector::new().project(event).expect("record projects");
+        let serialized = serde_json::to_value(record.details).expect("details serialize");
+        assert_eq!(serialized["actionLabel"], "采集智力天梯数据");
+        assert_eq!(serialized["trigger"], "user_action");
+        assert_eq!(
+            serialized["detail"],
+            json!({
+                "kind": "data_collection",
+                "source": "intelligence_ladder",
+                "entryCount": 19,
+            })
+        );
+        assert!(serialized.get("durationMs").is_none());
+        assert!(serialized.get("operationId").is_none());
+        assert!(serialized.get("refreshId").is_none());
+    }
+
+    #[test]
+    fn projects_safe_intelligence_collection_failures_and_ignores_non_failures() {
+        let failed = json!({
+            "timestamp": "2026-08-18T12:54:35Z",
+            "event": "intelligence-ladder-refresh-finished",
+            "trigger": "scheduled",
+            "outcome": "failed",
+            "errorCode": "invalid_snapshot",
+        });
+        let record = Projector::new().project(failed).expect("record projects");
+        let serialized = serde_json::to_value(record.details).expect("details serialize");
+        assert_eq!(serialized["trigger"], "automatic");
+        assert_eq!(serialized["exception"]["safeCode"], "invalid_snapshot");
+        assert_eq!(
+            serialized["detail"],
+            json!({
+                "kind": "data_collection",
+                "source": "intelligence_ladder",
+            })
+        );
+
+        for reason in ["already_running", "trigger_disabled"] {
+            assert!(Projector::new()
+                .project(json!({
+                    "timestamp": "2026-08-18T12:55:00Z",
+                    "event": "intelligence-ladder-refresh-skipped",
+                    "trigger": "scheduled",
+                    "reason": reason,
+                }))
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn projects_circuit_open_as_an_intelligence_collection_failure() {
+        let event = json!({
+            "timestamp": "2026-08-18T12:55:00Z",
+            "event": "intelligence-ladder-refresh-skipped",
+            "trigger": "application_start",
+            "reason": "circuit_open",
+        });
+
+        let record = Projector::new().project(event).expect("record projects");
+        let serialized = serde_json::to_value(record.details).expect("details serialize");
+        assert_eq!(serialized["trigger"], "automatic");
+        assert_eq!(serialized["exception"]["safeCode"], "circuit_open");
+    }
+
+    #[test]
+    fn projects_command_failure_before_intelligence_collection_starts() {
+        let event = json!({
+            "timestamp": "2026-08-18T12:55:00Z",
+            "event": "operation-finished",
+            "operationId": "op_fixture",
+            "operation": "refresh-intelligence-ladder",
+            "outcome": "failed",
+            "errorCode": "database_unavailable",
+        });
+
+        let record = Projector::new().project(event).expect("record projects");
+        let serialized = serde_json::to_value(record.details).expect("details serialize");
+        assert_eq!(serialized["exception"]["safeCode"], "database");
+        assert_eq!(serialized["actionLabel"], "采集智力天梯数据失败");
     }
 
     #[test]
@@ -722,13 +978,10 @@ mod tests {
             (
                 json!({
                     "timestamp": "2026-08-08T08:01:00Z",
-                    "event": "probe-batch-finished",
-                    "trigger": "automatic",
-                    "siteCount": 2,
-                    "modelCount": 3,
-                    "completedCount": 2,
-                    "failedCount": 1,
-                    "skippedCount": 0,
+                    "event": "intelligence-ladder-refresh-finished",
+                    "trigger": "scheduled",
+                    "outcome": "succeeded",
+                    "entryCount": 19,
                 }),
                 "data_collection",
                 "automatic",

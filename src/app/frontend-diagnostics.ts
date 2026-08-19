@@ -3,6 +3,7 @@ import { viewNames, type ViewName } from '../domain/types';
 
 export type FrontendAction =
   | 'navigate'
+  | 'navigation-cancelled'
   | 'select-site'
   | 'open-add-model'
   | 'close-add-model'
@@ -23,7 +24,17 @@ export type FrontendAction =
   | 'operation-history-search-changed'
   | 'open-operation-record'
   | 'close-operation-record'
+  | 'refresh-intelligence-ladder'
+  | 'open-intelligence-settings'
+  | 'close-intelligence-settings'
+  | 'save-intelligence-settings'
+  | 'open-notification-template'
+  | 'apply-notification-template'
+  | 'close-notification-template'
+  | 'discard-notification-settings'
+  | 'cancel-model-sync-confirmation'
   | 'control-activated'
+  | 'control-changed'
   | 'field-focused'
   | 'form-submitted'
   | 'invoke-backend-operation'
@@ -33,11 +44,26 @@ export type FrontendAction =
   | 'modal-cancelled'
   | 'retry-load';
 
-export type FrontendErrorSource = 'react-render' | 'window-error' | 'unhandled-rejection';
+export type FrontendErrorSource =
+  | 'react-render'
+  | 'window-error'
+  | 'unhandled-rejection'
+  | 'backend-invocation'
+  | 'background-task';
 
 interface FrontendActionOptions {
   destinationView?: string;
-  targetType?: 'site' | 'model' | 'probe-record' | 'view' | 'form' | 'control' | 'operation';
+  targetType?:
+    | 'site'
+    | 'model'
+    | 'probe-record'
+    | 'view'
+    | 'form'
+    | 'control'
+    | 'operation'
+    | 'intelligence-ladder'
+    | 'intelligence-settings'
+    | 'notification-template';
   targetId?: string;
 }
 
@@ -133,6 +159,21 @@ export function installFrontendDiagnostics() {
       recordFrontendAction('field-focused', {
         targetType: 'control',
         targetId: controlDiagnosticTarget(field),
+      });
+    },
+    true,
+  );
+  window.addEventListener(
+    'change',
+    (event) => {
+      const control = closestElement(
+        event.target,
+        'input,textarea,select,[contenteditable="true"],[role="switch"],[role="checkbox"],[role="radio"]',
+      );
+      if (!control) return;
+      recordFrontendAction('control-changed', {
+        targetType: 'control',
+        targetId: controlDiagnosticTarget(control),
       });
     },
     true,

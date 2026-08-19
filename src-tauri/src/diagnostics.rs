@@ -51,7 +51,7 @@ pub(crate) struct OperationAudit {
     pub target_id: Option<String>,
     pub parent_id: Option<String>,
     pub change_kind: &'static str,
-    pub field_scope: &'static [&'static str],
+    pub field_scope: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -233,11 +233,27 @@ impl Diagnostics {
         }));
     }
 
-    pub fn mark_clean_exit(&self) {
+    pub(crate) fn record_credential_reconciliation(
+        &self,
+        recovered: u64,
+        failed: u64,
+        remaining: u64,
+    ) {
+        self.append(json!({
+            "level": if failed == 0 && remaining == 0 { "info" } else { "error" },
+            "event": "credential-reconciliation-finished",
+            "recoveredCount": recovered,
+            "failedCount": failed,
+            "remainingCount": remaining,
+        }));
+    }
+
+    pub fn mark_clean_exit(&self, background_tasks_stopped: bool) {
         self.append(json!({
             "level": "info",
             "event": "application-exited",
             "outcome": "clean",
+            "backgroundTasksStopped": background_tasks_stopped,
         }));
         if remove_if_exists(&self.inner.run_marker_file).is_err() {
             self.record_background_error("run-marker", "run_marker_cleanup_failed");
@@ -329,6 +345,19 @@ impl Diagnostics {
         }));
     }
 
+    pub(crate) fn record_model_sync_confirmation_required(
+        &self,
+        operation_id: &str,
+        candidate_removal_count: u64,
+    ) {
+        self.append(json!({
+            "level": "info",
+            "event": "model-sync-confirmation-required",
+            "operationId": operation_id,
+            "candidateRemovalCount": candidate_removal_count,
+        }));
+    }
+
     pub fn record_diagnostics_exported(
         &self,
         operation_id: Option<&str>,
@@ -342,6 +371,14 @@ impl Diagnostics {
             "bundleSizeBytes": bundle_size_bytes,
             "locationKind": "user_selected",
             "requestBodiesExcluded": true,
+        }));
+    }
+
+    pub(crate) fn record_diagnostics_export_cancelled(&self, operation_id: &str) {
+        self.append(json!({
+            "level": "info",
+            "event": "diagnostics-export-cancelled",
+            "operationId": operation_id,
         }));
     }
 
@@ -376,6 +413,7 @@ impl Diagnostics {
 
     pub(crate) fn record_intelligence_ladder_refresh_started(
         &self,
+        operation_id: Option<&str>,
         refresh_id: &str,
         trigger: &'static str,
         revision: u64,
@@ -383,6 +421,7 @@ impl Diagnostics {
         self.append(json!({
             "level": "info",
             "event": "intelligence-ladder-refresh-started",
+            "operationId": operation_id,
             "refreshId": refresh_id,
             "trigger": trigger,
             "revision": revision,
@@ -391,12 +430,14 @@ impl Diagnostics {
 
     pub(crate) fn record_intelligence_ladder_refresh_skipped(
         &self,
+        operation_id: Option<&str>,
         trigger: &'static str,
         reason: &'static str,
     ) {
         self.append(json!({
             "level": if reason == "circuit_open" { "error" } else { "info" },
             "event": "intelligence-ladder-refresh-skipped",
+            "operationId": operation_id,
             "trigger": trigger,
             "reason": reason,
         }));
@@ -405,6 +446,7 @@ impl Diagnostics {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_intelligence_ladder_refresh_finished(
         &self,
+        operation_id: Option<&str>,
         refresh_id: &str,
         trigger: &'static str,
         duration_ms: u64,
@@ -417,6 +459,7 @@ impl Diagnostics {
         self.append(json!({
             "level": if outcome == "succeeded" { "info" } else { "error" },
             "event": "intelligence-ladder-refresh-finished",
+            "operationId": operation_id,
             "refreshId": refresh_id,
             "trigger": trigger,
             "outcome": outcome,
@@ -430,6 +473,7 @@ impl Diagnostics {
 
     pub(crate) fn record_intelligence_ladder_settings_updated(
         &self,
+        operation_id: Option<&str>,
         revision: u64,
         enabled: bool,
         interval_minutes: u32,
@@ -439,6 +483,7 @@ impl Diagnostics {
         self.append(json!({
             "level": "info",
             "event": "intelligence-ladder-settings-updated",
+            "operationId": operation_id,
             "revision": revision,
             "enabled": enabled,
             "intervalMinutes": interval_minutes,
@@ -468,7 +513,7 @@ impl Diagnostics {
             "targetId": target_id,
             "parentId": parent_id,
             "changeKind": audit.map(|value| value.change_kind),
-            "fieldScope": audit.map(|value| value.field_scope),
+            "fieldScope": audit.map(|value| &value.field_scope),
         }));
     }
 
@@ -530,7 +575,22 @@ impl Diagnostics {
             "errorCode": error_code,
             "targetType": audit.map(|value| value.target_type),
             "changeKind": audit.map(|value| value.change_kind),
-            "fieldScope": audit.map(|value| value.field_scope),
+            "fieldScope": audit.map(|value| &value.field_scope),
+        }));
+    }
+
+    pub(crate) fn record_notification_permission_result(
+        &self,
+        operation_id: &str,
+        channel_id: &str,
+        permission: &str,
+    ) {
+        self.append(json!({
+            "level": "info",
+            "event": "notification-permission-result",
+            "operationId": operation_id,
+            "channelId": channel_id,
+            "permission": permission,
         }));
     }
 
@@ -964,22 +1024,26 @@ fn write_diagnostic_settings(path: &Path, settings: DiagnosticSettings) -> io::R
 fn sanitize_log_event(value: Value) -> Option<Value> {
     let event = value.get("event")?.as_str()?;
     let timestamp = value.get("timestamp")?.as_str()?;
-    let session_id = value.get("sessionId").and_then(Value::as_str);
+    OffsetDateTime::parse(timestamp, &Rfc3339).ok()?;
+    let session_id = value
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .and_then(sanitize_audit_identifier);
     match event {
         "application-started" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "applicationVersion": value.get("applicationVersion")?.as_str()?,
-            "operatingSystem": value.get("operatingSystem")?.as_str()?,
-            "architecture": value.get("architecture")?.as_str()?,
+            "applicationVersion": value.get("applicationVersion")?.as_str().and_then(sanitize_runtime_token)?,
+            "operatingSystem": value.get("operatingSystem")?.as_str().and_then(sanitize_runtime_token)?,
+            "architecture": value.get("architecture")?.as_str().and_then(sanitize_runtime_token)?,
             "activeMaxTotalBytes": value.get("activeMaxTotalBytes").and_then(Value::as_u64),
         })),
         "application-startup-completed" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "applicationVersion": value.get("applicationVersion")?.as_str()?,
+            "applicationVersion": value.get("applicationVersion")?.as_str().and_then(sanitize_runtime_token)?,
             "restoredSiteCount": value.get("restoredSiteCount")?.as_u64()?,
             "restoredModelCount": value.get("restoredModelCount")?.as_u64()?,
             "backgroundTasksStarted": value.get("backgroundTasksStarted")?.as_bool()?,
@@ -988,27 +1052,38 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "errorCode": value.get("errorCode")?.as_str()?,
+            "errorCode": value.get("errorCode")?.as_str().and_then(sanitize_runtime_token)?,
+        })),
+        "credential-reconciliation-finished" => Some(json!({
+            "timestamp": timestamp,
+            "sessionId": session_id,
+            "event": event,
+            "recoveredCount": value.get("recoveredCount")?.as_u64()?,
+            "failedCount": value.get("failedCount")?.as_u64()?,
+            "remainingCount": value.get("remainingCount")?.as_u64()?,
         })),
         "application-exited" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
             "outcome": "clean",
+            "backgroundTasksStopped": value
+                .get("backgroundTasksStopped")
+                .and_then(Value::as_bool),
         })),
         "previous-session-terminated-unexpectedly" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "previousSessionId": value.get("previousSessionId").and_then(Value::as_str),
-            "previousStartedAt": value.get("previousStartedAt").and_then(Value::as_str),
+            "previousSessionId": value.get("previousSessionId").and_then(Value::as_str).and_then(sanitize_audit_identifier),
+            "previousStartedAt": value.get("previousStartedAt").and_then(Value::as_str).filter(|value| OffsetDateTime::parse(value, &Rfc3339).is_ok()),
         })),
         "native-panic" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "thread": value.get("thread").and_then(Value::as_str),
-            "sourceFile": value.get("sourceFile").and_then(Value::as_str),
+            "thread": value.get("thread").and_then(Value::as_str).and_then(sanitize_runtime_token),
+            "sourceFile": value.get("sourceFile").and_then(Value::as_str).and_then(sanitize_source_file),
             "line": value.get("line").and_then(Value::as_u64),
             "column": value.get("column").and_then(Value::as_u64),
         })),
@@ -1016,17 +1091,23 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "operationId": value.get("operationId").and_then(Value::as_str),
+            "operationId": optional_operation_id(&value),
         })),
         "diagnostics-exported" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "operationId": value.get("operationId").and_then(Value::as_str),
+            "operationId": optional_operation_id(&value),
             "fileCount": value.get("fileCount")?.as_u64()?,
             "bundleSizeBytes": value.get("bundleSizeBytes")?.as_u64()?,
             "locationKind": value.get("locationKind")?.as_str().filter(|value| *value == "user_selected")?,
             "requestBodiesExcluded": value.get("requestBodiesExcluded")?.as_bool()?,
+        })),
+        "diagnostics-export-cancelled" => Some(json!({
+            "timestamp": timestamp,
+            "sessionId": session_id,
+            "event": event,
+            "operationId": value.get("operationId")?.as_str().filter(|value| is_safe_diagnostic_id(value, "op_"))?,
         })),
         "state-changed" => {
             let revision = value.get("revision")?.as_u64()?;
@@ -1052,7 +1133,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 "timestamp": timestamp,
                 "sessionId": session_id,
                 "event": event,
-                "operationId": value.get("operationId").and_then(Value::as_str),
+                "operationId": optional_operation_id(&value),
                 "revision": revision,
                 "domains": domains,
             }))
@@ -1061,7 +1142,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "operationId": value.get("operationId").and_then(Value::as_str),
+            "operationId": optional_operation_id(&value),
             "deleted": value.get("deleted")?.as_u64()?,
             "revision": value.get("revision")?.as_u64()?,
         })),
@@ -1069,7 +1150,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "operationId": value.get("operationId").and_then(Value::as_str),
+            "operationId": optional_operation_id(&value),
             "deletedFiles": value.get("deletedFiles")?.as_u64()?,
             "reclaimedBytes": value.get("reclaimedBytes")?.as_u64()?,
         })),
@@ -1077,7 +1158,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "operationId": value.get("operationId")?.as_str()?,
+            "operationId": value.get("operationId")?.as_str().filter(|value| is_safe_diagnostic_id(value, "op_"))?,
             "activeMaxTotalBytes": value.get("activeMaxTotalBytes")?.as_u64()?,
             "configuredMaxTotalBytes": value.get("configuredMaxTotalBytes")?.as_u64()?,
             "restartRequired": value.get("restartRequired")?.as_bool()?,
@@ -1122,12 +1203,33 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 )),
             }))
         }
+        "notification-permission-result" => {
+            let channel_id = value.get("channelId")?.as_str()?;
+            let permission = value.get("permission")?.as_str()?;
+            if channel_id != "system"
+                || !matches!(
+                    permission,
+                    "unknown" | "not_requested" | "denied" | "granted" | "unsupported"
+                )
+            {
+                return None;
+            }
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "operationId": value.get("operationId")?.as_str().filter(|value| is_safe_diagnostic_id(value, "op_"))?,
+                "channelId": channel_id,
+                "permission": permission,
+            }))
+        }
         "intelligence-ladder-refresh-started" => {
             let trigger = intelligence_ladder_trigger(value.get("trigger")?.as_str()?)?;
             Some(json!({
                 "timestamp": timestamp,
                 "sessionId": session_id,
                 "event": event,
+                "operationId": value.get("operationId").and_then(Value::as_str).and_then(sanitize_audit_identifier),
                 "refreshId": value.get("refreshId")?.as_str().and_then(sanitize_audit_identifier)?,
                 "trigger": trigger,
                 "revision": value.get("revision")?.as_u64()?,
@@ -1146,6 +1248,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 "timestamp": timestamp,
                 "sessionId": session_id,
                 "event": event,
+                "operationId": value.get("operationId").and_then(Value::as_str).and_then(sanitize_audit_identifier),
                 "trigger": trigger,
                 "reason": reason,
             }))
@@ -1167,6 +1270,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 "timestamp": timestamp,
                 "sessionId": session_id,
                 "event": event,
+                "operationId": value.get("operationId").and_then(Value::as_str).and_then(sanitize_audit_identifier),
                 "refreshId": value.get("refreshId")?.as_str().and_then(sanitize_audit_identifier)?,
                 "trigger": trigger,
                 "outcome": outcome,
@@ -1181,11 +1285,19 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
+            "operationId": value.get("operationId").and_then(Value::as_str).and_then(sanitize_audit_identifier),
             "revision": value.get("revision")?.as_u64()?,
             "enabled": value.get("enabled")?.as_bool()?,
             "intervalMinutes": value.get("intervalMinutes")?.as_u64()?,
             "fetchOnAppStart": value.get("fetchOnAppStart")?.as_bool()?,
             "fetchOnNetworkRestore": value.get("fetchOnNetworkRestore")?.as_bool()?,
+        })),
+        "model-sync-confirmation-required" => Some(json!({
+            "timestamp": timestamp,
+            "sessionId": session_id,
+            "event": event,
+            "operationId": value.get("operationId")?.as_str().filter(|value| is_safe_diagnostic_id(value, "op_"))?,
+            "candidateRemovalCount": value.get("candidateRemovalCount")?.as_u64()?,
         })),
         "window-opened" => {
             let window = value.get("window")?.as_str()?;
@@ -1196,7 +1308,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 "timestamp": timestamp,
                 "sessionId": session_id,
                 "event": event,
-                "operationId": value.get("operationId").and_then(Value::as_str),
+                "operationId": optional_operation_id(&value),
                 "window": window,
             }))
         }
@@ -1215,8 +1327,8 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 "timestamp": timestamp,
                 "sessionId": session_id,
                 "event": event,
-                "operationId": value.get("operationId")?.as_str()?,
-                "operation": value.get("operation")?.as_str()?,
+                "operationId": value.get("operationId")?.as_str().filter(|value| is_safe_diagnostic_id(value, "op_"))?,
+                "operation": value.get("operation")?.as_str().and_then(sanitize_runtime_token)?,
                 "targetType": value.get("targetType").and_then(Value::as_str).filter(|value| is_safe_target_type(value)),
                 "targetId": value.get("targetId").and_then(Value::as_str).and_then(sanitize_audit_identifier),
                 "parentId": value.get("parentId").and_then(Value::as_str).and_then(sanitize_audit_identifier),
@@ -1235,15 +1347,19 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                         .filter(|field| is_safe_audit_field(field))
                         .collect::<Vec<_>>()
                 });
+            let outcome = value.get("outcome")?.as_str()?;
+            if !matches!(outcome, "succeeded" | "failed") {
+                return None;
+            }
             Some(json!({
                 "timestamp": timestamp,
                 "sessionId": session_id,
                 "event": event,
-                "operationId": value.get("operationId")?.as_str()?,
-                "operation": value.get("operation")?.as_str()?,
-                "outcome": value.get("outcome")?.as_str()?,
+                "operationId": value.get("operationId")?.as_str().filter(|value| is_safe_diagnostic_id(value, "op_"))?,
+                "operation": value.get("operation")?.as_str().and_then(sanitize_runtime_token)?,
+                "outcome": outcome,
                 "durationMs": value.get("durationMs")?.as_u64()?,
-                "errorCode": value.get("errorCode").and_then(Value::as_str),
+                "errorCode": value.get("errorCode").and_then(Value::as_str).and_then(sanitize_runtime_token),
                 "targetType": value.get("targetType").and_then(Value::as_str).filter(|value| is_safe_target_type(value)),
                 "changeKind": value.get("changeKind").and_then(Value::as_str).filter(|value| is_safe_change_kind(value)),
                 "fieldScope": field_scope,
@@ -1258,7 +1374,7 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 "timestamp": timestamp,
                 "sessionId": session_id,
                 "event": event,
-                "operationId": value.get("operationId").and_then(Value::as_str),
+                "operationId": optional_operation_id(&value),
                 "trigger": trigger,
                 "siteCount": value.get("siteCount")?.as_u64()?,
                 "modelCount": value.get("modelCount")?.as_u64()?,
@@ -1267,55 +1383,88 @@ fn sanitize_log_event(value: Value) -> Option<Value> {
                 "skippedCount": value.get("skippedCount")?.as_u64()?,
             }))
         }
-        "probe-started" => Some(json!({
-            "timestamp": timestamp,
-            "sessionId": session_id,
-            "event": event,
-            "probeId": value.get("probeId")?.as_str()?,
-            "operationId": value.get("operationId").and_then(Value::as_str),
-            "runKind": value.get("runKind")?.as_str()?,
-            "protocol": value.get("protocol")?.as_str()?,
-        })),
-        "probe-finished" => Some(json!({
-            "timestamp": timestamp,
-            "sessionId": session_id,
-            "event": event,
-            "probeId": value.get("probeId")?.as_str()?,
-            "operationId": value.get("operationId").and_then(Value::as_str),
-            "status": value.get("status")?.as_str()?,
-            "httpStatus": value.get("httpStatus").and_then(Value::as_u64),
-            "durationMs": value.get("durationMs")?.as_u64()?,
-            "errorCode": value.get("errorCode").and_then(Value::as_str),
-        })),
+        "probe-started" => {
+            let run_kind = value.get("runKind")?.as_str()?;
+            let protocol = value.get("protocol")?.as_str()?;
+            if !matches!(run_kind, "manual" | "scheduled" | "trial")
+                || !matches!(
+                    protocol,
+                    "openai-compatible" | "anthropic" | "openai-responses" | "custom-http"
+                )
+            {
+                return None;
+            }
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "probeId": value.get("probeId")?.as_str().and_then(sanitize_audit_identifier)?,
+                "operationId": optional_operation_id(&value),
+                "runKind": run_kind,
+                "protocol": protocol,
+            }))
+        }
+        "probe-finished" => {
+            let status = value.get("status")?.as_str()?;
+            if !matches!(
+                status,
+                "healthy"
+                    | "slow"
+                    | "probing"
+                    | "rate-limited"
+                    | "auth-error"
+                    | "model-unavailable"
+                    | "timeout"
+                    | "protocol-error"
+                    | "validation-failed"
+                    | "upstream-error"
+                    | "network-error"
+                    | "cancelled"
+                    | "unknown"
+            ) {
+                return None;
+            }
+            Some(json!({
+                "timestamp": timestamp,
+                "sessionId": session_id,
+                "event": event,
+                "probeId": value.get("probeId")?.as_str().and_then(sanitize_audit_identifier)?,
+                "operationId": optional_operation_id(&value),
+                "status": status,
+                "httpStatus": value.get("httpStatus").and_then(Value::as_u64),
+                "durationMs": value.get("durationMs")?.as_u64()?,
+                "errorCode": value.get("errorCode").and_then(Value::as_str).and_then(sanitize_runtime_token),
+            }))
+        }
         "background-operation-failed" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "operation": value.get("operation")?.as_str()?,
-            "errorCode": value.get("errorCode")?.as_str()?,
+            "operation": value.get("operation")?.as_str().and_then(sanitize_runtime_token)?,
+            "errorCode": value.get("errorCode")?.as_str().and_then(sanitize_runtime_token)?,
         })),
         "frontend-action" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "actionId": value.get("actionId")?.as_str()?,
-            "action": value.get("action")?.as_str()?.to_owned(),
-            "view": value.get("view")?.as_str()?,
-            "destinationView": value.get("destinationView").and_then(Value::as_str),
-            "targetType": value.get("targetType").and_then(Value::as_str),
+            "actionId": value.get("actionId")?.as_str().filter(|value| is_safe_diagnostic_id(value, "ui_"))?,
+            "action": value.get("action")?.as_str().filter(|value| is_safe_frontend_action(value))?,
+            "view": value.get("view")?.as_str().filter(|value| is_safe_frontend_view(value))?,
+            "destinationView": value.get("destinationView").and_then(Value::as_str).filter(|value| is_safe_frontend_view(value)),
+            "targetType": value.get("targetType").and_then(Value::as_str).filter(|value| is_safe_frontend_target_type(value)),
             "targetId": value.get("targetId").and_then(Value::as_str).and_then(sanitize_audit_identifier),
         })),
         "frontend-error" => Some(json!({
             "timestamp": timestamp,
             "sessionId": session_id,
             "event": event,
-            "errorId": value.get("errorId")?.as_str()?,
-            "source": value.get("source")?.as_str()?,
-            "view": value.get("view")?.as_str()?,
-            "errorName": value.get("errorName")?.as_str()?,
-            "fingerprint": value.get("fingerprint")?.as_str()?,
-            "stackFrames": value.get("stackFrames")?.as_array()?.iter().filter_map(Value::as_str).take(MAX_FRONTEND_STACK_FRAMES).collect::<Vec<_>>(),
-            "lastActionId": value.get("lastActionId").and_then(Value::as_str),
+            "errorId": value.get("errorId")?.as_str().filter(|value| is_safe_diagnostic_id(value, "fe_"))?,
+            "source": value.get("source")?.as_str().filter(|value| is_safe_frontend_error_source(value))?,
+            "view": value.get("view")?.as_str().filter(|value| is_safe_frontend_view(value))?,
+            "errorName": value.get("errorName")?.as_str().and_then(sanitize_runtime_token)?,
+            "fingerprint": value.get("fingerprint")?.as_str().filter(|value| is_safe_fingerprint(value))?,
+            "stackFrames": value.get("stackFrames")?.as_array()?.iter().filter_map(Value::as_str).filter(|value| is_safe_stack_frame(value)).take(MAX_FRONTEND_STACK_FRAMES).collect::<Vec<_>>(),
+            "lastActionId": value.get("lastActionId").and_then(Value::as_str).filter(|value| is_safe_diagnostic_id(value, "ui_") || is_safe_diagnostic_id(value, "op_")),
         })),
         _ => None,
     }
@@ -1398,7 +1547,132 @@ fn is_safe_target_type(value: &str) -> bool {
             | "notification-settings"
             | "notification-channel"
             | "notification-template"
+            | "intelligence-ladder"
+            | "intelligence-settings"
     )
+}
+
+pub(crate) fn is_safe_frontend_view(value: &str) -> bool {
+    matches!(
+        value,
+        "sites"
+            | "add-site"
+            | "site-advanced"
+            | "model-settings"
+            | "general"
+            | "notifications"
+            | "operation-history"
+            | "records"
+            | "intelligence-ladder"
+            | "delete-confirm"
+            | "empty"
+            | "tray-healthy"
+            | "tray-alerts"
+    )
+}
+
+pub(crate) fn is_safe_frontend_action(value: &str) -> bool {
+    matches!(
+        value,
+        "navigate"
+            | "navigation-cancelled"
+            | "select-site"
+            | "open-add-model"
+            | "close-add-model"
+            | "open-probe-record"
+            | "close-probe-record"
+            | "records-mode-changed"
+            | "records-period-changed"
+            | "records-site-filter-changed"
+            | "records-model-filter-changed"
+            | "records-status-filter-changed"
+            | "records-search-changed"
+            | "records-table-changed"
+            | "refresh-probe-records"
+            | "open-clear-probe-records"
+            | "refresh-operation-records"
+            | "load-more-operation-records"
+            | "operation-history-filter-changed"
+            | "operation-history-search-changed"
+            | "open-operation-record"
+            | "close-operation-record"
+            | "refresh-intelligence-ladder"
+            | "open-intelligence-settings"
+            | "close-intelligence-settings"
+            | "save-intelligence-settings"
+            | "open-notification-template"
+            | "apply-notification-template"
+            | "close-notification-template"
+            | "discard-notification-settings"
+            | "cancel-model-sync-confirmation"
+            | "control-activated"
+            | "control-changed"
+            | "field-focused"
+            | "form-submitted"
+            | "invoke-backend-operation"
+            | "setting-changed"
+            | "form-became-dirty"
+            | "form-reset"
+            | "modal-cancelled"
+            | "retry-load"
+    )
+}
+
+pub(crate) fn is_safe_frontend_target_type(value: &str) -> bool {
+    matches!(
+        value,
+        "site"
+            | "model"
+            | "probe-record"
+            | "view"
+            | "form"
+            | "control"
+            | "operation"
+            | "intelligence-ladder"
+            | "intelligence-settings"
+            | "notification-template"
+    )
+}
+
+pub(crate) fn is_safe_frontend_error_source(value: &str) -> bool {
+    matches!(
+        value,
+        "react-render"
+            | "window-error"
+            | "unhandled-rejection"
+            | "backend-invocation"
+            | "background-task"
+    )
+}
+
+fn is_safe_diagnostic_id(value: &str, prefix: &str) -> bool {
+    value.starts_with(prefix) && sanitize_audit_identifier(value).is_some()
+}
+
+fn optional_operation_id(value: &Value) -> Option<String> {
+    value
+        .get("operationId")
+        .and_then(Value::as_str)
+        .filter(|value| is_safe_diagnostic_id(value, "op_"))
+        .map(ToOwned::to_owned)
+}
+
+fn is_safe_fingerprint(value: &str) -> bool {
+    value.len() == 16 && value.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+fn is_safe_stack_frame(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    !value.is_empty()
+        && value.len() <= 240
+        && !value
+            .chars()
+            .any(|character| matches!(character, '\n' | '\r' | '?' | '#'))
+        && !value.contains("://")
+        && !lower.contains("bearer ")
+        && !lower.contains("api_key")
+        && !lower.contains("apikey")
+        && !lower.contains("sk-")
 }
 
 fn sanitize_audit_identifier(value: &str) -> Option<String> {
@@ -1462,6 +1736,10 @@ fn is_safe_audit_field(value: &str) -> bool {
             | "notificationsEnabled"
             | "rules"
             | "templateOverrides"
+            | "autoFetchEnabled"
+            | "autoFetchIntervalMinutes"
+            | "fetchOnAppStart"
+            | "fetchOnNetworkRestore"
     )
 }
 
@@ -1647,6 +1925,7 @@ mod tests {
             "timestamp": "2026-08-13T09:00:00Z",
             "sessionId": "session_fixture",
             "event": "intelligence-ladder-refresh-finished",
+            "operationId": "op_intelligence_refresh",
             "refreshId": "iq_fixture",
             "trigger": "scheduled",
             "outcome": "failed",
@@ -1662,6 +1941,7 @@ mod tests {
         });
 
         let sanitized = sanitize_log_event(value).expect("event is exported");
+        assert_eq!(sanitized["operationId"], "op_intelligence_refresh");
         assert_eq!(sanitized["refreshId"], "iq_fixture");
         assert_eq!(sanitized["errorCode"], "worker_timeout");
         assert!(sanitized.get("rawHtml").is_none());
@@ -1683,6 +1963,78 @@ mod tests {
     }
 
     #[test]
+    fn frontend_export_revalidates_allowlists_and_sensitive_markers() {
+        let safe = sanitize_log_event(json!({
+            "timestamp": "2026-08-18T10:00:00Z",
+            "sessionId": "session_fixture",
+            "event": "frontend-error",
+            "errorId": "fe_fixture",
+            "source": "backend-invocation",
+            "view": "intelligence-ladder",
+            "errorName": "TypeError",
+            "fingerprint": "0123456789abcdef",
+            "stackFrames": ["refresh@src/features/intelligence-ladder/page.tsx:10:2"],
+            "lastActionId": "op_fixture",
+        }))
+        .expect("safe frontend error is exported");
+        assert_eq!(safe["source"], "backend-invocation");
+        assert_eq!(safe["view"], "intelligence-ladder");
+
+        assert!(sanitize_log_event(json!({
+            "timestamp": "2026-08-18T10:00:00Z",
+            "event": "frontend-action",
+            "actionId": "ui_fixture",
+            "action": "secret-sk-token",
+            "view": "sites",
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn export_rejects_untrusted_runtime_tokens_and_keeps_permission_outcomes() {
+        let permission = sanitize_log_event(json!({
+            "timestamp": "2026-08-18T10:00:00Z",
+            "sessionId": "session_fixture",
+            "event": "notification-permission-result",
+            "operationId": "op_permission_fixture",
+            "channelId": "system",
+            "permission": "denied",
+        }))
+        .expect("safe permission outcome is exported");
+        assert_eq!(permission["permission"], "denied");
+
+        assert!(sanitize_log_event(json!({
+            "timestamp": "2026-08-18T10:00:00Z",
+            "sessionId": "session_fixture",
+            "event": "background-operation-failed",
+            "operation": "notification-dispatcher",
+            "errorCode": "secret value copied from an upstream response",
+        }))
+        .is_none());
+        assert!(sanitize_log_event(json!({
+            "timestamp": "not-a-timestamp",
+            "event": "background-operation-failed",
+            "operation": "notification-dispatcher",
+            "errorCode": "notification_dispatcher_panicked",
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn export_keeps_legacy_clean_exit_events_without_shutdown_status() {
+        let clean_exit = sanitize_log_event(json!({
+            "timestamp": "2026-08-18T10:00:00Z",
+            "sessionId": "session_fixture",
+            "event": "application-exited",
+            "outcome": "clean",
+        }))
+        .expect("legacy clean exit is exported");
+
+        assert_eq!(clean_exit["outcome"], "clean");
+        assert!(clean_exit["backgroundTasksStopped"].is_null());
+    }
+
+    #[test]
     fn detects_an_unclean_previous_session_and_removes_the_marker_on_clean_exit() {
         let directory = tempfile::tempdir().expect("temporary directory created");
         let first = Diagnostics::initialize(directory.path()).expect("first session starts");
@@ -1700,7 +2052,7 @@ mod tests {
             .expect("unclean session is recorded");
         assert_eq!(unexpected["previousSessionId"], first_session_id);
 
-        second.mark_clean_exit();
+        second.mark_clean_exit(true);
         assert!(!directory.path().join(RUN_MARKER_FILE_NAME).exists());
     }
 
@@ -1741,7 +2093,7 @@ mod tests {
                 target_id: Some("site_fixture".to_owned()),
                 parent_id: None,
                 change_kind: "update",
-                field_scope: &["baseUrl", "credential"],
+                field_scope: vec!["baseUrl", "credential"],
             }),
         );
         diagnostics.record_frontend_action(

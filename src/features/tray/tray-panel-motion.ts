@@ -1,6 +1,7 @@
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useEffect, useState } from 'react';
+import { reportFrontendError } from '../../app/frontend-diagnostics';
 
 export const STATUS_PANEL_OPENING_EVENT = 'relaypulse://status-panel-opening';
 export const STATUS_PANEL_CLOSING_EVENT = 'relaypulse://status-panel-closing';
@@ -50,13 +51,17 @@ export function useTrayPanelMotion(): TrayPanelMotion {
     void Promise.all([
       listen(STATUS_PANEL_OPENING_EVENT, openPanel),
       listen(STATUS_PANEL_CLOSING_EVENT, closePanel),
-    ]).then((listeners) => {
-      if (disposed) {
-        listeners.forEach((stop) => stop());
-      } else {
-        unlisten = listeners;
-      }
-    });
+    ])
+      .then((listeners) => {
+        if (disposed) {
+          listeners.forEach((stop) => stop());
+        } else {
+          unlisten = listeners;
+        }
+      })
+      .catch((error) => {
+        reportFrontendError('background-task', error);
+      });
 
     return () => {
       disposed = true;

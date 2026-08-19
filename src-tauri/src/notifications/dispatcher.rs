@@ -1,5 +1,6 @@
-use std::time::Duration;
+use std::{panic::AssertUnwindSafe, time::Duration};
 
+use futures_util::FutureExt;
 use tauri::AppHandle;
 
 use crate::diagnostics::Diagnostics;
@@ -18,51 +19,71 @@ pub fn start_dispatcher(
     let cleanup_service = service.clone();
     let cleanup_diagnostics = diagnostics.clone();
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            if cleanup_service
-                .cleanup_terminal_notifications()
-                .await
-                .is_err()
-            {
-                if let Some(diagnostics) = &cleanup_diagnostics {
-                    diagnostics.record_background_error(
-                        "notification-cleanup",
-                        "notification_settings_unavailable",
-                    );
+        let task = async {
+            let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if cleanup_service
+                    .cleanup_terminal_notifications()
+                    .await
+                    .is_err()
+                {
+                    if let Some(diagnostics) = &cleanup_diagnostics {
+                        diagnostics.record_background_error(
+                            "notification-cleanup",
+                            "notification_settings_unavailable",
+                        );
+                    }
                 }
+            }
+        };
+        if AssertUnwindSafe(task).catch_unwind().await.is_err() {
+            if let Some(diagnostics) = &cleanup_diagnostics {
+                diagnostics.record_background_error(
+                    "notification-cleanup",
+                    "notification_cleanup_panicked",
+                );
             }
         }
     });
 
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(DISPATCH_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            for _ in 0..MAX_BATCH_SIZE {
-                match service
-                    .dispatch_next(|delivery| system_dispatch(&app, delivery))
-                    .await
-                {
-                    Ok(Some(report)) => {
-                        if let Some(diagnostics) = &diagnostics {
-                            diagnostics.record_notification_dispatch(&report);
+        let task = async {
+            let mut interval = tokio::time::interval(DISPATCH_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                for _ in 0..MAX_BATCH_SIZE {
+                    match service
+                        .dispatch_next(|delivery| system_dispatch(&app, delivery))
+                        .await
+                    {
+                        Ok(Some(report)) => {
+                            if let Some(diagnostics) = &diagnostics {
+                                diagnostics.record_notification_dispatch(&report);
+                            }
                         }
-                    }
-                    Ok(None) => break,
-                    Err(_) => {
-                        if let Some(diagnostics) = &diagnostics {
-                            diagnostics.record_background_error(
-                                "notification-dispatcher",
-                                "notification_settings_unavailable",
-                            );
+                        Ok(None) => break,
+                        Err(_) => {
+                            if let Some(diagnostics) = &diagnostics {
+                                diagnostics.record_background_error(
+                                    "notification-dispatcher",
+                                    "notification_settings_unavailable",
+                                );
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
+            }
+        };
+        if AssertUnwindSafe(task).catch_unwind().await.is_err() {
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.record_background_error(
+                    "notification-dispatcher",
+                    "notification_dispatcher_panicked",
+                );
             }
         }
     });

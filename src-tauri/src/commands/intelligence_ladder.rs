@@ -9,7 +9,11 @@ use crate::{
     startup::BackendState,
 };
 
-use super::{CommandError, CommandResult, StateChangedDto};
+use super::{
+    audit_with_fields, observed_user_command, observed_user_command_with_result_audit,
+    record_command_failure, CommandError, CommandResult, StateChangedDto,
+};
+use crate::diagnostics::OperationAudit;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,11 +82,14 @@ pub enum IntelligenceRefreshResultDto {
 pub async fn get_intelligence_ladder_snapshot(
     state: State<'_, BackendState>,
 ) -> CommandResult<IntelligenceLadderSnapshotDto> {
-    let result = service(&state)?
-        .snapshot()
-        .await
-        .map(Into::into)
-        .map_err(Into::into);
+    let result = async {
+        service(&state)?
+            .snapshot()
+            .await
+            .map(Into::into)
+            .map_err(Into::into)
+    }
+    .await;
     record_command_failure(&state, "intelligence-ladder-snapshot", &result);
     result
 }
@@ -90,63 +97,126 @@ pub async fn get_intelligence_ladder_snapshot(
 #[tauri::command]
 pub async fn refresh_intelligence_ladder(
     state: State<'_, BackendState>,
+    operation_id: Option<String>,
 ) -> CommandResult<IntelligenceRefreshResultDto> {
-    let result = service(&state)?
-        .refresh()
-        .await
-        .map(|result| match result {
-            IntelligenceRefreshResult::Started => IntelligenceRefreshResultDto::Started,
-            IntelligenceRefreshResult::AlreadyRunning => {
-                IntelligenceRefreshResultDto::AlreadyRunning
-            }
-            IntelligenceRefreshResult::ScraperUnavailable => {
-                IntelligenceRefreshResultDto::ScraperUnavailable
-            }
-        })
-        .map_err(Into::into);
-    record_command_failure(&state, "intelligence-ladder-refresh-command", &result);
-    result
+    let diagnostics = state.diagnostics().cloned();
+    observed_user_command(
+        diagnostics,
+        "refresh-intelligence-ladder",
+        operation_id,
+        None,
+        |operation_id| async move {
+            service(&state)?
+                .refresh_with_operation(Some(operation_id))
+                .await
+                .map(|result| match result {
+                    IntelligenceRefreshResult::Started => IntelligenceRefreshResultDto::Started,
+                    IntelligenceRefreshResult::AlreadyRunning => {
+                        IntelligenceRefreshResultDto::AlreadyRunning
+                    }
+                    IntelligenceRefreshResult::ScraperUnavailable => {
+                        IntelligenceRefreshResultDto::ScraperUnavailable
+                    }
+                })
+                .map_err(Into::into)
+        },
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn update_intelligence_auto_fetch_settings(
     state: State<'_, BackendState>,
     settings: IntelligenceAutoFetchSettingsDto,
+    operation_id: Option<String>,
 ) -> CommandResult<IntelligenceLadderSnapshotDto> {
-    let result = service(&state)?
-        .update_settings(settings.into())
-        .await
-        .map(Into::into)
-        .map_err(Into::into);
-    record_command_failure(&state, "intelligence-ladder-settings-command", &result);
-    result
+    let diagnostics = state.diagnostics().cloned();
+    let audit = OperationAudit {
+        target_type: "intelligence-settings",
+        target_id: None,
+        parent_id: None,
+        change_kind: "update",
+        field_scope: vec![
+            "autoFetchEnabled",
+            "autoFetchIntervalMinutes",
+            "fetchOnAppStart",
+            "fetchOnNetworkRestore",
+        ],
+    };
+    observed_user_command_with_result_audit(
+        diagnostics,
+        "update-intelligence-auto-fetch-settings",
+        operation_id,
+        audit.clone(),
+        |operation_id| async move {
+            let service = service(&state)?;
+            let previous = service.snapshot().await?;
+            let result = service
+                .update_settings_with_operation(settings.into(), Some(operation_id))
+                .await
+                .map_err(CommandError::from)?;
+            let mut fields = Vec::new();
+            if previous.settings.enabled != result.settings.enabled {
+                fields.push("autoFetchEnabled");
+            }
+            if previous.settings.interval_minutes != result.settings.interval_minutes {
+                fields.push("autoFetchIntervalMinutes");
+            }
+            if previous.settings.fetch_on_app_start != result.settings.fetch_on_app_start {
+                fields.push("fetchOnAppStart");
+            }
+            if previous.settings.fetch_on_network_restore
+                != result.settings.fetch_on_network_restore
+            {
+                fields.push("fetchOnNetworkRestore");
+            }
+            Ok((result.into(), audit_with_fields(audit, fields)))
+        },
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn notify_intelligence_network_restored(
     state: State<'_, BackendState>,
 ) -> CommandResult<()> {
-    let result = service(&state)?
-        .network_restored()
-        .await
-        .map_err(Into::into);
+    let result = async {
+        service(&state)?
+            .network_restored()
+            .await
+            .map_err(Into::into)
+    }
+    .await;
     record_command_failure(&state, "intelligence-ladder-network-restore", &result);
     result
 }
 
-pub(crate) fn publish_intelligence_ladder_changed(app: &tauri::AppHandle, revision: u64) {
+pub(crate) fn publish_intelligence_ladder_changed(
+    app: &tauri::AppHandle,
+    revision: u64,
+    operation_id: Option<&str>,
+) {
     if let Some(state) = app.try_state::<BackendState>() {
         if let Some(diagnostics) = state.diagnostics() {
-            diagnostics.record_state_change(None, revision, &["intelligence-ladder"]);
+            diagnostics.record_state_change(operation_id, revision, &["intelligence-ladder"]);
         }
     }
-    let _ = app.emit(
-        "relaypulse://state-changed",
-        StateChangedDto {
-            revision,
-            domains: vec!["intelligence-ladder"],
-        },
-    );
+    if app
+        .emit(
+            "relaypulse://state-changed",
+            StateChangedDto {
+                revision,
+                domains: vec!["intelligence-ladder"],
+            },
+        )
+        .is_err()
+    {
+        crate::desktop::record_desktop_error(
+            app,
+            "intelligence-ladder-state-change-event",
+            "state_change_emit_failed",
+        );
+    }
 }
 
 fn service(state: &BackendState) -> CommandResult<IntelligenceLadderService> {
@@ -158,16 +228,6 @@ fn service(state: &BackendState) -> CommandResult<IntelligenceLadderService> {
         diagnostics.record_background_error("intelligence-ladder-service", "database_unavailable");
     }
     Err(CommandError::database_unavailable())
-}
-
-fn record_command_failure<T>(
-    state: &BackendState,
-    operation: &'static str,
-    result: &CommandResult<T>,
-) {
-    if let (Err(error), Some(diagnostics)) = (result, state.diagnostics()) {
-        diagnostics.record_background_error(operation, error.code);
-    }
 }
 
 impl From<IntelligenceAutoFetchSettingsDto> for IntelligenceAutoFetchSettings {

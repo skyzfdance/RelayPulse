@@ -52,7 +52,9 @@ describe('TauriIntelligenceLadderDataSource', () => {
     ).resolves.toMatchObject({ revision: 5 });
 
     expect(invoke).toHaveBeenNthCalledWith(1, 'get_intelligence_ladder_snapshot', undefined);
-    expect(invoke).toHaveBeenNthCalledWith(2, 'refresh_intelligence_ladder', undefined);
+    expect(invoke).toHaveBeenNthCalledWith(2, 'refresh_intelligence_ladder', {
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
+    });
     expect(invoke).toHaveBeenNthCalledWith(3, 'update_intelligence_auto_fetch_settings', {
       settings: {
         enabled: true,
@@ -60,6 +62,7 @@ describe('TauriIntelligenceLadderDataSource', () => {
         fetchOnAppStart: true,
         fetchOnNetworkRestore: false,
       },
+      operationId: expect.stringMatching(/^op_[a-zA-Z0-9_-]+$/),
     });
   });
 

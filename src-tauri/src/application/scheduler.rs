@@ -170,18 +170,19 @@ pub struct SchedulerHandle {
 }
 
 impl SchedulerHandle {
-    pub async fn shutdown(mut self) {
+    pub async fn shutdown(mut self) -> bool {
         let _ = self.shutdown.send(true);
         let Some(mut runner) = self.runner.take() else {
-            return;
+            return true;
         };
         match timeout(HANDLE_SHUTDOWN_TIMEOUT, &mut runner).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => true,
             Ok(Err(_)) => {
                 if let Some(diagnostics) = &self.diagnostics {
                     diagnostics
                         .record_background_error("scheduler-shutdown", "scheduler_runner_failed");
                 }
+                false
             }
             Err(_) => {
                 if let Some(diagnostics) = &self.diagnostics {
@@ -192,6 +193,7 @@ impl SchedulerHandle {
                 }
                 runner.abort();
                 let _ = runner.await;
+                false
             }
         }
     }

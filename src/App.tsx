@@ -8,7 +8,7 @@ import type { CSSProperties, PropsWithChildren } from 'react';
 import { DesktopMenuBridge } from './app/DesktopMenuBridge';
 import { MainShell } from './app/MainShell';
 import { RelayPulseProvider } from './app/RelayPulseProvider';
-import { recordFrontendAction } from './app/frontend-diagnostics';
+import { recordFrontendAction, reportFrontendError } from './app/frontend-diagnostics';
 import { useRelayPulse } from './app/relay-pulse-context';
 import {
   defaultViewForWindow,
@@ -53,10 +53,14 @@ function useActiveView() {
       if (!disposed && isViewAllowedForWindow(windowLabel, event.payload.view)) {
         navigateToView(event.payload.view);
       }
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else stop = unlisten;
-    });
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stop = unlisten;
+      })
+      .catch((error) => {
+        reportFrontendError('background-task', error);
+      });
     return () => {
       disposed = true;
       stop?.();

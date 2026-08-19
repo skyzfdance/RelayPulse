@@ -39,6 +39,10 @@ interface RuleRow extends NotificationEventCatalogItem {
   enabled: boolean;
 }
 
+function templateDiagnosticTarget(eventType: string, channelId: string) {
+  return `template-${eventType}-${channelId}`.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 128);
+}
+
 const permissionPresentation: Record<
   NotificationPermission,
   { label: string; status: 'success' | 'warning' | 'error' | 'default' }
@@ -431,7 +435,13 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
                   aria-label={`编辑 ${event.displayName} 通知模板`}
                   className="size-8! text-rp-primary!"
                   icon={<EditOutlined aria-hidden="true" />}
-                  onClick={() => setActiveTemplate({ eventType: event.eventType, channelId })}
+                  onClick={() => {
+                    recordFrontendAction('open-notification-template', {
+                      targetType: 'notification-template',
+                      targetId: templateDiagnosticTarget(event.eventType, channelId),
+                    });
+                    setActiveTemplate({ eventType: event.eventType, channelId });
+                  }}
                   shape="circle"
                   type="text"
                 />
@@ -640,6 +650,10 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
             <Button
               disabled={!dirty || saving}
               onClick={() => {
+                recordFrontendAction('discard-notification-settings', {
+                  targetType: 'form',
+                  targetId: 'notification-settings',
+                });
                 if (savedDraft) setDraft(savedDraft);
                 setTemplateDrafts(savedTemplates);
               }}
@@ -667,11 +681,24 @@ export function NotificationsPage({ dataSource }: NotificationsPageProps) {
               event={activeTemplateEvent}
               key={templateSelectionKey(activeTemplate.eventType, activeTemplate.channelId)}
               onApply={(selection) => {
+                recordFrontendAction('apply-notification-template', {
+                  targetType: 'notification-template',
+                  targetId: templateDiagnosticTarget(selection.eventType, selection.channelId),
+                });
                 const key = templateSelectionKey(selection.eventType, selection.channelId);
                 setTemplateDrafts((current) => ({ ...current, [key]: selection }));
                 setActiveTemplate(null);
               }}
-              onClose={() => setActiveTemplate(null)}
+              onClose={() => {
+                recordFrontendAction('close-notification-template', {
+                  targetType: 'notification-template',
+                  targetId: templateDiagnosticTarget(
+                    activeTemplate.eventType,
+                    activeTemplate.channelId,
+                  ),
+                });
+                setActiveTemplate(null);
+              }}
               onDirtyChange={setTemplateEditorDirty}
               onTest={testTemplateDraft}
               markers={snapshot.markerCatalog}

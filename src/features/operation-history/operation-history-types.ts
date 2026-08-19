@@ -68,12 +68,8 @@ export interface LifecycleDetails {
 
 export interface DataCollectionDetails {
   kind: 'data_collection';
-  siteCount: number;
-  modelCount: number;
-  completedCount: number;
-  failedCount: number;
-  skippedCount: number;
-  canOpenProbeRecords: boolean;
+  source: 'intelligence_ladder';
+  entryCount?: number;
 }
 
 export type DiagnosticsDetails =

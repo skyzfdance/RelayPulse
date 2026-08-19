@@ -11,7 +11,10 @@
 /playwright-report/
 
 # Local planning, design, and implementation documentation
-/docs/
+/docs/*
+!/docs/assets/
+!/docs/assets/**
+/DIAGNOSTICS.md
 
 # Local development files
 *.local

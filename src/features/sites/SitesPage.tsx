@@ -850,7 +850,13 @@ const SiteDetail = forwardRef<
           cancelText="取消同步"
           confirmLoading={syncingModels}
           cancelButtonProps={{ disabled: syncingModels }}
-          onCancel={() => setPendingModelRemovals(null)}
+          onCancel={() => {
+            recordFrontendAction('cancel-model-sync-confirmation', {
+              targetType: 'site',
+              targetId: site.id,
+            });
+            setPendingModelRemovals(null);
+          }}
           onOk={() => void syncModels(pendingModelRemovals.map((model) => model.id))}
         >
           <Alert

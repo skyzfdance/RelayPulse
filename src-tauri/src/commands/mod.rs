@@ -21,13 +21,14 @@ use crate::{
         OperationRecordDetailsDto, MAX_LOG_TOTAL_MEGABYTES, MIN_LOG_TOTAL_MEGABYTES,
     },
     domain::{
-        CredentialIntent, EntityId, HttpMethod, ParameterType, ProbeMode, ProbeResult, ProbeStatus,
-        ResponseMode, SecretValue, SiteProtocol, ThemeMode, TimestampMs, TrayAction,
+        CredentialIntent, EntityId, HttpMethod, ParameterType, ProbeMode, ProbeParameter,
+        ProbePolicy, ProbeResult, ProbeStatus, RequestHeader, ResponseMode, SecretValue,
+        SiteProtocol, ThemeMode, TimestampMs, TrayAction,
     },
     notifications::{
         request_system_notification_permission, send_system_notification,
         send_test_system_notification, system_channel_snapshot, NotificationChannelSnapshot,
-        NotificationError, NotificationService, NotificationSettingsSnapshot,
+        NotificationError, NotificationRule, NotificationService, NotificationSettingsSnapshot,
         NotificationSettingsUpdate, NotificationTemplateDraft, NotificationTemplateTestResult,
     },
     startup::BackendState,
@@ -874,9 +875,14 @@ pub fn record_frontend_error(
 
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, BackendState>) -> CommandResult<SnapshotDto> {
-    let value = service(&state)?.snapshot().await?;
-    state.set_continue_in_background(value.general_settings.continue_in_background);
-    snapshot(&value)
+    let result = async {
+        let value = service(&state)?.snapshot().await?;
+        state.set_continue_in_background(value.general_settings.continue_in_background);
+        snapshot(&value)
+    }
+    .await;
+    record_command_failure(&state, "get-snapshot", &result);
+    result
 }
 
 #[tauri::command]
@@ -884,16 +890,21 @@ pub async fn get_site(
     state: State<'_, BackendState>,
     id: String,
 ) -> CommandResult<Option<SiteDto>> {
-    let service = service(&state)?;
-    let site_id = entity_id(id, "id")?;
-    let snapshot = service.snapshot().await?;
-    let latest = latest_probes(&snapshot);
-    Ok(snapshot
-        .sites
-        .into_iter()
-        .enumerate()
-        .find(|(_, site)| site.site.id == site_id)
-        .map(|(index, site)| site_dto(site, priority(index), &latest)))
+    let result = async {
+        let service = service(&state)?;
+        let site_id = entity_id(id, "id")?;
+        let snapshot = service.snapshot().await?;
+        let latest = latest_probes(&snapshot);
+        Ok(snapshot
+            .sites
+            .into_iter()
+            .enumerate()
+            .find(|(_, site)| site.site.id == site_id)
+            .map(|(index, site)| site_dto(site, priority(index), &latest)))
+    }
+    .await;
+    record_command_failure(&state, "get-site", &result);
+    result
 }
 
 #[tauri::command]
@@ -913,7 +924,7 @@ pub async fn create_site(
             target_id: None,
             parent_id: None,
             change_kind: "create",
-            field_scope: &["name", "protocol", "baseUrl", "credential", "enabled"],
+            field_scope: vec!["name", "protocol", "baseUrl", "credential", "enabled"],
         }),
         |operation_id| async move {
             let CredentialIntentDto::Replace { secret } = input.credential else {
@@ -949,24 +960,29 @@ pub async fn update_site(
         target_id: Some(id.clone()),
         parent_id: None,
         change_kind: "update",
-        field_scope: &["name", "protocol", "baseUrl", "credential"],
+        field_scope: vec!["name", "protocol", "baseUrl", "credential"],
     };
-    observed_user_command(
+    observed_user_command_with_result_audit(
         diagnostics,
         "update-site",
         operation_id,
-        Some(audit),
+        audit.clone(),
         |operation_id| async move {
-            let result = service(&state)?
+            let service = service(&state)?;
+            let site_id = entity_id(id, "id")?;
+            let previous = service.snapshot().await?;
+            let result = service
                 .update_site(UpdateSite {
-                    site_id: entity_id(id, "id")?,
+                    site_id: site_id.clone(),
                     name: input.name,
                     protocol: input.protocol.into(),
                     base_url: input.base_url,
                     credential: input.credential.try_into()?,
                 })
                 .await?;
-            changed(&app, &result, Some(&operation_id), &["sites"])
+            let fields = changed_site_fields(&previous, &result, &site_id);
+            let value = changed(&app, &result, Some(&operation_id), &["sites"])?;
+            Ok((value, audit_with_fields(audit, fields)))
         },
     )
     .await
@@ -985,7 +1001,7 @@ pub async fn delete_site(
         target_id: Some(id.clone()),
         parent_id: None,
         change_kind: "delete",
-        field_scope: &["siteConfiguration"],
+        field_scope: vec!["siteConfiguration"],
     };
     observed_user_command(
         diagnostics,
@@ -1017,7 +1033,7 @@ pub async fn reorder_sites(
             target_id: None,
             parent_id: None,
             change_kind: "reorder",
-            field_scope: &["priority"],
+            field_scope: vec!["priority"],
         }),
         |operation_id| async move {
             let site_ids = site_ids
@@ -1045,7 +1061,7 @@ pub async fn set_site_enabled(
         target_id: Some(id.clone()),
         parent_id: None,
         change_kind: if enabled { "toggle-on" } else { "toggle-off" },
-        field_scope: &["enabled"],
+        field_scope: vec!["enabled"],
     };
     observed_user_command(
         diagnostics,
@@ -1076,7 +1092,7 @@ pub async fn create_model(
         target_id: None,
         parent_id: Some(site_id.clone()),
         change_kind: "create",
-        field_scope: &["name", "enabled"],
+        field_scope: vec!["name", "enabled"],
     };
     observed_user_command(
         diagnostics,
@@ -1111,7 +1127,7 @@ pub async fn delete_model(
         target_id: Some(model_id.clone()),
         parent_id: Some(site_id.clone()),
         change_kind: "delete",
-        field_scope: &["modelConfiguration"],
+        field_scope: vec!["modelConfiguration"],
     };
     observed_user_command(
         diagnostics,
@@ -1151,7 +1167,7 @@ pub async fn set_model_enabled(
         target_id: Some(model_id.clone()),
         parent_id: Some(site_id.clone()),
         change_kind: if enabled { "toggle-on" } else { "toggle-off" },
-        field_scope: &["enabled"],
+        field_scope: vec!["enabled"],
     };
     observed_user_command(
         diagnostics,
@@ -1186,7 +1202,7 @@ pub async fn update_site_advanced(
         target_id: Some(id.clone()),
         parent_id: None,
         change_kind: "update",
-        field_scope: &[
+        field_scope: vec![
             "modelsEndpoint",
             "probeEndpoint",
             "probeIntervalMinutes",
@@ -1197,15 +1213,18 @@ pub async fn update_site_advanced(
             "headers",
         ],
     };
-    observed_user_command(
+    observed_user_command_with_result_audit(
         diagnostics,
         "update-site-advanced",
         operation_id,
-        Some(audit),
+        audit.clone(),
         |operation_id| async move {
-            let result = service(&state)?
+            let service = service(&state)?;
+            let site_id = entity_id(id, "id")?;
+            let previous = service.snapshot().await?;
+            let result = service
                 .update_site_advanced(SiteAdvancedUpdate {
-                    site_id: entity_id(id, "id")?,
+                    site_id: site_id.clone(),
                     models_endpoint: input.models_endpoint,
                     probe_endpoint: input.probe_endpoint,
                     interval_minutes: input.probe_interval_minutes,
@@ -1226,7 +1245,9 @@ pub async fn update_site_advanced(
                         .collect(),
                 })
                 .await?;
-            changed(&app, &result, Some(&operation_id), &["sites"])
+            let fields = changed_site_advanced_fields(&previous, &result, &site_id);
+            let value = changed(&app, &result, Some(&operation_id), &["sites"])?;
+            Ok((value, audit_with_fields(audit, fields)))
         },
     )
     .await
@@ -1270,9 +1291,9 @@ async fn update_probe_settings(
         "update-site-probe-settings"
     };
     let field_scope = if model_id.is_some() {
-        &["probeSettings"][..]
+        vec!["probeSettings"]
     } else {
-        &["defaultProbeSettings"][..]
+        vec!["defaultProbeSettings"]
     };
     let audit = OperationAudit {
         target_type: if model_id.is_some() { "model" } else { "site" },
@@ -1281,23 +1302,39 @@ async fn update_probe_settings(
         change_kind: "update",
         field_scope,
     };
-    observed_user_command(
+    observed_user_command_with_result_audit(
         diagnostics,
         operation,
         operation_id,
-        Some(audit),
+        audit.clone(),
         |operation_id| async move {
-            let result = service(&state)?
+            let service = service(&state)?;
+            let parsed_site_id = entity_id(site_id, "site_id")?;
+            let parsed_model_id = model_id.map(|id| entity_id(id, "model_id")).transpose()?;
+            let previous = service.snapshot().await?;
+            let result = service
                 .update_probe_settings(ProbeSettingsUpdate {
-                    site_id: entity_id(site_id, "site_id")?,
-                    model_id: model_id.map(|id| entity_id(id, "model_id")).transpose()?,
+                    site_id: parsed_site_id.clone(),
+                    model_id: parsed_model_id.clone(),
                     mode: settings.mode.into(),
                     max_output_tokens: settings.max_output_tokens,
                     prompt: settings.prompt,
                     parameters: settings.parameters.into_iter().map(Into::into).collect(),
                 })
                 .await?;
-            changed(&app, &result, Some(&operation_id), &["sites"])
+            let settings_changed = probe_settings_changed(
+                &previous,
+                &result,
+                &parsed_site_id,
+                parsed_model_id.as_ref(),
+            );
+            let fields = if settings_changed {
+                audit.field_scope.clone()
+            } else {
+                Vec::new()
+            };
+            let value = changed(&app, &result, Some(&operation_id), &["sites"])?;
+            Ok((value, audit_with_fields(audit, fields)))
         },
     )
     .await
@@ -1318,24 +1355,35 @@ pub async fn update_model_custom_probe_settings(
         target_id: Some(model_id.clone()),
         parent_id: Some(site_id.clone()),
         change_kind: "update",
-        field_scope: &["customProbe"],
+        field_scope: vec!["customProbe"],
     };
-    observed_user_command(
+    observed_user_command_with_result_audit(
         diagnostics,
         "update-model-custom-probe-settings",
         operation_id,
-        Some(audit),
+        audit.clone(),
         |operation_id| async move {
-            let result = service(&state)?
+            let service = service(&state)?;
+            let parsed_site_id = entity_id(site_id, "site_id")?;
+            let parsed_model_id = entity_id(model_id, "model_id")?;
+            let previous = service.snapshot().await?;
+            let result = service
                 .update_custom_probe(CustomProbeUpdate {
-                    site_id: entity_id(site_id, "site_id")?,
-                    model_id: entity_id(model_id, "model_id")?,
+                    site_id: parsed_site_id.clone(),
+                    model_id: parsed_model_id.clone(),
                     enabled: settings.enabled,
                     endpoint: settings.endpoint,
                     parameters: settings.parameters.into_iter().map(Into::into).collect(),
                 })
                 .await?;
-            changed(&app, &result, Some(&operation_id), &["sites"])
+            let fields =
+                if custom_probe_changed(&previous, &result, &parsed_site_id, &parsed_model_id) {
+                    audit.field_scope.clone()
+                } else {
+                    Vec::new()
+                };
+            let value = changed(&app, &result, Some(&operation_id), &["sites"])?;
+            Ok((value, audit_with_fields(audit, fields)))
         },
     )
     .await
@@ -1349,25 +1397,25 @@ pub async fn update_general_settings(
     operation_id: Option<String>,
 ) -> CommandResult<SnapshotDto> {
     let diagnostics = state.diagnostics().cloned();
-    observed_user_command(
+    let audit = OperationAudit {
+        target_type: "settings",
+        target_id: None,
+        parent_id: None,
+        change_kind: "update",
+        field_scope: vec![
+            "launchAtStartup",
+            "continueInBackground",
+            "trayAction",
+            "theme",
+            "historyRetentionDays",
+            "diagnosticCaptureEnabled",
+        ],
+    };
+    observed_user_command_with_result_audit(
         diagnostics,
         "update-general-settings",
         operation_id,
-        Some(OperationAudit {
-            target_type: "settings",
-            target_id: None,
-            parent_id: None,
-            change_kind: "update",
-            field_scope: &[
-                "launchAtStartup",
-                "continueInBackground",
-                "trayAction",
-                "theme",
-                "language",
-                "historyRetentionDays",
-                "diagnosticCaptureEnabled",
-            ],
-        }),
+        audit.clone(),
         |operation_id| async move {
             let service = service(&state)?;
             let previous = service.snapshot().await?;
@@ -1375,7 +1423,15 @@ pub async fn update_general_settings(
             desktop::set_autostart(&app, settings.launch_at_startup)
                 .map_err(|_| CommandError::desktop_operation_failed())?;
             if desktop::set_tray_enabled(&app, tray_action == TrayAction::Panel).is_err() {
-                let _ = desktop::set_autostart(&app, previous.general_settings.launch_at_startup);
+                if desktop::set_autostart(&app, previous.general_settings.launch_at_startup)
+                    .is_err()
+                {
+                    desktop::record_desktop_error(
+                        &app,
+                        "general-settings-rollback",
+                        "autostart_rollback_failed",
+                    );
+                }
                 return Err(CommandError::desktop_operation_failed());
             }
             let result = match service
@@ -1391,17 +1447,34 @@ pub async fn update_general_settings(
             {
                 Ok(result) => result,
                 Err(error) => {
-                    let _ =
-                        desktop::set_autostart(&app, previous.general_settings.launch_at_startup);
-                    let _ = desktop::set_tray_enabled(
+                    if desktop::set_autostart(&app, previous.general_settings.launch_at_startup)
+                        .is_err()
+                    {
+                        desktop::record_desktop_error(
+                            &app,
+                            "general-settings-rollback",
+                            "autostart_rollback_failed",
+                        );
+                    }
+                    if desktop::set_tray_enabled(
                         &app,
                         previous.general_settings.tray_action == TrayAction::Panel,
-                    );
+                    )
+                    .is_err()
+                    {
+                        desktop::record_desktop_error(
+                            &app,
+                            "general-settings-rollback",
+                            "tray_rollback_failed",
+                        );
+                    }
                     return Err(error.into());
                 }
             };
             state.set_continue_in_background(result.general_settings.continue_in_background);
-            changed(&app, &result, Some(&operation_id), &["settings"])
+            let fields = general_settings_changed_fields(&previous, &result);
+            let value = changed(&app, &result, Some(&operation_id), &["settings"])?;
+            Ok((value, audit_with_fields(audit, fields)))
         },
     )
     .await
@@ -1409,7 +1482,14 @@ pub async fn update_general_settings(
 
 #[tauri::command]
 pub async fn refresh_probe_records(state: State<'_, BackendState>) -> CommandResult<SnapshotDto> {
-    get_snapshot(state).await
+    let result = async {
+        let value = service(&state)?.snapshot().await?;
+        state.set_continue_in_background(value.general_settings.continue_in_background);
+        snapshot(&value)
+    }
+    .await;
+    record_command_failure(&state, "refresh-probe-records", &result);
+    result
 }
 
 #[tauri::command]
@@ -1428,7 +1508,7 @@ pub async fn clear_probe_records(
             target_id: None,
             parent_id: None,
             change_kind: "clear",
-            field_scope: &["records"],
+            field_scope: vec!["records"],
         }),
         |operation_id| async move {
             let (cleanup, result) = service(&state)?.clear_probe_records().await?;
@@ -1474,11 +1554,15 @@ pub async fn open_log_directory(
 
 #[tauri::command]
 pub fn get_log_statistics(state: State<'_, BackendState>) -> CommandResult<LogStatistics> {
-    state
-        .diagnostics()
-        .ok_or_else(CommandError::diagnostics_unavailable)?
-        .statistics()
-        .map_err(|_| CommandError::diagnostics_io_failed())
+    let result = (|| {
+        state
+            .diagnostics()
+            .ok_or_else(CommandError::diagnostics_unavailable)?
+            .statistics()
+            .map_err(|_| CommandError::diagnostics_io_failed())
+    })();
+    record_command_failure(&state, "get-log-statistics", &result);
+    result
 }
 
 #[tauri::command]
@@ -1486,15 +1570,20 @@ pub async fn list_operation_records(
     state: State<'_, BackendState>,
     query: OperationHistoryQueryDto,
 ) -> CommandResult<OperationHistoryPageDto> {
-    let diagnostics = state.diagnostics().cloned().ok_or_else(|| {
-        CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
-    })?;
-    tokio::task::spawn_blocking(move || diagnostics.list_operation_records(query))
-        .await
-        .map_err(|_| {
+    let result = async {
+        let diagnostics = state.diagnostics().cloned().ok_or_else(|| {
             CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
-        })?
-        .map_err(CommandError::operation_history)
+        })?;
+        tokio::task::spawn_blocking(move || diagnostics.list_operation_records(query))
+            .await
+            .map_err(|_| {
+                CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
+            })?
+            .map_err(CommandError::operation_history)
+    }
+    .await;
+    record_command_failure(&state, "list-operation-records", &result);
+    result
 }
 
 #[tauri::command]
@@ -1502,15 +1591,20 @@ pub async fn get_operation_record_details(
     state: State<'_, BackendState>,
     record_ref: String,
 ) -> CommandResult<OperationRecordDetailsDto> {
-    let diagnostics = state.diagnostics().cloned().ok_or_else(|| {
-        CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
-    })?;
-    tokio::task::spawn_blocking(move || diagnostics.get_operation_record_details(&record_ref))
-        .await
-        .map_err(|_| {
+    let result = async {
+        let diagnostics = state.diagnostics().cloned().ok_or_else(|| {
             CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
-        })?
-        .map_err(CommandError::operation_history)
+        })?;
+        tokio::task::spawn_blocking(move || diagnostics.get_operation_record_details(&record_ref))
+            .await
+            .map_err(|_| {
+                CommandError::operation_history(OperationHistoryQueryError::BackendUnavailable)
+            })?
+            .map_err(CommandError::operation_history)
+    }
+    .await;
+    record_command_failure(&state, "get-operation-record-details", &result);
+    result
 }
 
 #[tauri::command]
@@ -1533,7 +1627,7 @@ pub async fn set_diagnostic_log_limit(
             target_id: None,
             parent_id: None,
             change_kind: "update",
-            field_scope: &["diagnosticLogMaxMegabytes"],
+            field_scope: vec!["diagnosticLogMaxMegabytes"],
         }),
         |operation_id| async move {
             if !(MIN_LOG_TOTAL_MEGABYTES..=MAX_LOG_TOTAL_MEGABYTES).contains(&max_total_megabytes) {
@@ -1618,6 +1712,7 @@ pub async fn export_diagnostics(
                 .add_filter("压缩诊断包", &["gz"])
                 .blocking_save_file();
             let Some(selected) = selected else {
+                action_diagnostics.record_diagnostics_export_cancelled(&event_operation_id);
                 return Ok(DiagnosticExportDto {
                     status: "cancelled",
                     path: None,
@@ -1711,7 +1806,7 @@ pub async fn refresh_models(
         target_id: Some(site_id.clone()),
         parent_id: None,
         change_kind: "sync",
-        field_scope: &["catalog"],
+        field_scope: vec!["catalog"],
     };
     observed_user_command(
         diagnostics,
@@ -1737,6 +1832,12 @@ pub async fn refresh_models(
                     )?,
                 }),
                 ModelSyncOutcome::ConfirmationRequired { removed_models } => {
+                    if let Some(diagnostics) = state.diagnostics() {
+                        diagnostics.record_model_sync_confirmation_required(
+                            &operation_id,
+                            u64::try_from(removed_models.len()).unwrap_or(u64::MAX),
+                        );
+                    }
                     Ok(ModelSyncResultDto::ConfirmationRequired {
                         removed_models: removed_models
                             .into_iter()
@@ -1846,10 +1947,15 @@ pub async fn get_notification_settings(
     app: tauri::AppHandle,
     state: State<'_, BackendState>,
 ) -> CommandResult<NotificationSettingsSnapshot> {
-    notification_service(&state)?
-        .settings(system_channel_snapshot(&app))
-        .await
-        .map_err(Into::into)
+    let result = async {
+        notification_service(&state)?
+            .settings(system_channel_snapshot(&app))
+            .await
+            .map_err(Into::into)
+    }
+    .await;
+    record_command_failure(&state, "get-notification-settings", &result);
+    result
 }
 
 #[tauri::command]
@@ -1860,23 +1966,27 @@ pub async fn update_notification_settings(
     operation_id: Option<String>,
 ) -> CommandResult<NotificationSettingsSnapshot> {
     let diagnostics = state.diagnostics().cloned();
-    observed_user_command(
+    let audit = OperationAudit {
+        target_type: "notification-settings",
+        target_id: None,
+        parent_id: None,
+        change_kind: "update",
+        field_scope: vec!["notificationsEnabled", "rules", "templateOverrides"],
+    };
+    observed_user_command_with_result_audit(
         diagnostics,
         "update-notification-settings",
         operation_id,
-        Some(OperationAudit {
-            target_type: "notification-settings",
-            target_id: None,
-            parent_id: None,
-            change_kind: "update",
-            field_scope: &["notificationsEnabled", "rules", "templateOverrides"],
-        }),
+        audit.clone(),
         |operation_id| async move {
-            let (snapshot, app_revision) = notification_service(&state)?
+            let service = notification_service(&state)?;
+            let previous = service.settings(system_channel_snapshot(&app)).await?;
+            let (snapshot, app_revision) = service
                 .update_settings(settings, system_channel_snapshot(&app))
                 .await?;
             notification_changed(&app, app_revision, Some(&operation_id));
-            Ok(snapshot)
+            let fields = notification_settings_changed_fields(&previous, &snapshot);
+            Ok((snapshot, audit_with_fields(audit, fields)))
         },
     )
     .await
@@ -1899,7 +2009,7 @@ pub async fn send_test_notification(
             target_id: Some(channel_id.clone()),
             parent_id: None,
             change_kind: "test",
-            field_scope: &[],
+            field_scope: vec![],
         }),
         |_operation_id| async move {
             let service = notification_service(&state)?;
@@ -1931,7 +2041,7 @@ pub async fn send_notification_template_test(
             target_id: None,
             parent_id: None,
             change_kind: "test",
-            field_scope: &[],
+            field_scope: vec![],
         }),
         |operation_id| async move {
             let service = notification_service(&state)?;
@@ -1972,10 +2082,18 @@ pub async fn request_notification_permission(
             target_id: Some(channel_id.clone()),
             parent_id: None,
             change_kind: "request",
-            field_scope: &[],
+            field_scope: vec![],
         }),
-        |_operation_id| async move {
-            request_system_notification_permission(&app, &channel_id).map_err(Into::into)
+        |operation_id| async move {
+            let result = request_system_notification_permission(&app, &channel_id)?;
+            if let Some(diagnostics) = state.diagnostics() {
+                diagnostics.record_notification_permission_result(
+                    &operation_id,
+                    &result.id,
+                    result.permission.as_str(),
+                );
+            }
+            Ok(result)
         },
     )
     .await
@@ -1995,19 +2113,38 @@ fn notification_service(state: &State<'_, BackendState>) -> CommandResult<Notifi
         .ok_or_else(CommandError::database_unavailable)
 }
 
+fn record_command_failure<T>(
+    state: &BackendState,
+    operation: &'static str,
+    result: &CommandResult<T>,
+) {
+    if let (Err(error), Some(diagnostics)) = (result, state.diagnostics()) {
+        diagnostics.record_background_error(operation, error.code);
+    }
+}
+
 fn notification_changed(app: &tauri::AppHandle, revision: u64, operation_id: Option<&str>) {
     if let Some(state) = app.try_state::<BackendState>() {
         if let Some(diagnostics) = state.diagnostics() {
             diagnostics.record_state_change(operation_id, revision, &["notifications"]);
         }
     }
-    let _ = app.emit(
-        "relaypulse://state-changed",
-        StateChangedDto {
-            revision,
-            domains: vec!["notifications"],
-        },
-    );
+    if app
+        .emit(
+            "relaypulse://state-changed",
+            StateChangedDto {
+                revision,
+                domains: vec!["notifications"],
+            },
+        )
+        .is_err()
+    {
+        desktop::record_desktop_error(
+            app,
+            "notification-state-change-event",
+            "state_change_emit_failed",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2037,6 +2174,56 @@ where
     let operation_id = resolve_operation_id(requested_operation_id)?;
     let future = work(operation_id.clone());
     observed_command_with_id(diagnostics, operation, operation_id, audit, future).await
+}
+
+async fn observed_user_command_with_result_audit<T, W, F>(
+    diagnostics: Option<Diagnostics>,
+    operation: &'static str,
+    requested_operation_id: Option<String>,
+    attempted_audit: OperationAudit,
+    work: W,
+) -> CommandResult<T>
+where
+    W: FnOnce(String) -> F,
+    F: Future<Output = CommandResult<(T, OperationAudit)>>,
+{
+    let operation_id = resolve_operation_id(requested_operation_id)?;
+    let started = Instant::now();
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.record_operation_started(&operation_id, operation, Some(&attempted_audit));
+    }
+    match work(operation_id.clone()).await {
+        Ok((value, actual_audit)) => {
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.record_operation_finished(
+                    &operation_id,
+                    operation,
+                    elapsed_millis(started),
+                    None,
+                    Some(&actual_audit),
+                );
+            }
+            Ok(value)
+        }
+        Err(mut error) => {
+            error.operation_id = Some(operation_id.clone());
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.record_operation_finished(
+                    &operation_id,
+                    operation,
+                    elapsed_millis(started),
+                    Some(error.code),
+                    Some(&attempted_audit),
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+fn audit_with_fields(mut audit: OperationAudit, field_scope: Vec<&'static str>) -> OperationAudit {
+    audit.field_scope = field_scope;
+    audit
 }
 
 async fn observed_command_with_id<T, F>(
@@ -2132,80 +2319,28 @@ fn validate_runtime_token(value: &str, field: &'static str, max: usize) -> Comma
 }
 
 fn validate_view(value: &str, field: &'static str) -> CommandResult<()> {
-    if !matches!(
-        value,
-        "sites"
-            | "add-site"
-            | "site-advanced"
-            | "model-settings"
-            | "general"
-            | "notifications"
-            | "operation-history"
-            | "records"
-            | "delete-confirm"
-            | "empty"
-            | "tray-healthy"
-            | "tray-alerts"
-    ) {
+    if !crate::diagnostics::is_safe_frontend_view(value) {
         return Err(invalid_field(field));
     }
     Ok(())
 }
 
 fn validate_frontend_action(value: &str) -> CommandResult<()> {
-    if !matches!(
-        value,
-        "navigate"
-            | "select-site"
-            | "open-add-model"
-            | "close-add-model"
-            | "open-probe-record"
-            | "close-probe-record"
-            | "records-mode-changed"
-            | "records-period-changed"
-            | "records-site-filter-changed"
-            | "records-model-filter-changed"
-            | "records-status-filter-changed"
-            | "records-search-changed"
-            | "records-table-changed"
-            | "refresh-probe-records"
-            | "open-clear-probe-records"
-            | "refresh-operation-records"
-            | "load-more-operation-records"
-            | "operation-history-filter-changed"
-            | "operation-history-search-changed"
-            | "open-operation-record"
-            | "close-operation-record"
-            | "control-activated"
-            | "field-focused"
-            | "form-submitted"
-            | "invoke-backend-operation"
-            | "setting-changed"
-            | "form-became-dirty"
-            | "form-reset"
-            | "modal-cancelled"
-            | "retry-load"
-    ) {
+    if !crate::diagnostics::is_safe_frontend_action(value) {
         return Err(invalid_field("action"));
     }
     Ok(())
 }
 
 fn validate_frontend_target_type(value: &str) -> CommandResult<()> {
-    if !matches!(
-        value,
-        "site" | "model" | "probe-record" | "view" | "form" | "control" | "operation"
-    ) {
+    if !crate::diagnostics::is_safe_frontend_target_type(value) {
         return Err(invalid_field("target_type"));
     }
     Ok(())
 }
 
 fn validate_frontend_error_source(value: &str) -> CommandResult<()> {
-    if !matches!(
-        value,
-        "react-render" | "window-error" | "unhandled-rejection"
-    ) {
+    if !crate::diagnostics::is_safe_frontend_error_source(value) {
         return Err(invalid_field("source"));
     }
     Ok(())
@@ -2247,31 +2382,282 @@ fn invalid_field(field: &'static str) -> CommandError {
     }
 }
 
+fn changed_site_fields(
+    previous: &ApplicationSnapshot,
+    current: &ApplicationSnapshot,
+    site_id: &EntityId,
+) -> Vec<&'static str> {
+    let (Some(previous), Some(current)) =
+        (find_site(previous, site_id), find_site(current, site_id))
+    else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    if previous.site.name != current.site.name {
+        fields.push("name");
+    }
+    if previous.site.protocol != current.site.protocol {
+        fields.push("protocol");
+    }
+    if previous.site.base_url != current.site.base_url {
+        fields.push("baseUrl");
+    }
+    if previous.site.credential_ref != current.site.credential_ref {
+        fields.push("credential");
+    }
+    fields
+}
+
+fn changed_site_advanced_fields(
+    previous: &ApplicationSnapshot,
+    current: &ApplicationSnapshot,
+    site_id: &EntityId,
+) -> Vec<&'static str> {
+    let (Some(previous), Some(current)) =
+        (find_site(previous, site_id), find_site(current, site_id))
+    else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    if previous.site.models_endpoint != current.site.models_endpoint {
+        fields.push("modelsEndpoint");
+    }
+    if previous.site.probe_endpoint != current.site.probe_endpoint {
+        fields.push("probeEndpoint");
+    }
+    if previous.site.timing.interval_minutes != current.site.timing.interval_minutes {
+        fields.push("probeIntervalMinutes");
+    }
+    if previous.site.timing.slow_first_token_ms != current.site.timing.slow_first_token_ms {
+        fields.push("slowFirstTokenSeconds");
+    }
+    if previous.site.timing.slow_total_ms != current.site.timing.slow_total_ms {
+        fields.push("slowTotalSeconds");
+    }
+    if previous.site.timing.failure_threshold != current.site.timing.failure_threshold {
+        fields.push("failureThreshold");
+    }
+    if previous.site.timing.recovery_threshold != current.site.timing.recovery_threshold {
+        fields.push("recoveryThreshold");
+    }
+    if !headers_equal(&previous.headers, &current.headers) {
+        fields.push("headers");
+    }
+    fields
+}
+
+fn probe_settings_changed(
+    previous: &ApplicationSnapshot,
+    current: &ApplicationSnapshot,
+    site_id: &EntityId,
+    model_id: Option<&EntityId>,
+) -> bool {
+    let (Some(previous), Some(current)) =
+        (find_site(previous, site_id), find_site(current, site_id))
+    else {
+        return false;
+    };
+    match model_id {
+        Some(model_id) => {
+            let previous = find_model(previous, model_id);
+            let current = find_model(current, model_id);
+            match (previous, current) {
+                (Some(previous), Some(current)) => {
+                    !probe_policy_equal(previous.policy.as_ref(), current.policy.as_ref())
+                        || !probe_parameters_equal(&previous.parameters, &current.parameters)
+                }
+                _ => false,
+            }
+        }
+        None => {
+            !probe_policy_equal(
+                Some(&previous.default_policy),
+                Some(&current.default_policy),
+            ) || !probe_parameters_equal(&previous.default_parameters, &current.default_parameters)
+        }
+    }
+}
+
+fn custom_probe_changed(
+    previous: &ApplicationSnapshot,
+    current: &ApplicationSnapshot,
+    site_id: &EntityId,
+    model_id: &EntityId,
+) -> bool {
+    let (Some(previous), Some(current)) = (
+        find_site(previous, site_id).and_then(|site| find_model(site, model_id)),
+        find_site(current, site_id).and_then(|site| find_model(site, model_id)),
+    ) else {
+        return false;
+    };
+    let custom_fields_equal = match (previous.policy.as_ref(), current.policy.as_ref()) {
+        (Some(previous), Some(current)) => {
+            previous.custom_endpoint == current.custom_endpoint
+                && previous.custom_method == current.custom_method
+                && previous.custom_stream_enabled == current.custom_stream_enabled
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    !custom_fields_equal || !probe_parameters_equal(&previous.parameters, &current.parameters)
+}
+
+fn general_settings_changed_fields(
+    previous: &ApplicationSnapshot,
+    current: &ApplicationSnapshot,
+) -> Vec<&'static str> {
+    let previous = &previous.general_settings;
+    let current = &current.general_settings;
+    let mut fields = Vec::new();
+    if previous.launch_at_startup != current.launch_at_startup {
+        fields.push("launchAtStartup");
+    }
+    if previous.continue_in_background != current.continue_in_background {
+        fields.push("continueInBackground");
+    }
+    if previous.tray_action != current.tray_action {
+        fields.push("trayAction");
+    }
+    if previous.theme != current.theme {
+        fields.push("theme");
+    }
+    if previous.history_retention_days != current.history_retention_days {
+        fields.push("historyRetentionDays");
+    }
+    if previous.diagnostic_capture_enabled != current.diagnostic_capture_enabled {
+        fields.push("diagnosticCaptureEnabled");
+    }
+    fields
+}
+
+fn notification_settings_changed_fields(
+    previous: &NotificationSettingsSnapshot,
+    current: &NotificationSettingsSnapshot,
+) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    if previous.notifications_enabled != current.notifications_enabled {
+        fields.push("notificationsEnabled");
+    }
+    if !notification_rule_controls_equal(&previous.rules, &current.rules) {
+        fields.push("rules");
+    }
+    if !notification_templates_equal(&previous.rules, &current.rules) {
+        fields.push("templateOverrides");
+    }
+    fields
+}
+
+fn find_site<'a>(
+    snapshot: &'a ApplicationSnapshot,
+    site_id: &EntityId,
+) -> Option<&'a SiteAggregate> {
+    snapshot.sites.iter().find(|site| &site.site.id == site_id)
+}
+
+fn find_model<'a>(site: &'a SiteAggregate, model_id: &EntityId) -> Option<&'a ModelAggregate> {
+    site.models.iter().find(|model| &model.model.id == model_id)
+}
+
+fn headers_equal(previous: &[RequestHeader], current: &[RequestHeader]) -> bool {
+    previous.len() == current.len()
+        && previous.iter().zip(current).all(|(previous, current)| {
+            previous.name == current.name
+                && previous.value_template == current.value_template
+                && previous.sort_order == current.sort_order
+        })
+}
+
+fn probe_policy_equal(previous: Option<&ProbePolicy>, current: Option<&ProbePolicy>) -> bool {
+    match (previous, current) {
+        (Some(previous), Some(current)) => {
+            previous.mode == current.mode
+                && previous.max_output_tokens == current.max_output_tokens
+                && previous.prompt == current.prompt
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn probe_parameters_equal(previous: &[ProbeParameter], current: &[ProbeParameter]) -> bool {
+    previous.len() == current.len()
+        && previous.iter().zip(current).all(|(previous, current)| {
+            previous.key == current.key
+                && previous.value_type == current.value_type
+                && previous.value_json == current.value_json
+                && previous.sort_order == current.sort_order
+        })
+}
+
+fn notification_rule_controls_equal(
+    previous: &[NotificationRule],
+    current: &[NotificationRule],
+) -> bool {
+    previous.len() == current.len()
+        && previous.iter().all(|previous| {
+            current.iter().any(|current| {
+                previous.event_type == current.event_type
+                    && previous.enabled == current.enabled
+                    && previous.channel_ids == current.channel_ids
+            })
+        })
+}
+
+fn notification_templates_equal(
+    previous: &[NotificationRule],
+    current: &[NotificationRule],
+) -> bool {
+    previous.len() == current.len()
+        && previous.iter().all(|previous| {
+            current.iter().any(|current| {
+                previous.event_type == current.event_type
+                    && previous.template_overrides == current.template_overrides
+            })
+        })
+}
+
 fn changed(
     app: &tauri::AppHandle,
     value: &ApplicationSnapshot,
     operation_id: Option<&str>,
     domains: &[&'static str],
 ) -> CommandResult<SnapshotDto> {
-    let _ = desktop::update_status_projection(app, value);
+    if desktop::update_status_projection(app, value).is_err() {
+        desktop::record_desktop_error(
+            app,
+            "status-projection-update",
+            "status_projection_update_failed",
+        );
+    }
     let value = snapshot(value)?;
     if let Some(state) = app.try_state::<BackendState>() {
         if let Some(diagnostics) = state.diagnostics() {
             diagnostics.record_state_change(operation_id, value.revision, domains);
         }
     }
-    let _ = app.emit(
-        "relaypulse://state-changed",
-        StateChangedDto {
-            revision: value.revision,
-            domains: domains.to_vec(),
-        },
-    );
+    if app
+        .emit(
+            "relaypulse://state-changed",
+            StateChangedDto {
+                revision: value.revision,
+                domains: domains.to_vec(),
+            },
+        )
+        .is_err()
+    {
+        desktop::record_desktop_error(app, "state-change-event", "state_change_emit_failed");
+    }
     Ok(value)
 }
 
 pub(crate) fn publish_background_snapshot(app: &tauri::AppHandle, value: &ApplicationSnapshot) {
-    let _ = changed(app, value, None, &["records", "status", "sites"]);
+    if changed(app, value, None, &["records", "status", "sites"]).is_err() {
+        desktop::record_desktop_error(
+            app,
+            "background-snapshot-publish",
+            "snapshot_projection_failed",
+        );
+    }
 }
 
 fn snapshot(value: &ApplicationSnapshot) -> CommandResult<SnapshotDto> {
@@ -2806,6 +3192,7 @@ mod tests {
         assert!(resolve_operation_id(Some("wrong_fixture".to_owned())).is_err());
         assert!(validate_view("notifications", "view").is_ok());
         assert!(validate_view("operation-history", "view").is_ok());
+        assert!(validate_view("intelligence-ladder", "view").is_ok());
         assert!(validate_frontend_action("open-probe-record").is_ok());
         assert!(validate_frontend_action("open-operation-record").is_ok());
         assert!(validate_frontend_action("clicked secret button").is_err());
@@ -2832,5 +3219,63 @@ mod tests {
         assert!(log.contains(&operation_id));
         assert!(log.contains(r#""operation":"fixture-operation""#));
         assert!(log.contains(r#""outcome":"failed""#));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn successful_operations_record_actual_fields_instead_of_the_attempted_scope() {
+        let directory = tempfile::tempdir().expect("temporary directory created");
+        let diagnostics = Diagnostics::initialize(directory.path()).expect("diagnostics starts");
+        let attempted = OperationAudit {
+            target_type: "site",
+            target_id: Some("site_fixture".to_owned()),
+            parent_id: None,
+            change_kind: "update",
+            field_scope: vec!["name", "baseUrl", "credential"],
+        };
+
+        observed_user_command_with_result_audit(
+            Some(diagnostics),
+            "update-site",
+            Some("op_actual_fields".to_owned()),
+            attempted.clone(),
+            |_| async move { Ok(((), audit_with_fields(attempted, vec!["baseUrl"]))) },
+        )
+        .await
+        .expect("fixture operation succeeds");
+
+        let log = std::fs::read_to_string(directory.path().join("logs/relaypulse.log"))
+            .expect("diagnostic log reads");
+        let events = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| event["operationId"] == "op_actual_fields")
+            .collect::<Vec<_>>();
+        let started = events
+            .iter()
+            .find(|event| event["event"] == "operation-started")
+            .expect("start event exists");
+        let finished = events
+            .iter()
+            .find(|event| event["event"] == "operation-finished")
+            .expect("finish event exists");
+        assert_eq!(
+            started["fieldScope"],
+            serde_json::json!(["name", "baseUrl", "credential"])
+        );
+        assert_eq!(finished["fieldScope"], serde_json::json!(["baseUrl"]));
+    }
+
+    #[test]
+    fn read_failures_are_recorded_with_safe_command_and_error_codes() {
+        let directory = tempfile::tempdir().expect("temporary directory created");
+        let state = BackendState::initialize(directory.path().to_path_buf());
+        let result = Err::<(), _>(CommandError::database_unavailable());
+
+        record_command_failure(&state, "get-snapshot", &result);
+
+        let log = std::fs::read_to_string(directory.path().join("logs/relaypulse.log"))
+            .expect("diagnostic log reads");
+        assert!(log.contains(r#""operation":"get-snapshot""#));
+        assert!(log.contains(r#""errorCode":"database_unavailable""#));
     }
 }

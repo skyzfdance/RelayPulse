@@ -45,6 +45,18 @@ pub enum NotificationPermission {
     Unsupported,
 }
 
+impl NotificationPermission {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::NotRequested => "not_requested",
+            Self::Denied => "denied",
+            Self::Granted => "granted",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationEventTone {

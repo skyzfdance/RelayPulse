@@ -22,7 +22,11 @@ import type {
   TraySnapshot,
   UpdateSiteInput,
 } from '../domain/types';
-import { beginBackendOperation } from '../app/frontend-diagnostics';
+import {
+  beginBackendOperation,
+  reportFrontendError,
+  type FrontendErrorSource,
+} from '../app/frontend-diagnostics';
 import { formatLocalTime } from '../domain/time';
 
 type AuthoritativeSnapshot = Pick<
@@ -72,8 +76,12 @@ export class TauriRelayPulseDataSource implements RelayPulseDataSource {
     private readonly subscribeCommand: SubscribeToChanges = subscribeToTauriChanges,
   ) {}
 
-  subscribeToChanges(listener: (event: StateChangedEvent) => void): Promise<() => void> {
-    return this.subscribeCommand(listener);
+  async subscribeToChanges(listener: (event: StateChangedEvent) => void): Promise<() => void> {
+    try {
+      return await this.subscribeCommand(listener);
+    } catch (cause) {
+      throw backendError(cause, 'background-task');
+    }
   }
 
   async getSnapshot(): Promise<AppSnapshot> {
@@ -318,9 +326,13 @@ function viewSnapshot(snapshot: AuthoritativeSnapshot): AppSnapshot {
   };
 }
 
-export function backendError(cause: unknown): Error {
+export function backendError(
+  cause: unknown,
+  source: FrontendErrorSource = 'backend-invocation',
+): Error {
   if (cause instanceof RelayPulseBackendError) return cause;
   if (isBackendErrorPayload(cause)) return new RelayPulseBackendError(cause);
+  reportFrontendError(source, cause);
   return new RelayPulseBackendError({
     code: 'internal',
     category: 'internal',

@@ -1,4 +1,4 @@
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::{NotificationExt, PermissionState};
 
@@ -164,7 +164,11 @@ fn system_permission(_app: &AppHandle) -> NotificationPermission {
             | AuthorizationStatus::Provisional
             | AuthorizationStatus::Ephemeral,
         ) => NotificationPermission::Granted,
-        Ok(AuthorizationStatus::Unknown) | Err(_) => NotificationPermission::Unknown,
+        Ok(AuthorizationStatus::Unknown) => NotificationPermission::Unknown,
+        Err(_) => {
+            record_permission_query_failure(_app);
+            NotificationPermission::Unknown
+        }
     }
 }
 
@@ -176,7 +180,21 @@ fn system_permission(app: &AppHandle) -> NotificationPermission {
         Ok(PermissionState::Prompt | PermissionState::PromptWithRationale) => {
             NotificationPermission::NotRequested
         }
-        Err(_) => NotificationPermission::Unknown,
+        Err(_) => {
+            record_permission_query_failure(app);
+            NotificationPermission::Unknown
+        }
+    }
+}
+
+fn record_permission_query_failure(app: &AppHandle) {
+    if let Some(state) = app.try_state::<crate::startup::BackendState>() {
+        if let Some(diagnostics) = state.diagnostics() {
+            diagnostics.record_background_error(
+                "notification-permission-query",
+                "notification_permission_query_failed",
+            );
+        }
     }
 }
 

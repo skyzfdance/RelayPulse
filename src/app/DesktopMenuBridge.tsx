@@ -2,6 +2,7 @@ import { App as AntdApp } from 'antd';
 import { isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useEffect, useRef } from 'react';
+import { reportFrontendError } from './frontend-diagnostics';
 import { useRelayPulse } from './relay-pulse-context';
 
 type DesktopMenuAction = 'open-log-directory' | 'export-diagnostics';
@@ -51,10 +52,14 @@ export function DesktopMenuBridge() {
 
     void listen<DesktopMenuActionEvent>('relaypulse://desktop-menu-action', (event) => {
       if (!disposed) void runAction(event.payload.action);
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else stop = unlisten;
-    });
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stop = unlisten;
+      })
+      .catch((error) => {
+        reportFrontendError('background-task', error);
+      });
     return () => {
       disposed = true;
       stop?.();

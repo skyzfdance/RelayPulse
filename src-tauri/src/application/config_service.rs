@@ -824,15 +824,28 @@ impl ApplicationService {
         site.base_url = input.base_url.trim().to_owned();
         site.updated_at = self.clock.now();
 
-        match input.credential {
+        let cleanup_pending = match input.credential {
             CredentialIntent::Keep => {
                 self.repository.update_site(site).await?;
+                false
             }
             CredentialIntent::Replace(secret) => {
-                self.credentials.replace_site_secret(site, secret).await?;
+                self.credentials
+                    .replace_site_secret(site, secret)
+                    .await?
+                    .cleanup_pending
             }
             CredentialIntent::Clear => {
-                self.credentials.clear_site_secret(site).await?;
+                self.credentials
+                    .clear_site_secret(site)
+                    .await?
+                    .cleanup_pending
+            }
+        };
+        if cleanup_pending {
+            if let Some(diagnostics) = &self.diagnostics {
+                diagnostics
+                    .record_background_error("credential-cleanup", "credential_cleanup_pending");
             }
         }
         self.snapshot().await

@@ -103,6 +103,26 @@ describe('OperationHistoryPage', () => {
     expect(drawer).not.toHaveTextContent('sessionId');
   });
 
+  it('shows intelligence collection details without probe batch fields', async () => {
+    const user = userEvent.setup();
+    renderPage(new MockOperationHistoryDataSource());
+
+    const detailButton = await screen.findByRole('button', {
+      name: '查看 采集智力天梯数据 操作详情',
+    });
+    await user.click(detailButton);
+
+    const drawer = await screen.findByRole('dialog');
+    expect(await within(drawer).findByText('采集摘要')).toBeVisible();
+    expect(within(drawer).getByText('数据来源')).toBeVisible();
+    expect(within(drawer).getAllByText('智力天梯').length).toBeGreaterThan(0);
+    expect(within(drawer).getByText('19 个')).toBeVisible();
+    expect(within(drawer).getByRole('button', { name: /查看智力天梯/ })).toBeVisible();
+    expect(drawer).not.toHaveTextContent('处理站点');
+    expect(drawer).not.toHaveTextContent('处理模型');
+    expect(drawer).not.toHaveTextContent('查看探测记录');
+  });
+
   it('distinguishes an empty dataset from an initial query failure', async () => {
     const { unmount } = renderPage(new MockOperationHistoryDataSource('empty'));
     expect(await screen.findByText('暂无操作记录')).toBeVisible();

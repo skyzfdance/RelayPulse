@@ -20,6 +20,11 @@ export function navigateToView(view: ViewName) {
       }),
     )
   ) {
+    recordFrontendAction('navigation-cancelled', {
+      destinationView: view,
+      targetType: 'view',
+      targetId: view,
+    });
     return;
   }
   if (currentView !== view) {

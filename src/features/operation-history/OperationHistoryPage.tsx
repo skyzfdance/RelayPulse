@@ -149,29 +149,25 @@ function LifecycleDetailSection({ detail }: { detail: LifecycleDetails }) {
 }
 
 function CollectionDetailSection({ detail }: { detail: DataCollectionDetails }) {
+  const rows: { label: string; value: string | number }[] = [
+    { label: '数据来源', value: '智力天梯' },
+  ];
+  if (detail.entryCount !== undefined) {
+    rows.push({ label: '采集条目', value: `${detail.entryCount} 个` });
+  }
   return (
     <section className={drawerSectionClass}>
       <h3>采集摘要</h3>
-      <DetailRows
-        rows={[
-          { label: '处理站点', value: `${detail.siteCount} 个` },
-          { label: '处理模型', value: `${detail.modelCount} 个` },
-          { label: '已完成', value: `${detail.completedCount} 个` },
-          { label: '失败', value: `${detail.failedCount} 个` },
-          { label: '跳过', value: `${detail.skippedCount} 个` },
-        ]}
-      />
-      {detail.canOpenProbeRecords ? (
-        <Button
-          type="link"
-          className="mt-2 px-0!"
-          icon={<ArrowRightOutlined />}
-          iconPlacement="end"
-          onClick={() => navigateToView('records')}
-        >
-          查看探测记录
-        </Button>
-      ) : null}
+      <DetailRows rows={rows} />
+      <Button
+        type="link"
+        className="mt-2 px-0!"
+        icon={<ArrowRightOutlined />}
+        iconPlacement="end"
+        onClick={() => navigateToView('intelligence-ladder')}
+      >
+        查看智力天梯
+      </Button>
     </section>
   );
 }

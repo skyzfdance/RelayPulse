@@ -99,6 +99,12 @@ pub enum OperationTrigger {
     SystemShutdown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataCollectionSource {
+    IntelligenceLadder,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "kind",
@@ -137,12 +143,9 @@ pub enum OperationRecordSpecificDetailsDto {
         crash_report_found: Option<bool>,
     },
     DataCollection {
-        site_count: u64,
-        model_count: u64,
-        completed_count: u64,
-        failed_count: u64,
-        skipped_count: u64,
-        can_open_probe_records: bool,
+        source: DataCollectionSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        entry_count: Option<u64>,
     },
     DiagnosticsMaintenance {
         #[serde(flatten)]

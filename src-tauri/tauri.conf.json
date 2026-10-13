@@ -1,20 +1,20 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RelayPulse",
+  "productName": "RelayPulse Dev",
   "version": "../package.json",
-  "identifier": "com.relaypulse.app",
+  "identifier": "com.relaypulse.app.dev",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm dev:web",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "pnpm build:assets:dev",
+    "frontendDist": "../dist-desktop/development"
   },
   "app": {
     "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
-        "title": "RelayPulse",
+        "title": "RelayPulse Dev",
         "width": 1100,
         "height": 720,
         "minWidth": 960,

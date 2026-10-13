@@ -5,13 +5,13 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>zh-Hans</string>
   <key>CFBundleDisplayName</key>
-  <string>RelayPulse</string>
+  <string>RelayPulse Dev</string>
   <key>CFBundleExecutable</key>
   <string>relaypulse</string>
   <key>CFBundleIconFile</key>
   <string>icon.icns</string>
   <key>CFBundleIdentifier</key>
-  <string>com.relaypulse.app</string>
+  <string>com.relaypulse.app.dev</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleLocalizations</key>
@@ -19,7 +19,7 @@
     <string>zh-Hans</string>
   </array>
   <key>CFBundleName</key>
-  <string>RelayPulse</string>
+  <string>RelayPulse Dev</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

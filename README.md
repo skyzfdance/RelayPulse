@@ -88,37 +88,68 @@ flowchart LR
 git clone https://github.com/skyzfdance/RelayPulse.git
 cd RelayPulse
 pnpm install
-pnpm t:dev
+pnpm dev:desktop
 ```
 
-`pnpm t:dev` 会启动完整的 Tauri 桌面应用。只需要在浏览器中查看前端和 mock 场景时，可以运行：
+`pnpm dev:desktop` 会启动独立的 **RelayPulse Dev**，首次运行使用空的开发数据目录。只需要在浏览器中查看前端和 mock 场景时，可以运行：
 
 ```bash
-pnpm dev
+pnpm dev:web
 ```
 
 浏览器预览支持通过查询参数切换界面，例如 `?view=sites`、`?view=records`、`?view=tray-healthy`，也可以使用 `theme=light` 或 `theme=dark` 固定主题。
 
 ## 常用命令
 
-| 命令               | 用途                                       |
-| ------------------ | ------------------------------------------ |
-| `pnpm t:dev`       | 启动 Tauri 桌面开发环境                    |
-| `pnpm dev`         | 启动 Vite 前端预览                         |
-| `pnpm build`       | 执行 TypeScript 检查并构建前端             |
-| `pnpm test`        | 运行前端单元与组件测试                     |
-| `pnpm test:rust`   | 运行 Rust 测试                             |
-| `pnpm test:e2e`    | 运行端到端测试                             |
-| `pnpm test:visual` | 运行固定视口视觉回归测试                   |
-| `pnpm check`       | 运行格式、Lint、类型、前后端测试与视觉检查 |
+命令按「动作:对象[:环境]」命名。`desktop` 表示完整桌面应用，`web` 表示浏览器前端，`assets` 表示供桌面打包使用的前端资源。格式化、Lint 和类型检查沿用常见名称。
+
+| 命令                                | 用途                                  |
+| ----------------------------------- | ------------------------------------- |
+| `pnpm dev:desktop`                  | 启动隔离的桌面开发环境                |
+| `pnpm dev:web`                      | 启动浏览器前端与 mock 预览            |
+| `pnpm build:desktop:dev`            | 生成开发测试安装包                    |
+| `pnpm build:desktop:production`     | 生成正式安装包                        |
+| `pnpm build:web`                    | 检查类型并构建浏览器前端到 `dist/`    |
+| `pnpm preview:web`                  | 预览已构建的浏览器前端                |
+| `pnpm test:frontend`                | 运行前端单元与组件测试                |
+| `pnpm test:frontend:watch`          | 监听前端测试变化                      |
+| `pnpm test:backend`                 | 运行 Rust 后端测试                    |
+| `pnpm test:desktop-scripts`         | 验证环境隔离与开发启动脚本            |
+| `pnpm test:e2e`                     | 运行端到端测试                        |
+| `pnpm test:visual`                  | 运行视觉回归测试                      |
+| `pnpm typecheck`                    | 检查前端 TypeScript 类型              |
+| `pnpm lint` / `pnpm lint:fix`       | 检查前后端代码 / 自动修复 ESLint 问题 |
+| `pnpm format` / `pnpm format:check` | 格式化 / 检查前后端格式               |
+| `pnpm check:all`                    | 运行完整检查与测试，不执行安装包构建  |
+| `pnpm info:desktop`                 | 查看 Tauri 与系统环境信息             |
+
+`build:assets:dev` 和 `build:assets:production` 由 Tauri 打包流程自动调用，只生成对应环境的前端资源；日常打包使用 `build:desktop:*`。需要其他 Tauri CLI 功能时使用 `pnpm tauri <命令>`，它仍经过环境隔离包装器。
 
 ## 构建与分发
 
 ```bash
-pnpm t:build
+pnpm build:desktop:dev             # 开发测试包，即使 release 编译也使用开发身份
+pnpm build:desktop:production  # 显式构建正式包
 ```
 
-构建产物由 Tauri 写入 `src-tauri/target/release/bundle/` 下对应的平台目录。
+默认配置使用开发身份；直接执行 `tauri dev`、`tauri build` 或 Cargo 也不会默认读取正式数据。正式构建通过 `tauri.production.conf.json` 显式覆盖应用身份。`pnpm tauri` 包装器不接受额外 `--config`，避免开发启动时误用正式配置。
+
+| 项目           | 开发 / 开发测试包                                       | 正式包                                              |
+| -------------- | ------------------------------------------------------- | --------------------------------------------------- |
+| 应用名称       | RelayPulse Dev                                          | RelayPulse                                          |
+| 应用标识       | com.relaypulse.app.dev                                  | com.relaypulse.app                                  |
+| macOS 数据目录 | `~/Library/Application Support/com.relaypulse.app.dev/` | `~/Library/Application Support/com.relaypulse.app/` |
+| 前端产物目录   | `dist-desktop/development/`                             | `dist-desktop/production/`                          |
+| Cargo 输出目录 | `src-tauri/target/development.noindex/`                 | `src-tauri/target/production/`                      |
+| release 安装包 | `development.noindex/release/bundle/`                   | `production/release/bundle/`                        |
+
+数据库、凭据、日志和其他业务文件均随应用数据目录隔离；单实例锁使用应用标识，自启动项使用应用名称。开发环境不自动复制正式数据或凭据。不要手动将开发包改名覆盖 `/Applications/RelayPulse.app`，也不要将两个环境的数据目录链接到一起。
+
+macOS 开发 runner 使用 `.noindex` 目录，退出或收到终止信号后注销临时应用并删除临时包。历史遗留包需先确认没有进程使用，再归档和注销；不要全量重置 Launch Services。若 Spotlight 仍显示缓存结果，可在「系统设置 → Spotlight → 搜索隐私」中排除本项目的 `src-tauri/target` 目录，这不会隐藏 `/Applications/RelayPulse.app`。
+
+环境隔离不会自动修复已经升级的正式数据库。旧版本遇到 `database_schema_too_new` 时，应先保存当前数据，再从匹配版本的备份恢复；不能仅修改 `PRAGMA user_version` 绕过兼容检查。
+
+脚本与 runner 回归检查：`pnpm test:desktop-scripts`。
 
 macOS 构建明确启用了 `macos-private-api` 和 `macOSPrivateApi`，以支持项目所需的窗口与托盘行为。因此当前产物不以 Mac App Store 审核和上架为目标。正式分发前还需要按目标平台完成签名、公证、安装和托盘行为验证。
 
@@ -140,7 +171,7 @@ RelayPulse 使用分层测试覆盖前端交互、Rust 后端、桌面工作流�
 - **Rust 测试：** 覆盖持久化、协议解析、探测执行、调度、诊断和凭据生命周期。
 - **端到端测试：** 使用 Playwright 验证站点配置、探测记录、托盘面板等主要流程。
 - **视觉回归：** 对关键页面和明暗主题执行固定视口截图对比。
-- **完整检查：** 运行 `pnpm check`，统一执行格式、Lint、类型检查及前后端测试。
+- **完整检查：** 运行 `pnpm check:all`，统一执行格式、Lint、类型检查及前后端测试。
 
 ### 技术栈
 

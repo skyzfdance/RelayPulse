@@ -1,2 +1,1 @@
-CFBundleDisplayName = "RelayPulse";
-CFBundleName = "RelayPulse";
+/* Use the generated bundle name so development and production stay distinct. */

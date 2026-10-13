@@ -13,6 +13,7 @@ export default tseslint.config(
       '.agents/**',
       '.local-agent/**',
       'dist/**',
+      'dist-desktop/**',
       'docs/**',
       'node_modules/**',
       'playwright-report/**',

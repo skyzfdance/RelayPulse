@@ -6,3 +6,5 @@ node_modules/
 src-tauri/gen/
 src-tauri/target/
 pnpm-lock.yaml
+
+dist-desktop/

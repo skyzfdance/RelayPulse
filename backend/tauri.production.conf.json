@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RelayPulse",
+  "identifier": "com.relaypulse.app",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "RelayPulse",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 960,
+        "decorations": true,
+        "resizable": true,
+        "devtools": false
+      }
+    ]
+  },
+  "build": {
+    "beforeBuildCommand": "pnpm build:production",
+    "frontendDist": "../frontend/dist/production"
+  }
+}

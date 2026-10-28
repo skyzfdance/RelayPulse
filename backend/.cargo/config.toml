@@ -1,0 +1,7 @@
+# Use the official crates.io sparse registry for local and CI dependency downloads.
+[source.crates-io]
+registry = "sparse+https://index.crates.io/"
+
+# Keep development artifacts out of Spotlight. Paths are relative to backend/.
+[build]
+target-dir = "target/development.noindex"

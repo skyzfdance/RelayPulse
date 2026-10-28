@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal capabilities shared by the main and status panel windows",
+  "windows": ["main", "status-panel"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,85 @@
+@import 'tailwindcss';
+@import '@antdv-next/tailwind/compat.css';
+
+/* 暗色变体跟随 <html data-theme="dark">（由主题 store 维护），而非系统媒体查询 */
+@custom-variant dark ([data-theme='dark'] &);
+
+/*
+ * rp-* 设计 token：把 antdv cssVar 生成的 --ant-* 变量映射为 Tailwind 颜色工具类
+ * （如 text-rp-secondary / border-rp-line / bg-rp-subtle），随明暗主题自动切换。
+ * --ant-* 变量定义在 antdv 组件的 css-var 类上，沿 DOM 继承，故仅在 <a-app>
+ * 内部可用（html/body 上取不到）。
+ */
+@theme inline {
+  --color-rp-primary: var(--ant-color-primary);
+  --color-rp-canvas: var(--ant-color-bg-layout);
+  --color-rp-surface: var(--ant-color-bg-container);
+  --color-rp-subtle: var(--ant-color-fill-quaternary);
+  --color-rp-hover: var(--ant-color-fill-tertiary);
+  --color-rp-active: var(--ant-color-primary-bg);
+  --color-rp-active-hover: var(--ant-color-primary-bg-hover);
+  --color-rp-text: var(--ant-color-text);
+  --color-rp-secondary: var(--ant-color-text-secondary);
+  --color-rp-tertiary: var(--ant-color-text-tertiary);
+  --color-rp-quaternary: var(--ant-color-text-quaternary);
+  --color-rp-line: var(--ant-color-border-secondary);
+}
+
+html {
+  background: var(--ant-color-bg-layout, #f5f5f5);
+}
+
+/* 高度链：全局加载/失败视图依赖 h-full 生效 */
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+/* 独立面板由内容决定高度；外围不绘制主窗口的整页底色。 */
+html[data-surface='panel'],
+html[data-surface='panel'] body,
+html[data-surface='panel'] #app,
+html[data-surface='panel'] .ant-app {
+  height: auto;
+  min-height: 0;
+  background: transparent;
+}
+
+/*
+ * antdv 的 fullscreen Spin 默认用浅色指示器（深色遮罩页面级 loader 的惯例，color: 近白），
+ * 两种主题下都压过品牌色。这里把指示点改回主色——遮罩就挂在 .ant-app 内，
+ * --ant-color-primary 可取；提高一级特异性以压过 antd 自带的 currentColor 规则。
+ */
+.ant-spin.ant-spin-fullscreen .ant-spin-dot-item {
+  background: var(--ant-color-primary);
+}
+
+/*
+ * v-loading 局部遮罩：命令式注入到绑定节点内部，相对定位覆盖该节点；
+ * 指示器用非 fullscreen 的 a-spin（小圆点默认即主色，随明暗主题）。
+ * 背景优先 color-mix 做半透明容器底色，不支持时回退为不透明容器底色。
+ */
+.rp-loading-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ant-color-bg-container);
+  background: color-mix(in srgb, var(--ant-color-bg-container) 55%, transparent);
+}
+
+.rp-loading-mask__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.rp-loading-mask__tip {
+  font-size: 14px;
+  color: var(--ant-color-primary);
+}

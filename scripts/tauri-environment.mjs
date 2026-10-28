@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.dirname(scriptDirectory);
+const backendDirectory = path.join(projectDirectory, 'backend');
+const frontendDirectory = path.join(projectDirectory, 'frontend');
 
 export function tauriInvocation(
   args,
@@ -23,14 +25,16 @@ export function tauriInvocation(
   }
   const environment = { ...env };
   delete environment.TAURI_CONFIG;
+  environment.TAURI_APP_PATH = backendDirectory;
+  environment.TAURI_FRONTEND_PATH = frontendDirectory;
   environment.CARGO_TARGET_DIR = path.join(
-    projectDirectory,
-    'src-tauri/target',
+    backendDirectory,
+    'target',
     production ? 'production' : 'development.noindex',
   );
   const cliArgs = options.filter((arg) => arg !== '--production');
   if (production) {
-    cliArgs.push('--config', path.join(projectDirectory, 'src-tauri/tauri.production.conf.json'));
+    cliArgs.push('--config', path.join(backendDirectory, 'tauri.production.conf.json'));
   }
   if (platform === 'darwin' && action === 'dev') {
     const targets = { arm64: 'AARCH64_APPLE_DARWIN', x64: 'X86_64_APPLE_DARWIN' };
@@ -44,7 +48,7 @@ export function tauriInvocation(
   return {
     command: platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
     args: ['exec', 'tauri', ...(action ? [action] : []), ...cliArgs],
-    options: { cwd: projectDirectory, env: environment, stdio: 'inherit' },
+    options: { cwd: backendDirectory, env: environment, stdio: 'inherit' },
   };
 }
 

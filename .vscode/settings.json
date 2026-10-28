@@ -1,0 +1,13 @@
+{
+  "editor.formatOnSave": true,
+  "prettier.requireConfig": true,
+  "eslint.workingDirectories": ["./frontend", "./scripts"],
+  "rust-analyzer.linkedProjects": ["backend/Cargo.toml"],
+  "[vue]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[json]": { "editor.defaultFormatter": "vscode.json-language-features" },
+  "[jsonc]": { "editor.defaultFormatter": "vscode.json-language-features" },
+  "[css]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" }
+}

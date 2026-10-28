@@ -1,3 +1,0 @@
-# Direct Cargo / Tauri invocations also keep development artifacts out of Spotlight.
-[build]
-target-dir = "src-tauri/target/development.noindex"

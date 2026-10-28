@@ -17,9 +17,12 @@ test('dev and release-optimized development builds cannot inherit production con
       env: { TAURI_CONFIG: '{"identifier":"com.relaypulse.app"}', CARGO_TARGET_DIR: '/production' },
     });
     assert.equal(invocation.options.env.TAURI_CONFIG, undefined);
+    assert.equal(invocation.options.cwd, path.join(root, 'backend'));
+    assert.equal(invocation.options.env.TAURI_APP_PATH, path.join(root, 'backend'));
+    assert.equal(invocation.options.env.TAURI_FRONTEND_PATH, path.join(root, 'frontend'));
     assert.equal(
       invocation.options.env.CARGO_TARGET_DIR,
-      path.join(root, 'src-tauri/target/development.noindex'),
+      path.join(root, 'backend/target/development.noindex'),
     );
     assert.deepEqual(invocation.args, ['exec', 'tauri', ...args]);
     if (args[0] === 'dev') {
@@ -40,11 +43,11 @@ test('production packaging explicitly selects the production identity and a sepa
     '--bundles',
     'app',
     '--config',
-    path.join(root, 'src-tauri/tauri.production.conf.json'),
+    path.join(root, 'backend/tauri.production.conf.json'),
   ]);
   assert.equal(
     invocation.options.env.CARGO_TARGET_DIR,
-    path.join(root, 'src-tauri/target/production'),
+    path.join(root, 'backend/target/production'),
   );
   assert.throws(() => tauriInvocation(['dev', '--production']), /only supported/u);
   for (const args of [
@@ -57,8 +60,8 @@ test('production packaging explicitly selects the production identity and a sepa
 });
 
 test('the default config separates data, single-instance and autostart identities from the installed app', () => {
-  const dev = readJson('src-tauri/tauri.conf.json');
-  const production = readJson('src-tauri/tauri.production.conf.json');
+  const dev = readJson('backend/tauri.conf.json');
+  const production = readJson('backend/tauri.production.conf.json');
   assert.equal(dev.identifier, 'com.relaypulse.app.dev');
   assert.equal(dev.productName, 'RelayPulse Dev');
   assert.equal(production.identifier, 'com.relaypulse.app');
@@ -66,11 +69,14 @@ test('the default config separates data, single-instance and autostart identitie
   assert.notEqual(dev.app.windows[0].title, production.app.windows[0].title);
   assert.notEqual(dev.build.frontendDist, production.build.frontendDist);
   assert.notEqual(dev.build.beforeBuildCommand, production.build.beforeBuildCommand);
+  assert.equal(dev.build.beforeDevCommand, 'pnpm dev');
+  assert.equal(dev.build.frontendDist, '../frontend/dist/development');
+  assert.equal(production.build.frontendDist, '../frontend/dist/production');
   const plist = readFileSync(path.join(root, 'scripts/macos-dev-Info.plist'), 'utf8');
   assert.ok(plist.includes(`<string>${dev.identifier}</string>`));
   assert.ok(plist.includes(`<string>${dev.productName}</string>`));
   const localization = readFileSync(
-    path.join(root, 'src-tauri/infoplist/zh-Hans.lproj/InfoPlist.strings'),
+    path.join(root, 'backend/infoplist/zh-Hans.lproj/InfoPlist.strings'),
     'utf8',
   );
   assert.doesNotMatch(localization, /CFBundle(?:Display)?Name\s*=/u);
@@ -82,7 +88,7 @@ test('Windows and Linux wrappers retain the same isolated defaults', () => {
     assert.equal(invocation.command, platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
     assert.equal(
       invocation.options.env.CARGO_TARGET_DIR,
-      path.join(root, 'src-tauri/target/development.noindex'),
+      path.join(root, 'backend/target/development.noindex'),
     );
   }
 });

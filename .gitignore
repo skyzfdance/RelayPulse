@@ -1,15 +1,20 @@
 /AGENTS.md
 /.agents/
 /.local-agent/
+/.zcode/
+
+# Local historical source archive
+/legacy/
 
 # Dependencies and build output
-/node_modules/
-/dist/
-/dist-desktop/
-/src-tauri/target/
+node_modules/
+.pnpm-store/
+dist/
+/frontend/test-results/
+/frontend/playwright-report/
+/backend/target/
+/backend/gen/
 /artifacts/
-/test-results/
-/playwright-report/
 
 # Local planning, design, and implementation documentation
 /docs/*
@@ -21,6 +26,7 @@
 *.local
 *.log
 .DS_Store
+.zcodeignore
 
 # Local runtime databases
 *.db
@@ -51,3 +57,4 @@ api_keys.*.json
 *.pem
 *.p12
 *.pfx
+design-prototype/

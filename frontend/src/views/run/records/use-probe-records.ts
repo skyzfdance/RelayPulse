@@ -18,7 +18,7 @@ export function useProbeRecords(filters: { range: Ref<RecordTimeRange>; siteId: 
   const error = ref('');
   const modelName = ref('');
   const result = ref<ProbeResult | ''>('');
-  const paging = reactive({ page: 1, pageSize: 10 });
+  const paging = reactive({ page: 1, pageSize: 20 });
   const mutation = ref<'delete' | 'clear' | null>(null);
   const busy = computed(() => mutation.value !== null);
   let version = 0;

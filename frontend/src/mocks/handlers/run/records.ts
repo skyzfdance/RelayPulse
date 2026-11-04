@@ -124,8 +124,8 @@ function query(args: unknown, kind: 'records' | 'tokens') {
   nullableString(value.siteId, 'query.siteId');
   if (!Number.isSafeInteger(value.page) || Number(value.page) < 1)
     validation('页码必须是从 1 开始的整数', 'query.page');
-  if (![10, 20, 50, 100].includes(Number(value.pageSize)) || typeof value.pageSize !== 'number')
-    validation('每页条数必须为 10、20、50 或 100', 'query.pageSize');
+  if (![10, 20, 50, 70, 100].includes(Number(value.pageSize)) || typeof value.pageSize !== 'number')
+    validation('每页条数必须为 10、20、50、70 或 100', 'query.pageSize');
   if (kind === 'records') {
     nullableString(value.modelName, 'query.modelName');
     if (

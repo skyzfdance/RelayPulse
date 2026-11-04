@@ -48,7 +48,7 @@ export function tablePagination(
     total,
     disabled,
     showSizeChanger: true,
-    pageSizeOptions: [10, 20, 50, 100],
+    pageSizeOptions: [20, 50, 70, 100],
     size: 'small',
     showTotal: (count, range) => `第 ${range[0]}–${range[1]} 条，共 ${count} 条`,
   };

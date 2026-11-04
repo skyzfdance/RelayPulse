@@ -509,6 +509,32 @@ describe('探测记录的前端命令契约和 Mock', () => {
     expect((await fetchProbeRecordOptions()).sites[0].name).not.toBe('未保存的选项');
   });
 
+  it('记录和 Token 统计支持每页 70 条，下一页返回剩余条目且合计不变', async () => {
+    seedProbeRecords(
+      Array.from({ length: 71 }, (_, index) =>
+        record(`page-size-${index}`, { siteId: `page-size-site-${index}` }),
+      ),
+    );
+    const [firstRecords, nextRecords, firstStats, nextStats] = await Promise.all([
+      fetchProbeRecords(recordQuery({ pageSize: 70 })),
+      fetchProbeRecords(recordQuery({ pageSize: 70, page: 2 })),
+      fetchProbeTokenStats(tokenQuery({ pageSize: 70 })),
+      fetchProbeTokenStats(tokenQuery({ pageSize: 70, page: 2 })),
+    ]);
+    expect(firstRecords.items).toHaveLength(70);
+    expect(nextRecords.items).toHaveLength(1);
+    expect(nextRecords).toMatchObject({ page: 2, total: 71 });
+    expect(new Set([...firstRecords.items, ...nextRecords.items].map((item) => item.id)).size).toBe(
+      71,
+    );
+    expect(firstStats.items).toHaveLength(70);
+    expect(nextStats.items).toHaveLength(1);
+    expect(nextStats).toMatchObject({ page: 2, total: 71, summary: firstStats.summary });
+    expect(new Set([...firstStats.items, ...nextStats.items].map((item) => item.siteId)).size).toBe(
+      71,
+    );
+  });
+
   it('时间、站点、模型、单次结果共同筛选；没有匹配时保留全局记录数', async () => {
     const filtered = await fetchProbeRecords(
       recordQuery({

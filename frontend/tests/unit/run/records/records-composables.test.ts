@@ -87,13 +87,13 @@ describe('两个 Tab 的独立页面 composable', () => {
       modelName: 'GPT-6 Astra',
       result: 'slow',
       page: 1,
-      pageSize: 10,
+      pageSize: 20,
     });
     expect(tokenRead).toHaveBeenCalledExactlyOnceWith({
       range: '24h',
       siteId: 'site-1',
       page: 1,
-      pageSize: 10,
+      pageSize: 20,
     });
   });
 
@@ -230,6 +230,6 @@ describe('两个 Tab 的独立页面 composable', () => {
     expect(second.records.loading.value).toBe(false);
     await second.records.load();
     expect(second.records.error.value).toBe('');
-    expect(second.records.data.value?.items).toHaveLength(10);
+    expect(second.records.data.value?.items).toHaveLength(20);
   });
 });

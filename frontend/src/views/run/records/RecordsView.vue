@@ -124,7 +124,7 @@ onScopeDispose(() => {
 });
 </script>
 <template>
-  <div class="min-w-0 px-6 py-5">
+  <div class="flex h-full min-w-0 flex-col overflow-hidden p-6">
     <div class="mb-4 flex flex-wrap items-center gap-2">
       <a-segmented v-model:value="tab" :options="tabs" aria-label="探测记录视图" />
       <a-tooltip
@@ -235,26 +235,28 @@ onScopeDispose(() => {
         >
       </template>
     </a-alert>
-    <ProbeRecordsTable
-      v-else-if="tab === 'records'"
-      :data="recordData"
-      :loading="recordsLoading"
-      :busy="busy"
-      v-bind="recordPaging"
-      @paginate="recordList.paginate"
-      @reset="resetFilters"
-      @detail="detailRecordId = $event.id"
-      @remove="requestDelete"
-    />
-    <TokenStatsTable
-      v-else
-      :data="tokenData"
-      :loading="tokensLoading"
-      :busy="busy"
-      v-bind="tokenPaging"
-      @paginate="tokenList.paginate"
-      @reset="resetFilters"
-    />
+    <div v-else class="flex-1 overflow-hidden">
+      <ProbeRecordsTable
+        v-if="tab === 'records'"
+        :data="recordData"
+        :loading="recordsLoading"
+        :busy="busy"
+        v-bind="recordPaging"
+        @paginate="recordList.paginate"
+        @reset="resetFilters"
+        @detail="detailRecordId = $event.id"
+        @remove="requestDelete"
+      />
+      <TokenStatsTable
+        v-else
+        :data="tokenData"
+        :loading="tokensLoading"
+        :busy="busy"
+        v-bind="tokenPaging"
+        @paginate="tokenList.paginate"
+        @reset="resetFilters"
+      />
+    </div>
     <ProbeRecordDetailDrawer :record-id="detailRecordId" @close="detailRecordId = null" />
     <a-modal
       :open="deleteTarget !== null"

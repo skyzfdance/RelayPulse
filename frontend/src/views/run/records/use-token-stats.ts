@@ -10,7 +10,7 @@ export function useTokenStats(filters: { range: Ref<RecordTimeRange>; siteId: Re
   const data = shallowRef<TokenStatsPage>();
   const loading = ref(false);
   const error = ref('');
-  const paging = reactive({ page: 1, pageSize: 10 });
+  const paging = reactive({ page: 1, pageSize: 20 });
   let version = 0;
   let disposed = false;
 

@@ -265,6 +265,41 @@ fn both_pagers_clamp_after_filtering_and_summary_is_independent_of_page() {
     );
 }
 #[test]
+fn both_pagers_support_seventy_items_without_changing_summary() {
+    let f = Fixture::new();
+    for index in 0..71 {
+        let site = f.site();
+        f.seed(
+            &site,
+            &format!("record-{index:02}"),
+            NOW - 1,
+            "same name",
+            "succeeded",
+            [None, None, Some(1)],
+        );
+    }
+    for (page, expected_len) in [(1, 70), (2, 1)] {
+        let mut q = query();
+        q.page = page;
+        q.page_size = 70;
+        let list = f.records.list(filter(q.clone())).unwrap();
+        assert_eq!(
+            (list.page, list.total, list.items.len()),
+            (page, 71, expected_len)
+        );
+        let stats = f.records.token_stats(filter(q)).unwrap();
+        assert_eq!(
+            (
+                stats.records.page,
+                stats.records.total,
+                stats.records.items.len()
+            ),
+            (page, 71, expected_len)
+        );
+        assert_eq!(stats.summary.total_tokens, Some(71));
+    }
+}
+#[test]
 fn token_ties_and_unreported_sites_use_id_order_and_do_not_estimate_missing_total() {
     let f = Fixture::new();
     let mut ids = vec![];

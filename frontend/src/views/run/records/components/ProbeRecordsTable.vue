@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import type { ProbeRecordListItem, ProbeResult, RecordsPage } from '@/types/domain/records';
-import type { TableEmits, TableProps } from 'antdv-next';
+import type { TableProps } from 'antdv-next';
 
 import { Tooltip } from 'antdv-next';
-import { computed, h } from 'vue';
+import { computed, h, ref } from 'vue';
 
 import {
   formatCount,
@@ -30,6 +30,8 @@ const emit = defineEmits<{
   remove: [record: ProbeRecordListItem];
   reset: [];
 }>();
+const tableViewport = ref<HTMLDivElement>();
+const getScrollContainer = () => tableViewport.value ?? document.body;
 const columns: TableProps<ProbeRecordListItem>['columns'] = [
   {
     key: 'result',
@@ -80,101 +82,100 @@ const pagination = computed(() =>
     props.loading || props.busy,
   ),
 );
-const change: TableEmits<ProbeRecordListItem>['change'] = (
-  pagination,
-  _filters,
-  _sorter,
-  extra,
-) => {
-  if (props.busy) return;
-  if (extra.action === 'paginate')
-    emit('paginate', pagination.current ?? 1, pagination.pageSize ?? 10);
-};
+function changePage(page: number, pageSize: number) {
+  if (props.loading || props.busy) return;
+  if (tableViewport.value) tableViewport.value.scrollTop = 0;
+  emit('paginate', page, pageSize);
+}
 </script>
 <template>
-  <section aria-label="探测记录列表" :aria-busy="loading">
-    <a-table
-      :columns="columns"
-      :data-source="data?.items ?? []"
-      row-key="id"
-      :pagination="pagination"
-      :loading="loading"
-      size="medium"
-      table-layout="fixed"
-      :scroll="{ x: 1220 }"
-      @change="change"
-    >
-      <template #bodyCell="{ column, record }">
-        <span
-          v-if="column.key === 'result'"
-          class="inline-flex items-center gap-2 whitespace-nowrap"
-        >
+  <section aria-label="探测记录列表" :aria-busy="loading" class="flex h-full flex-col">
+    <div ref="tableViewport" class="flex-1 overflow-auto">
+      <a-table
+        :columns="columns"
+        :data-source="data?.items ?? []"
+        row-key="id"
+        size="small"
+        :pagination="false"
+        :loading="loading"
+        :scroll="{ x: 1200 }"
+        :sticky="{ getContainer: getScrollContainer }"
+      >
+        <template #bodyCell="{ column, record }">
           <span
-            class="size-1.5 rounded-full"
-            :style="{ background: resultColors[record.result as ProbeResult] }"
+            v-if="column.key === 'result'"
+            class="inline-flex items-center gap-2 whitespace-nowrap"
+          >
+            <span
+              class="size-1.5 rounded-full"
+              :style="{ background: resultColors[record.result as ProbeResult] }"
+            />
+            {{ resultLabels[record.result as ProbeResult] }}
+          </span>
+          <span
+            v-else-if="column.key === 'probedAt'"
+            class="whitespace-nowrap text-rp-secondary tabular-nums"
+            :title="formatRecordTime(record.probedAt, true)"
+          >
+            {{ formatRecordTime(record.probedAt) }}
+          </span>
+          <span v-else-if="column.key === 'firstTokenMs'" class="whitespace-nowrap tabular-nums">{{
+            formatDuration(record.firstTokenMs)
+          }}</span>
+          <span v-else-if="column.key === 'durationMs'" class="whitespace-nowrap tabular-nums">{{
+            formatDuration(record.durationMs)
+          }}</span>
+          <span v-else-if="column.key === 'totalTokens'" class="tabular-nums">{{
+            formatCount(record.totalTokens)
+          }}</span>
+          <span
+            v-else-if="column.key === 'resultMessage'"
+            class="block truncate"
+            :class="{ 'text-(--ant-color-error)': record.result === 'failure' }"
+            :title="record.resultMessage"
+            >{{ record.resultMessage }}</span
+          >
+          <div v-else-if="column.key === 'actions'" class="flex items-center justify-center gap-1">
+            <a-tooltip title="查看详情">
+              <a-button
+                type="text"
+                shape="circle"
+                class="record-detail-action size-8!"
+                :disabled="busy || loading"
+                :aria-label="`查看探测记录 ${record.id} 的详情`"
+                @click="emit('detail', record)"
+              >
+                <template #icon><AppIcon name="FileSearchOutlined" /></template>
+              </a-button>
+            </a-tooltip>
+            <a-tooltip title="删除这条记录">
+              <a-button
+                type="text"
+                shape="circle"
+                danger
+                class="size-8!"
+                :disabled="busy || loading"
+                :aria-label="`删除探测记录 ${record.id}`"
+                @click="emit('remove', record)"
+              >
+                <template #icon><AppIcon name="DeleteOutlined" /></template>
+              </a-button>
+            </a-tooltip>
+          </div>
+        </template>
+        <template #emptyText>
+          <RecordsEmptyState
+            kind="records"
+            :loading="loading"
+            :retained-count="data?.retainedCount ?? 0"
+            @reset="emit('reset')"
           />
-          {{ resultLabels[record.result as ProbeResult] }}
-        </span>
-        <span
-          v-else-if="column.key === 'probedAt'"
-          class="whitespace-nowrap text-rp-secondary tabular-nums"
-          :title="formatRecordTime(record.probedAt, true)"
-        >
-          {{ formatRecordTime(record.probedAt) }}
-        </span>
-        <span v-else-if="column.key === 'firstTokenMs'" class="whitespace-nowrap tabular-nums">{{
-          formatDuration(record.firstTokenMs)
-        }}</span>
-        <span v-else-if="column.key === 'durationMs'" class="whitespace-nowrap tabular-nums">{{
-          formatDuration(record.durationMs)
-        }}</span>
-        <span v-else-if="column.key === 'totalTokens'" class="tabular-nums">{{
-          formatCount(record.totalTokens)
-        }}</span>
-        <span
-          v-else-if="column.key === 'resultMessage'"
-          class="block truncate"
-          :class="{ 'text-(--ant-color-error)': record.result === 'failure' }"
-          :title="record.resultMessage"
-          >{{ record.resultMessage }}</span
-        >
-        <div v-else-if="column.key === 'actions'" class="flex items-center justify-center gap-1">
-          <a-tooltip title="查看详情">
-            <a-button
-              type="text"
-              shape="circle"
-              class="record-detail-action size-8!"
-              :disabled="busy || loading"
-              :aria-label="`查看探测记录 ${record.id} 的详情`"
-              @click="emit('detail', record)"
-            >
-              <template #icon><AppIcon name="FileSearchOutlined" /></template>
-            </a-button>
-          </a-tooltip>
-          <a-tooltip title="删除这条记录">
-            <a-button
-              type="text"
-              shape="circle"
-              danger
-              class="size-8!"
-              :disabled="busy || loading"
-              :aria-label="`删除探测记录 ${record.id}`"
-              @click="emit('remove', record)"
-            >
-              <template #icon><AppIcon name="DeleteOutlined" /></template>
-            </a-button>
-          </a-tooltip>
-        </div>
-      </template>
-      <template #emptyText>
-        <RecordsEmptyState
-          kind="records"
-          :loading="loading"
-          :retained-count="data?.retainedCount ?? 0"
-          @reset="emit('reset')"
-        />
-      </template>
-    </a-table>
+        </template>
+      </a-table>
+    </div>
+    <div v-if="data?.total" class="flex flex-none justify-end pt-4">
+      <a-pagination v-bind="pagination" @change="changePage" />
+    </div>
   </section>
 </template>
 <style scoped>

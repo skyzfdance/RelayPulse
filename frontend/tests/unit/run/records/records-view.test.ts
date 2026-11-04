@@ -84,7 +84,7 @@ async function switchTab(
 describe('探测记录页面交互', () => {
   it('默认按探测时间降序加载和分页，表头不显示排序且点击不会重新查询', async () => {
     const { wrapper } = await mountPage();
-    expect(wrapper.findAll('tbody tr[data-row-key]')).toHaveLength(10);
+    expect(wrapper.findAll('tbody tr[data-row-key]')).toHaveLength(20);
     expect(wrapper.text()).not.toContain('记录保留');
     expect(wrapper.find('input[aria-label="搜索模型或错误"]').exists()).toBe(false);
     expect(wrapper.find('thead')!.text()).not.toContain('__v_isVNode');
@@ -99,13 +99,13 @@ describe('探测记录页面交互', () => {
     await wrapper.get('.ant-pagination-item-2').trigger('click');
     await flushPromises();
     expect(recordData(wrapper)?.page).toBe(2);
-    expect(recordData(wrapper)?.items[0].id).toBe('probe-011');
+    expect(recordData(wrapper)?.items[0].id).toBe('probe-021');
     const tokenHeader = wrapper.findAll('th').find((cell) => cell.text() === 'Token')!;
     await tokenHeader.trigger('click');
     await flushPromises();
     expect(recordData(wrapper)?.page).toBe(2);
     expect(read).toHaveBeenCalledOnce();
-    expect(recordData(wrapper)?.items[0].id).toBe('probe-011');
+    expect(recordData(wrapper)?.items[0].id).toBe('probe-021');
   });
 
   it('模型、结果仅筛选记录；Token 视图只保留共享时间与站点条件', async () => {
@@ -150,7 +150,7 @@ describe('探测记录页面交互', () => {
 
   it('Token 合计覆盖全部分页，随筛选更新，平均值按已上报总量的请求计算', async () => {
     const first = createProbeRecordFixtures()[0];
-    const records = Array.from({ length: 14 }, (_, index) => ({
+    const records = Array.from({ length: 24 }, (_, index) => ({
       ...first,
       id: `summary-${index}`,
       siteId: `summary-site-${index}`,
@@ -173,11 +173,11 @@ describe('探测记录页面交互', () => {
         .get('[aria-label="当前筛选的 Token 用量合计"]')
         .findAll('td')
         .map((cell) => cell.text());
-    expect(summaryCells()).toEqual(['合计', '15', '15 / 15', '1,000', '100', '1,100', '73.3']);
+    expect(summaryCells()).toEqual(['合计', '25', '25 / 25', '2,850', '285', '3,135', '125.4']);
     await wrapper.get('.ant-pagination-item-2').trigger('click');
     await flushPromises();
     expect(wrapper.findAll('tbody tr[data-row-key]')).toHaveLength(4);
-    expect(summaryCells()).toEqual(['合计', '15', '15 / 15', '1,000', '100', '1,100', '73.3']);
+    expect(summaryCells()).toEqual(['合计', '25', '25 / 25', '2,850', '285', '3,135', '125.4']);
     await choose(wrapper, '站点筛选', 'summary-site-0');
     expect(summaryCells()).toEqual(['合计', '2', '2 / 2', '90', '9', '99', '49.5']);
   });
@@ -289,7 +289,7 @@ describe('探测记录页面交互', () => {
   });
 
   it('删除尾页最后一条记录后回到前一页；清空时两张表进入真正空态', async () => {
-    seedProbeRecords(createProbeRecordFixtures().slice(0, 11));
+    seedProbeRecords(createProbeRecordFixtures().slice(0, 21));
     const { wrapper } = await mountPage();
     await wrapper.get('.ant-pagination-item-2').trigger('click');
     await flushPromises();
@@ -300,7 +300,7 @@ describe('探测记录页面交互', () => {
     await flushPromises();
     expect(recordData(wrapper)?.page).toBe(1);
     expect(wrapper.getComponent(ProbeRecordsTable).props('page')).toBe(1);
-    expect(wrapper.findAll('tbody tr[data-row-key]')).toHaveLength(10);
+    expect(wrapper.findAll('tbody tr[data-row-key]')).toHaveLength(20);
     const clear = vi.spyOn(api, 'clearProbeRecords');
     wrapper.getComponent(Dropdown).vm.$emit('menuClick', { key: 'clear' });
     await flushPromises();
@@ -339,7 +339,7 @@ describe('探测记录页面交互', () => {
         modelName: null,
         result: null,
         page: 1,
-        pageSize: 10,
+        pageSize: 20,
       }),
     );
     await flushPromises();
@@ -369,7 +369,7 @@ describe('探测记录页面交互', () => {
   it('Token 读取失败不遮蔽正常记录，筛选目录失败不伪装成无限加载', async () => {
     window.history.replaceState({}, '', '/run/records?recordsScenario=tokens-error');
     const { wrapper } = await mountPage();
-    expect(wrapper.findAll('tbody tr[data-row-key]')).toHaveLength(10);
+    expect(wrapper.findAll('tbody tr[data-row-key]')).toHaveLength(20);
     await switchTab(wrapper, 'tokens');
     expect(wrapper.text()).toContain('Token 统计加载失败');
     window.history.replaceState({}, '', '/run/records?recordsScenario=options-error');

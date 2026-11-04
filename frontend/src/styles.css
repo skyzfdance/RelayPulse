@@ -25,6 +25,44 @@
   --color-rp-line: var(--ant-color-border-secondary);
 }
 
+/* 沿用旧版的全局细滚动条，配色跟随当前 antdv 明暗主题。 */
+@layer base {
+  *::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: var(--ant-color-fill-quaternary, rgba(0, 0, 0, 0.04));
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border-radius: 2px;
+    background: var(--ant-color-text-quaternary, #8c8c8c);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--ant-color-text-tertiary, #595959);
+  }
+
+  @supports selector(::-webkit-scrollbar) {
+    * {
+      /* 阻止组件继承的 scrollbar-color 覆盖上面的 WebKit 样式。 */
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+    }
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--ant-color-text-quaternary, #8c8c8c)
+        var(--ant-color-fill-quaternary, rgba(0, 0, 0, 0.04));
+    }
+  }
+}
+
 html {
   background: var(--ant-color-bg-layout, #f5f5f5);
 }

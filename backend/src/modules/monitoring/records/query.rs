@@ -49,8 +49,11 @@ fn pagination(page: u64, page_size: u64) -> Result<()> {
     if page == 0 || page > 9_007_199_254_740_991 {
         return Err(invalid("query.page", "页码必须是从 1 开始的安全整数。"));
     }
-    if !matches!(page_size, 10 | 20 | 50 | 100) {
-        return Err(invalid("query.pageSize", "每页数只允许 10、20、50、100。"));
+    if !matches!(page_size, 10 | 20 | 50 | 70 | 100) {
+        return Err(invalid(
+            "query.pageSize",
+            "每页数只允许 10、20、50、70、100。",
+        ));
     }
     Ok(())
 }

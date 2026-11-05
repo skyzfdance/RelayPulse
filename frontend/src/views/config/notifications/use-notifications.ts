@@ -4,7 +4,7 @@
  */
 import type { NotificationSettings, NotificationTestTemplate } from '@/types/domain/notifications';
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onScopeDispose, ref } from 'vue';
 
 import {
   fetchNotificationSettings,
@@ -13,6 +13,7 @@ import {
   sendTestNotification,
   updateNotificationSettings,
 } from '@/api/config/notifications';
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 
 /** 系统通知行「发送测试通知」用的固定样例（模板抽屉里改为传当前表单的预览内容，走同一接口）。 */
 const TEST_SAMPLE: NotificationTestTemplate = {
@@ -29,9 +30,23 @@ export function useNotifications() {
     () => settings.value?.authorization === 'granted' && settings.value.notificationsEnabled,
   );
 
+  let version = 0;
+  let disposed = false;
   async function load(): Promise<void> {
-    settings.value = await fetchNotificationSettings();
+    const requestVersion = ++version;
+    try {
+      const next = await fetchNotificationSettings();
+      if (!disposed && requestVersion === version) settings.value = next;
+    } catch (cause) {
+      // API 已显示错误；关闭页面或较旧刷新不再产生操作记录。
+      if (!disposed && requestVersion === version)
+        reportOperationReadFailure('notification_settings', 'page', cause);
+    }
   }
+  onScopeDispose(() => {
+    disposed = true;
+    version += 1;
+  });
 
   async function setNotificationsEnabled(value: boolean): Promise<void> {
     settings.value = await updateNotificationSettings({

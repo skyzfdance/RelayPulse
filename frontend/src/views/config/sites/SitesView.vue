@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia';
-import { onMounted, ref } from 'vue';
+import { onMounted, onScopeDispose, ref } from 'vue';
 
 import { onMainWindowRefresh } from '@/composables/useMainWindowNavigation';
 import { useSiteDetailsStore, useSiteStore, useSiteTasksStore } from '@/stores/site';
@@ -14,7 +14,13 @@ const addSiteOpen = ref(false);
 const store = useSiteStore();
 const { sitesViewState, sitesLoadError } = storeToRefs(store);
 
-onMounted(() => store.loadSite());
+onMounted(() => {
+  store.viewActive = true;
+  return store.loadSite();
+});
+onScopeDispose(() => {
+  store.viewActive = false;
+});
 onMainWindowRefresh('/config/sites', async () => {
   await store.loadSite({ autoLoadDetails: false });
   const id = store.selectedSiteId;

@@ -25,7 +25,7 @@ impl Monitoring {
                 Some(()) = cleanups.next(), if !cleanups.is_empty() => {},
                 _ = cleanup_interval.tick(), if cleanups.is_empty() => {
                     // 清理与网络任务共同推进，慢磁盘不会停止轮询所有正在探测的站点。
-                    cleanups.push(self.cleanup_records());
+                    cleanups.push(self.cleanup_records_from_source(crate::modules::operation_logs::OperationSource::System));
                 },
                 Some(id) = jobs.next(), if !jobs.is_empty() => { active.remove(&id); },
                 _ = interval.tick() => {

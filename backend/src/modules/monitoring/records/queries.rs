@@ -120,6 +120,33 @@ impl RecordStore {
                 ":site":Option::<String>::None, ":model":Option::<String>::None,
                 ":outcome":Option::<String>::None, ":id":id}, stored).optional())
     }
+    pub(super) fn by_ids(
+        &self,
+        ids: &[String],
+        retention_start: u64,
+        now: u64,
+    ) -> Result<ProbeRecordAssociationLookup, PersistenceError> {
+        // 一个连接快照和复用语句；完全独立于列表页码和筛选，不推测关联。
+        self.database.with_connection(|connection| {
+            let mut statement = connection.prepare(&format!("{HISTORY} SELECT * FROM filtered WHERE id=:id"))?;
+            let mut items = Vec::new();
+            let mut missing_ids = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for id in ids {
+                if !seen.insert(id) { continue; }
+                let row = statement.query_row(named_params! {
+                    ":retention":sql_integer(retention_start)?, ":now":sql_integer(now)?, ":since":0,
+                    ":site":Option::<String>::None, ":model":Option::<String>::None,
+                    ":outcome":Option::<String>::None, ":id":id,
+                }, stored).optional()?;
+                match row {
+                    Some(row) => items.push(row.list_item().map_err(|_| rusqlite::Error::InvalidQuery)?),
+                    None => missing_ids.push(id.clone()),
+                }
+            }
+            Ok(ProbeRecordAssociationLookup { items, missing_ids })
+        })
+    }
     pub(super) fn delete(&self, id: &str) -> Result<(), PersistenceError> {
         self.database.with_connection(|c| {
             c.execute("DELETE FROM probe_records WHERE id=?1", [id])
@@ -129,6 +156,13 @@ impl RecordStore {
     pub(super) fn clear(&self) -> Result<(), PersistenceError> {
         self.database
             .with_connection(|c| c.execute("DELETE FROM probe_records", []).map(|_| ()))
+    }
+    pub(super) fn count(&self) -> Result<u64, PersistenceError> {
+        self.database.with_connection(|c| {
+            c.query_row("SELECT COUNT(*) FROM probe_records", [], |row| {
+                number(row, 0)
+            })
+        })
     }
     pub(super) fn has_captures(&self) -> Result<bool, PersistenceError> {
         self.database.with_connection(|c| {

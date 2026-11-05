@@ -30,6 +30,12 @@ pub(crate) struct ProbeRecordListItem {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ProbeRecordAssociationLookup {
+    pub items: Vec<ProbeRecordListItem>,
+    pub missing_ids: Vec<String>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RecordsPage<T> {
     pub items: Vec<T>,
     pub total: u64,

@@ -5,7 +5,7 @@
 import type { GeneralSettings, LogStatistics } from '@/types/domain/general';
 import type { ThemeMode } from '@/types/theme';
 
-import { onMounted, ref } from 'vue';
+import { onMounted, onScopeDispose, ref } from 'vue';
 
 import {
   clearDiagnosticLogs,
@@ -15,6 +15,7 @@ import {
   openLogDirectory,
   updateGeneralSettings,
 } from '@/api/config/general';
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 import { useThemeStore } from '@/stores/theme';
 
 export function useGeneral() {
@@ -23,11 +24,25 @@ export function useGeneral() {
   const settings = ref<GeneralSettings>();
   const logStats = ref<LogStatistics>();
 
+  let version = 0;
+  let disposed = false;
   async function load(): Promise<void> {
-    const [next, stats] = await Promise.all([fetchGeneralSettings(), fetchLogStatistics()]);
-    settings.value = next;
-    logStats.value = stats;
+    const requestVersion = ++version;
+    try {
+      const [next, stats] = await Promise.all([fetchGeneralSettings(), fetchLogStatistics()]);
+      if (disposed || requestVersion !== version) return;
+      settings.value = next;
+      logStats.value = stats;
+    } catch (cause) {
+      // API 已显示错误；只采集仍属于当前页面这次加载的前端异常。
+      if (!disposed && requestVersion === version)
+        reportOperationReadFailure('general_settings', 'page', cause);
+    }
   }
+  onScopeDispose(() => {
+    disposed = true;
+    version += 1;
+  });
 
   /**
    * 改一个设置项：整份提交给后端，保存成功后才用返回值覆盖本地值（失败时值没动过，提示即可）。

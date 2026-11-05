@@ -18,7 +18,7 @@ use crate::shared::{
 pub(crate) use access::{SiteAccess, TaskError};
 pub(crate) use error::SiteError;
 pub(crate) use inputs::{ExecutionSnapshot, SiteExecutionScope};
-pub(crate) use service::{SiteMutation, SiteService};
+pub(crate) use service::{CommitObserver, SiteCommit, SiteMutation, SiteService};
 use sqlite::require_model;
 // 以下两种导入只会编译其中一种：测试时向整个 crate 开放 SiteStore，供其他模块的测试准备数据；
 // 非测试构建仅在 sites 内部使用，外部通过 SiteService 操作，避免绕过任务互斥和同步协调。

@@ -11,7 +11,7 @@ use crate::{
         notifications,
         sites::{
             self, ApplySync, CreateSite, CredentialAction, CustomRequest, ProbePolicy, Protocol,
-            SiteAccess, SiteDraft, SiteMutation, SiteStore,
+            SiteAccess, SiteDraft, SiteMutation, SiteStore, TaskError,
         },
     },
     shared::{
@@ -34,3 +34,7 @@ mod concurrency;
 mod model_sync;
 mod probe_results;
 mod request_policies;
+
+mod operation_records;
+
+mod operation_snapshots;

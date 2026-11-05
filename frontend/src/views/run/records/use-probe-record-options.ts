@@ -3,6 +3,7 @@ import type { Ref } from 'vue';
 
 import { computed, onScopeDispose, ref, shallowRef } from 'vue';
 
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 import { fetchProbeRecordOptions } from '@/api/run/records';
 
 /** 只读取筛选目录，并按后端给出的站点与模型关系映射下拉选项。 */
@@ -32,8 +33,10 @@ export function useProbeRecordOptions(siteId: Ref<string>) {
       const next = await fetchProbeRecordOptions();
       if (!disposed && requestVersion === version) data.value = next;
     } catch (cause) {
-      if (!disposed && requestVersion === version)
+      if (!disposed && requestVersion === version) {
         error.value = cause instanceof Error ? cause.message : '筛选选项加载失败';
+        reportOperationReadFailure('probe_records', 'page', cause);
+      }
     } finally {
       if (!disposed && requestVersion === version) loading.value = false;
     }

@@ -36,6 +36,20 @@ pub(super) fn record_id(id: &str) -> Result<()> {
     }
     Ok(())
 }
+pub(super) fn record_ids(ids: &[String]) -> Result<()> {
+    if ids.is_empty()
+        || ids.len() > 100
+        || ids
+            .iter()
+            .any(|id| id.trim().is_empty() || id.len() > 200 || id.chars().any(char::is_control))
+    {
+        return Err(invalid(
+            "recordIds",
+            "关联探测记录 ID 列表必须包含 1–100 个有效 ID，每个 ID 最多 200 字节。",
+        ));
+    }
+    Ok(())
+}
 fn filter(value: &Option<String>, field: &'static str) -> Result<()> {
     if value
         .as_ref()

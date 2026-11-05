@@ -20,6 +20,13 @@ pub(crate) enum SiteMutation {
     ModelEnabled(String, bool),
     Policy(Option<String>, Option<ProbePolicy>, Option<CustomRequest>),
 }
+pub(crate) enum SiteCommit {
+    Created(Box<Site>),
+    Changed(Box<(Site, Site)>),
+    Deleted(Box<Site>),
+    Reordered(Vec<Site>, Vec<Site>),
+}
+pub(crate) type CommitObserver = Box<dyn FnOnce(SiteCommit) + Send + 'static>;
 pub(crate) struct SiteService {
     store: SiteStore,
     client: Arc<ModelClient>,
@@ -83,13 +90,14 @@ impl SiteService {
         F: FnOnce(Arc<Lease>) -> Fut,
         Fut: Future<Output = ServiceResult<T>>,
     {
-        let cancel = self.cancellation();
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => Err(TaskError::Closing.into()),
-            result = action(lease.clone()) => result,
-        }
+        // Network work observes the cancellation token itself. Await blocking commits so a
+        // committed mutation and its operation log cannot be reported as cancelled.
+        // Retain our lease even when an action's async block never captures its parameter.
+        let result = action(lease.clone()).await;
+        drop(lease);
+        result
     }
+
     pub(crate) async fn list(&self) -> ServiceResult<Vec<Site>> {
         let store = self.store.clone();
         self.db(move || store.list()).await
@@ -131,7 +139,11 @@ impl SiteService {
             .map_err(|_| SiteError::Worker)??;
         Ok(SiteExecutionScope::new(snapshot, lease))
     }
-    pub(crate) async fn create(&self, input: CreateSite) -> ServiceResult<String> {
+    pub(crate) async fn create(
+        &self,
+        input: CreateSite,
+        observed: CommitObserver,
+    ) -> ServiceResult<String> {
         self.with_access(Some("__create_site__".into()), |lease| async move {
             validation::name(&input.name)?;
             validation::base_url(&input.base_url)?;
@@ -152,7 +164,10 @@ impl SiteService {
             lease
                 .blocking(move || {
                     let _write = changes.begin();
-                    store.create(&input, &names)
+                    let site = store.create_committed(&input, &names)?;
+                    let id = site.id.clone();
+                    observed(SiteCommit::Created(Box::new(site)));
+                    Ok::<_, SiteConfigError>(id)
                 })
                 .await
                 .map_err(|_| SiteError::Worker)?
@@ -160,7 +175,16 @@ impl SiteService {
         })
         .await
     }
+    #[cfg(test)]
     pub(crate) async fn mutate(&self, id: String, change: SiteMutation) -> ServiceResult<Site> {
+        self.mutate_observed(id, change, Box::new(|_| {})).await
+    }
+    pub(crate) async fn mutate_observed(
+        &self,
+        id: String,
+        change: SiteMutation,
+        observed: CommitObserver,
+    ) -> ServiceResult<Site> {
         let lease = if matches!(
             &change,
             SiteMutation::Enabled(_) | SiteMutation::ModelEnabled(..)
@@ -175,7 +199,9 @@ impl SiteService {
             lease
                 .blocking(move || {
                     let _write = changes.begin();
-                    match change {
+                    // The existing site lease protects both reads from another mutation.
+                    let before = store.get(&id)?;
+                    let after = match change {
                         SiteMutation::Basic(draft) => store.save_basic(&id, &draft),
                         SiteMutation::Connection(connection) => {
                             store.save_connection(&id, &connection)
@@ -192,7 +218,9 @@ impl SiteService {
                             policy.as_ref(),
                             custom.as_ref(),
                         ),
-                    }
+                    }?;
+                    observed(SiteCommit::Changed(Box::new((before, after.clone()))));
+                    Ok::<_, SiteConfigError>(after)
                 })
                 .await
                 .map_err(|_| SiteError::Worker)?
@@ -200,7 +228,7 @@ impl SiteService {
         })
         .await
     }
-    pub(crate) async fn delete(&self, id: String) -> ServiceResult<()> {
+    pub(crate) async fn delete(&self, id: String, observed: CommitObserver) -> ServiceResult<()> {
         self.with_access(Some(id.clone()), |lease| async move {
             let store = self.store.clone();
             let target = id.clone();
@@ -208,22 +236,36 @@ impl SiteService {
             lease
                 .blocking(move || {
                     let _write = changes.begin();
-                    store.delete(&target)
+                    let before = store.delete_committed(&target)?;
+                    observed(SiteCommit::Deleted(Box::new(before)));
+                    Ok::<_, SiteConfigError>(())
                 })
                 .await
                 .map_err(|_| SiteError::Worker)??;
-            self.pending.forget(&id)
+            self.pending.forget(&id)?;
+            Ok(())
         })
         .await
     }
-    pub(crate) async fn reorder(&self, ids: Vec<String>) -> ServiceResult<()> {
+    pub(crate) async fn reorder(
+        &self,
+        ids: Vec<String>,
+        observed: CommitObserver,
+    ) -> ServiceResult<()> {
         self.with_access(None, |lease| async move {
             let store = self.store.clone();
             let changes = self.changes.clone();
             lease
                 .blocking(move || {
                     let _write = changes.begin();
-                    store.reorder(&ids)
+                    let before = store.list()?;
+                    store.reorder(&ids)?;
+                    let after = ids
+                        .iter()
+                        .filter_map(|id| before.iter().find(|site| &site.id == id).cloned())
+                        .collect();
+                    observed(SiteCommit::Reordered(before, after));
+                    Ok::<_, SiteConfigError>(())
                 })
                 .await
                 .map_err(|_| SiteError::Worker)?
@@ -253,7 +295,12 @@ impl SiteService {
         })
         .await
     }
-    pub(crate) async fn apply_sync(&self, id: String, input: ApplySync) -> ServiceResult<()> {
+    pub(crate) async fn apply_sync(
+        &self,
+        id: String,
+        input: ApplySync,
+        observed: CommitObserver,
+    ) -> ServiceResult<()> {
         self.with_access(Some(id.clone()), |lease| async move {
             let pending = self.pending.get(&id)?;
             let expected: Vec<_> = pending
@@ -273,11 +320,15 @@ impl SiteService {
             lease
                 .blocking(move || {
                     let _write = changes.begin();
-                    store.apply_sync(&target, pending.revision, &input)
+                    let (before, after) =
+                        store.apply_sync_committed(&target, pending.revision, &input)?;
+                    observed(SiteCommit::Changed(Box::new((before, after))));
+                    Ok::<_, SiteConfigError>(())
                 })
                 .await
                 .map_err(|_| SiteError::Worker)??;
-            self.pending.forget(&id)
+            self.pending.forget(&id)?;
+            Ok(())
         })
         .await
     }
@@ -286,11 +337,12 @@ impl SiteService {
         id: String,
         model_id: String,
         draft: CustomRequest,
-    ) -> ServiceResult<CheckResult> {
+    ) -> ServiceResult<(CheckResult, Site)> {
         self.with_access(Some(id.clone()), |_lease| async move {
             let snapshot = self.execution_snapshot(id.clone()).await?;
             let request = snapshot.resolve_draft_input(&model_id, &draft)?;
-            self.client
+            let result = self
+                .client
                 .check_once(
                     &request,
                     ExecutionOptions::default(),
@@ -298,7 +350,8 @@ impl SiteService {
                     None,
                 )
                 .await
-                .map_err(Into::into)
+                .map_err(SiteError::from)?;
+            Ok((result, snapshot.site))
         })
         .await
     }

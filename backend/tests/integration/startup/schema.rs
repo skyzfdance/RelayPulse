@@ -21,6 +21,7 @@ fn creates_only_migrated_modules_and_named_schema_history() {
             "general_settings",
             "notification_rules",
             "notification_settings",
+            "operation_logs",
             "probe_records",
             "probe_states",
             "schema_migrations",
@@ -85,6 +86,7 @@ fn creates_only_migrated_modules_and_named_schema_history() {
             "notification_configuration",
             "site_configuration",
             "site_probe_records",
+            "operation_history",
         ]
     );
     let record_columns = connection

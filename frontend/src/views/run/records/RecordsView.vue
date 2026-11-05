@@ -12,6 +12,7 @@ import { DeleteOutlined } from '@antdv-next/icons';
 import { computed, onMounted, onScopeDispose, reactive, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 import { fetchProbeRecordsByIds } from '@/api/run/records';
 import { onMainWindowRefresh } from '@/composables/useMainWindowNavigation';
 
@@ -28,8 +29,16 @@ import AppIcon from '@/components/AppIcon.vue';
 const tab = ref<'records' | 'tokens'>('records');
 const range = ref<RecordTimeRange>('24h');
 const siteId = ref('');
-const recordList = useProbeRecords({ range, siteId });
-const tokenList = useTokenStats({ range, siteId });
+const associationRecordIds = ref<string[]>([]);
+const hasAssociation = computed(() => associationRecordIds.value.length > 0);
+const recordList = useProbeRecords(
+  { range, siteId },
+  () => tab.value === 'records' && !hasAssociation.value,
+);
+const tokenList = useTokenStats(
+  { range, siteId },
+  () => tab.value === 'tokens' && !hasAssociation.value,
+);
 const filterOptions = useProbeRecordOptions(siteId);
 const {
   data: recordData,
@@ -55,9 +64,7 @@ const {
 } = filterOptions;
 const detailRecordId = ref<string | null>(null);
 const association = shallowRef<ProbeRecordAssociationLookup | null>(null);
-const associationRecordIds = ref<string[]>([]);
 const associationPaging = reactive({ page: 1, pageSize: 20 });
-const hasAssociation = computed(() => associationRecordIds.value.length > 0);
 const associationLoading = ref(false);
 const associationError = ref('');
 const returnToOperationHistory = ref(false);
@@ -140,8 +147,10 @@ async function resolveAssociatedRecords() {
     );
     if (recordIds.length === 1 && result.items[0]) detailRecordId.value = result.items[0].id;
   } catch (cause) {
-    if (!disposed && requestVersion === associationVersion)
+    if (!disposed && requestVersion === associationVersion) {
       associationError.value = cause instanceof Error ? cause.message : '无法读取关联的探测记录';
+      reportOperationReadFailure('probe_records', 'page', cause);
+    }
   } finally {
     if (!disposed && requestVersion === associationVersion) associationLoading.value = false;
     const query = { ...(route?.query ?? {}) };

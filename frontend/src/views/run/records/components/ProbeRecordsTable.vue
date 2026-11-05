@@ -195,10 +195,7 @@ function changePage(page: number, pageSize: number) {
         </template>
       </a-table>
     </div>
-    <div
-      v-if="data && data.total > pageSize"
-      class="flex min-w-0 flex-none flex-wrap items-center gap-2 pt-4 sm:justify-end"
-    >
+    <div class="flex min-w-0 flex-none flex-wrap items-center gap-2 pt-4 sm:justify-end">
       <div class="min-w-0 max-w-full overflow-x-auto pb-1">
         <a-pagination v-bind="pagination" @change="changePage" />
       </div>

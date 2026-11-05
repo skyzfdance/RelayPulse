@@ -25,11 +25,12 @@ impl RecordStore {
     pub(in crate::modules::monitoring) fn prune(
         &self,
         cutoff: u64,
-    ) -> Result<(), PersistenceError> {
+    ) -> Result<u64, PersistenceError> {
         self.database.with_connection(|connection| {
             let tx = connection.transaction()?;
-            prune(&tx, cutoff)?;
-            tx.commit()
+            let count = prune(&tx, cutoff)?;
+            tx.commit()?;
+            Ok(count)
         })
     }
 }
@@ -82,12 +83,12 @@ pub(in crate::modules::monitoring) fn insert(
 pub(in crate::modules::monitoring) fn prune(
     tx: &Transaction<'_>,
     cutoff: u64,
-) -> rusqlite::Result<()> {
-    tx.execute(
+) -> rusqlite::Result<u64> {
+    let count = tx.execute(
         "DELETE FROM probe_records WHERE finished_at_ms<?1",
         [sql_integer(cutoff)?],
     )?;
-    Ok(())
+    Ok(count as u64)
 }
 
 fn enum_value(value: impl serde::Serialize) -> String {

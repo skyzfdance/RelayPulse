@@ -66,6 +66,14 @@ pub(super) fn record_id(request: Request<'_>) -> Result<String, CommandError> {
     }
     Ok(id)
 }
+pub(super) fn record_ids(request: Request<'_>) -> Result<Vec<String>, CommandError> {
+    let mut body = object(request, "recordIds")?;
+    let ids = take(&mut body, "recordIds", "recordIds")?;
+    if !body.is_empty() {
+        return Err(invalid("recordIds"));
+    }
+    Ok(ids)
+}
 pub(super) fn no_args(request: Request<'_>) -> Result<(), CommandError> {
     match request.body() {
         InvokeBody::Json(Value::Null) => Ok(()),

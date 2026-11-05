@@ -3,7 +3,9 @@ use tauri::State;
 
 use super::error::CommandError;
 use crate::{
-    modules::configuration::{ConfigurationError, ConfigurationService, GeneralSettings},
+    modules::configuration::{
+        ConfigurationBoundaryFailure, ConfigurationError, ConfigurationService, GeneralSettings,
+    },
     startup::StartupState,
 };
 
@@ -48,7 +50,11 @@ fn configuration(state: &StartupState) -> Result<&ConfigurationService, CommandE
 pub(super) fn get_general_settings(
     state: State<'_, StartupState>,
 ) -> Result<GeneralSettings, CommandError> {
-    configuration(&state)?.load().map_err(Into::into)
+    let service = configuration(&state)?;
+    service
+        .load()
+        .inspect_err(|_| service.record_read_failure())
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -58,7 +64,10 @@ pub(super) fn update_general_settings(
 ) -> Result<GeneralSettings, CommandError> {
     let service = configuration(&state)?;
     // 在协议边界解码，以结构化错误返回字段缺失、额外字段或类型错误。
-    let settings = serde_json::from_value(settings).map_err(|_| invalid_settings("settings"))?;
+    let settings = serde_json::from_value(settings).map_err(|_| {
+        service.record_boundary_failure(ConfigurationBoundaryFailure::InvalidRequest);
+        invalid_settings("settings")
+    })?;
     service.save(settings).map_err(Into::into)
 }
 

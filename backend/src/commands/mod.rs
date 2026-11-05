@@ -3,12 +3,16 @@ mod configuration;
 mod diagnostics;
 mod error;
 mod notifications;
+mod operation_logs;
 mod panel;
 mod records;
 mod sites;
 
 pub(crate) fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.invoke_handler(tauri::generate_handler![
+        operation_logs::get_operation_logs,
+        operation_logs::get_operation_log_detail,
+        operation_logs::report_operation_read_failure,
         panel::get_panel_snapshot,
         panel::refresh_panel,
         panel::sync_panel_window,
@@ -16,6 +20,7 @@ pub(crate) fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::
         panel::open_panel_sites,
         records::get_probe_record_options,
         records::get_probe_records,
+        records::get_probe_records_by_ids,
         records::get_probe_token_stats,
         records::get_probe_record_detail,
         records::get_probe_record_request,

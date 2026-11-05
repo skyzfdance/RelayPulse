@@ -29,6 +29,7 @@ impl HealthObserver for HealthNotifications {
         let _ = self.service.send_rule(
             rule,
             &NotificationContext {
+                source: change.source,
                 model: &change.model,
                 endpoint: &change.endpoint,
                 finished_at_ms: change.finished_at_ms,

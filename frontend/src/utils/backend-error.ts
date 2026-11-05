@@ -19,15 +19,17 @@ interface BackendErrorPayload {
 
 /** 保留后端错误契约（错误码、分类、字段与操作 ID）的后端调用异常。 */
 export class RelayPulseBackendError extends Error {
+  readonly origin: 'backend' | 'frontend';
   readonly code: string;
   readonly category: string;
   readonly field: string | null;
   readonly retryable: boolean;
   readonly operationId: string | null;
 
-  constructor(payload: BackendErrorPayload) {
+  constructor(payload: BackendErrorPayload, origin: 'backend' | 'frontend' = 'backend') {
     super(payload.message);
     this.name = 'RelayPulseBackendError';
+    this.origin = origin;
     this.code = payload.code;
     this.category = payload.category;
     this.field = payload.field ?? null;
@@ -43,15 +45,18 @@ export function backendError(
   if (cause instanceof RelayPulseBackendError) return cause;
   if (isBackendErrorPayload(cause)) return new RelayPulseBackendError(cause);
   reportFrontendError(source, cause);
-  return new RelayPulseBackendError({
-    code: 'internal',
-    category: 'internal',
-    message: 'RelayPulse could not complete the operation.',
-    retryable: false,
-  });
+  return new RelayPulseBackendError(
+    {
+      code: 'internal',
+      category: 'internal',
+      message: 'RelayPulse could not complete the operation.',
+      retryable: false,
+    },
+    'frontend',
+  );
 }
 
-function isBackendErrorPayload(value: unknown): value is BackendErrorPayload {
+export function isBackendErrorPayload(value: unknown): value is BackendErrorPayload {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return (

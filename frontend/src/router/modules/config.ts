@@ -1,5 +1,7 @@
 import type { RouteRecordRaw } from 'vue-router';
 
+import { operationPage } from '../operation-page';
+
 /**
  * 配置模块：站点管理 / 通用设置 / 消息通知。
  * 主路由不落地，自动转入第一个子路由。
@@ -14,7 +16,7 @@ const configRoutes: RouteRecordRaw = {
     {
       path: 'sites',
       name: 'sites',
-      component: () => import('@/views/config/sites/SitesView.vue'),
+      component: operationPage('site_list', () => import('@/views/config/sites/SitesView.vue')),
       meta: {
         title: '站点管理',
         mainTitle: '站点管理',
@@ -26,7 +28,10 @@ const configRoutes: RouteRecordRaw = {
     {
       path: 'general',
       name: 'general',
-      component: () => import('@/views/config/general/GeneralView.vue'),
+      component: operationPage(
+        'general_settings',
+        () => import('@/views/config/general/GeneralView.vue'),
+      ),
       meta: {
         title: '通用设置',
         mainTitle: '通用设置',
@@ -38,7 +43,10 @@ const configRoutes: RouteRecordRaw = {
     {
       path: 'notifications',
       name: 'notifications',
-      component: () => import('@/views/config/notifications/NotificationsView.vue'),
+      component: operationPage(
+        'notification_settings',
+        () => import('@/views/config/notifications/NotificationsView.vue'),
+      ),
       meta: {
         title: '消息通知',
         mainTitle: '消息通知',

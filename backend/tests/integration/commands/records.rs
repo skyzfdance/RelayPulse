@@ -508,3 +508,92 @@ fn all_nine_commands_report_structured_unavailable_when_startup_is_blocked() {
         assert!(error["operationId"].is_null());
     }
 }
+
+#[test]
+fn association_lookup_is_registered_rejects_unbounded_requests_and_reports_missing_ids() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = app(temp.path(), Arc::new(Desktop::default()));
+    let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    for body in [
+        json!({}),
+        json!({"recordIds":null}),
+        json!({"recordIds":[]}),
+        json!({"recordIds":[" "]}),
+        json!({"recordIds":[true]}),
+        json!({"recordIds":vec!["x";101]}),
+        json!({"recordIds":["x"],"query":{}}),
+    ] {
+        let error = invoke(&window, "get_probe_records_by_ids", body).unwrap_err();
+        assert_eq!(error["code"], "probe_records_validation");
+        assert_eq!(error["field"], "recordIds");
+    }
+    assert_eq!(
+        invoke(
+            &window,
+            "get_probe_records_by_ids",
+            json!({"recordIds":["first","second","first"]})
+        )
+        .unwrap(),
+        json!({"items":[],"missingIds":["first","second"]})
+    );
+}
+
+#[test]
+fn known_record_boundary_domain_and_storage_failures_log_once_without_raw_arguments() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = app(temp.path(), Arc::new(Desktop::default()));
+    let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    assert!(invoke(
+        &window,
+        "get_probe_record_options",
+        json!({"unknown":"private-argument"})
+    )
+    .is_err());
+    let mut invalid = query();
+    invalid["page"] = json!(0);
+    assert!(invoke(&window, "get_probe_records", json!({"query":invalid})).is_err());
+    assert!(invoke(
+        &window,
+        "get_probe_record_detail",
+        json!({"recordId":"missing"})
+    )
+    .is_err());
+    assert!(invoke(
+        &window,
+        "delete_probe_record",
+        json!({"recordId":false,"unknown":"private-argument"})
+    )
+    .is_err());
+    assert!(invoke(
+        &window,
+        "clear_probe_records",
+        json!({"unknown":"private-argument"})
+    )
+    .is_err());
+    let page = invoke(&window, "get_operation_logs", json!({"query":{
+        "startDate":null,"endDate":null,"source":[],"result":[],"actions":["read","delete","cleanup"],"page":1,"pageSize":100
+    }})).unwrap();
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 5);
+    for (action, count) in [
+        ("page_load_failed", 2),
+        ("detail_read_failed", 1),
+        ("record_deleted", 1),
+        ("records_cleared", 1),
+    ] {
+        assert_eq!(
+            items.iter().filter(|item| item["action"] == action).count(),
+            count,
+            "{action}"
+        );
+    }
+    for item in items {
+        assert_eq!(item["source"], "user");
+        assert_eq!(item["result"], "failure");
+    }
+    assert!(!page.to_string().contains("private-argument"));
+}

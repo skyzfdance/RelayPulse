@@ -3,6 +3,7 @@ import type { MaybeRefOrGetter } from 'vue';
 
 import { onScopeDispose, ref, shallowRef, toValue, watch } from 'vue';
 
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 import { fetchProbeRecordDetail } from '@/api/run/records';
 import { RelayPulseBackendError } from '@/utils/backend-error';
 
@@ -36,6 +37,7 @@ export function useProbeRecordDetail(recordId: MaybeRefOrGetter<string | null>) 
       } else {
         error.value = cause instanceof Error ? cause.message : '暂时无法读取探测详情，请重试';
         retryable.value = !(cause instanceof RelayPulseBackendError) || cause.retryable;
+        reportOperationReadFailure('probe_record_detail', 'detail', cause);
       }
     } finally {
       if (!disposed && requestVersion === version) loading.value = false;

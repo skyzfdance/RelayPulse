@@ -48,15 +48,14 @@ const columns: TableProps<SiteTokenStats>['columns'] = [
   { key: 'totalTokens', title: '总 Token', width: 150, align: 'right' },
   { key: 'averageTokens', title: '平均每次', width: 136, align: 'right' },
 ];
-const pagination = computed(() => {
-  if ((props.data?.total ?? 0) <= 20) return false;
-  return tablePagination(
+const pagination = computed(() =>
+  tablePagination(
     props.data?.page ?? props.page,
     props.pageSize,
     props.data?.total ?? 0,
     props.loading || props.busy,
-  );
-});
+  ),
+);
 function changePage(page: number, pageSize: number) {
   if (props.loading || props.busy) return;
   if (tableViewport.value) tableViewport.value.scrollTop = 0;
@@ -144,10 +143,7 @@ function changePage(page: number, pageSize: number) {
         </template>
       </a-table>
     </div>
-    <div
-      v-if="pagination"
-      class="flex min-w-0 flex-none flex-wrap items-center gap-2 pt-4 sm:justify-end"
-    >
+    <div class="flex min-w-0 flex-none flex-wrap items-center gap-2 pt-4 sm:justify-end">
       <div class="min-w-0 max-w-full overflow-x-auto pb-1">
         <a-pagination v-bind="pagination" @change="changePage" />
       </div>

@@ -1,5 +1,7 @@
 import type { RouteRecordRaw } from 'vue-router';
 
+import { operationPage } from '../operation-page';
+
 /**
  * 运行模块：探测记录 / 操作记录。
  * 主路由不落地，自动转入第一个子路由。
@@ -14,7 +16,10 @@ const runRoutes: RouteRecordRaw = {
     {
       path: 'records',
       name: 'records',
-      component: () => import('@/views/run/records/RecordsView.vue'),
+      component: operationPage(
+        'probe_records',
+        () => import('@/views/run/records/RecordsView.vue'),
+      ),
       meta: {
         title: '探测记录',
         mainTitle: '探测记录',

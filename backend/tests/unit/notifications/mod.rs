@@ -15,3 +15,5 @@ mod support;
 
 pub(crate) use support::FakePlatform;
 use support::{custom, service, DEV, FAILED, RECOVERED};
+
+mod operation_history;

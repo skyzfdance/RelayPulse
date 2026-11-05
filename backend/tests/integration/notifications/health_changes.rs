@@ -81,12 +81,31 @@ async fn committed_health_edges_notify_once_after_failure_and_recovery_threshold
             );
         }
     }
-    let sent = platform.sent.lock().unwrap();
+    let sent = platform.sent.lock().unwrap().clone();
     assert_eq!(sent[0].0, "⚠️ RelayPulse / model {{app}}");
     assert!(sent[0].1.starts_with("127.0.0.1 @ "));
     assert!(!sent[0].1.contains("{{time}}"));
     assert_eq!(sent[1].0, "✅ model {{app}} 已恢复");
     assert_eq!(server.requests().len(), 7);
+    let logs = f
+        .app
+        .operation_logs
+        .query(crate::modules::operation_logs::OperationLogQuery {
+            start_date: None,
+            end_date: None,
+            source: vec![],
+            result: vec![],
+            actions: vec![crate::modules::operation_logs::OperationActionGroup::StatusChange],
+            page: 1,
+            page_size: 100,
+        })
+        .await
+        .unwrap();
+    let logs = serde_json::to_value(logs).unwrap();
+    assert_eq!(logs["items"].as_array().unwrap().len(), 2);
+    for item in logs["items"].as_array().unwrap() {
+        assert_eq!(item["source"], "user");
+    }
 }
 
 #[tokio::test]
@@ -181,4 +200,28 @@ async fn scheduled_probes_use_the_same_notification_path() {
     lifecycle.stop().await;
     assert_eq!(platform.sent.lock().unwrap().len(), 1);
     assert_eq!(server.requests().len(), 1);
+    let logs = f
+        .app
+        .operation_logs
+        .query(crate::modules::operation_logs::OperationLogQuery {
+            start_date: None,
+            end_date: None,
+            source: vec![],
+            result: vec![],
+            actions: vec![],
+            page: 1,
+            page_size: 100,
+        })
+        .await
+        .unwrap();
+    let logs = serde_json::to_value(logs).unwrap();
+    let events = logs["items"].as_array().unwrap();
+    for action in ["automatic_probe", "model_failure", "automatic_notification"] {
+        let matching = events
+            .iter()
+            .filter(|item| item["action"] == action)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "{action}");
+        assert_eq!(matching[0]["source"], "system");
+    }
 }

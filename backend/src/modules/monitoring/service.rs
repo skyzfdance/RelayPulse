@@ -8,6 +8,10 @@ use super::{
 use crate::{
     modules::{
         configuration::ConfigurationService,
+        operation_logs::{
+            OperationAction, OperationEvent, OperationLogContent, OperationLogs, OperationResult,
+            OperationSource,
+        },
         sites::{Site, SiteError, SiteService, TaskError},
     },
     shared::{
@@ -55,9 +59,11 @@ pub(crate) struct Monitoring {
     pub(super) diagnostics: Recorder,
     pub(super) record_access: Arc<tokio::sync::RwLock<()>>,
     scheduler_started: AtomicBool,
+    scheduler_blocked: AtomicBool,
     changes: Arc<StateChanges>,
     activity: Arc<Mutex<ProbeActivity>>,
     health_observer: OnceLock<Arc<dyn HealthObserver>>,
+    pub(super) operation_logs: Option<Arc<OperationLogs>>,
 }
 impl Monitoring {
     pub(crate) fn new(
@@ -78,10 +84,16 @@ impl Monitoring {
             diagnostics: Recorder::new(diagnostics),
             record_access: Arc::new(tokio::sync::RwLock::new(())),
             scheduler_started: AtomicBool::new(false),
+            scheduler_blocked: AtomicBool::new(false),
             changes,
             activity: Arc::default(),
             health_observer: OnceLock::new(),
+            operation_logs: None,
         }
+    }
+    pub(crate) fn with_operation_logs(mut self, logs: Arc<OperationLogs>) -> Self {
+        self.operation_logs = Some(logs);
+        self
     }
     /// 宿主在启动调度器前连接一次；模块独立运行时不依赖系统通知。
     pub(crate) fn set_health_observer(
@@ -122,16 +134,35 @@ impl Monitoring {
             .map_err(|_| TaskError::Busy)
     }
     pub(crate) fn scheduler_failed(&self) {
+        self.scheduler_blocked("正式监测调度器意外停止。");
         let _ = self
             .diagnostics
             .observe("site_scheduler", || Err::<(), _>(MonitoringError::Worker));
+    }
+    fn scheduler_blocked(&self, reason: &str) {
+        if self.scheduler_blocked.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let Some(logs) = &self.operation_logs {
+            logs.record_best_effort(OperationEvent::new(
+                OperationAction::AutomaticProbe,
+                OperationSource::System,
+                OperationResult::Blocked,
+                "自动探测调度器",
+                "自动探测暂时受阻。",
+                OperationLogContent::ProbeFailure {
+                    reason: reason.into(),
+                },
+            ));
+        }
     }
     pub(super) fn settings_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.general.subscribe()
     }
     pub(crate) async fn automatic_enabled(&self) -> Result<bool> {
         let general = self.general.clone();
-        self.diagnostics
+        let result = self
+            .diagnostics
             .observe_async("site_schedule_settings", async {
                 self.storage
                     .blocking(move || general.load())
@@ -140,7 +171,14 @@ impl Monitoring {
                     .map(|settings| settings.continue_in_background)
                     .map_err(|_| MonitoringError::Storage)
             })
-            .await
+            .await;
+        match &result {
+            Ok(_) => {
+                self.scheduler_blocked.store(false, Ordering::SeqCst);
+            }
+            Err(error) => self.scheduler_blocked(&error.to_string()),
+        }
+        result
     }
     pub(crate) async fn states(
         &self,
@@ -162,18 +200,21 @@ impl Monitoring {
         model_id: Option<String>,
         scheduled: bool,
     ) -> Result<Site> {
-        let cancellation = self.cancellation();
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => Err(SiteError::Task(TaskError::Closing).into()),
-            result = self.perform(site_id, model_id, scheduled) => result,
-        }
+        let audit =
+            super::operation_events::ProbeOperation::new(self.operation_logs.clone(), scheduled);
+        // 网络层响应取消，已派发的事务继续等待提交，审计租约收集其真实 ID。
+        let result = self
+            .perform(site_id, model_id, scheduled, audit.clone())
+            .await;
+        audit.finish(&result);
+        result
     }
     async fn perform(
         &self,
         site_id: String,
         model_id: Option<String>,
         scheduled: bool,
+        audit: Arc<super::operation_events::ProbeOperation>,
     ) -> Result<Site> {
         let scope = if scheduled {
             self.sites
@@ -182,6 +223,16 @@ impl Monitoring {
         } else {
             self.sites.begin_execution(site_id.clone()).await?
         };
+        audit.snapshot(
+            &scope.site().name,
+            model_id.as_ref().and_then(|id| {
+                scope
+                    .models()
+                    .iter()
+                    .find(|model| &model.id == id)
+                    .map(|model| model.name.as_str())
+            }),
+        );
         if let Some(id) = &model_id {
             scope.resolve_probe_input(id).map_err(SiteError::from)?;
         }
@@ -287,6 +338,10 @@ impl Monitoring {
             )
             .map_err(crate::shared::model_client::ClientError::from)
             .map_err(SiteError::from)?;
+            audit.snapshot(
+                &context.site_name,
+                model_id.as_ref().map(|_| context.model_name.as_str()),
+            );
             let mut recording = if let Some(captures) = &self.captures {
                 Some(
                     captures
@@ -335,19 +390,53 @@ impl Monitoring {
             let changes = self.changes.clone();
             let held_task = current_task.clone();
             let completed_id = model.id.clone();
-            let health_change =
-                HealthChange::between(&previous, &next, &model.name, &request.target.base_url);
+            let health_change = HealthChange::between(
+                &previous,
+                &next,
+                &record.context.model_name,
+                &request.target.base_url,
+                if scheduled {
+                    OperationSource::System
+                } else {
+                    OperationSource::User
+                },
+            );
+            let audit = audit.clone();
+            let operation_logs = self.operation_logs.clone();
             let observer = self.health_observer.get().cloned();
             scope
                 .blocking(move || {
                     {
                         let _history = held_history;
                         let _write = changes.begin();
-                        storage.complete(&record, &saved, retention)?;
+                        let pruned = storage.complete(&record, &saved, retention)?;
+                        audit.committed(record.context.id.clone());
                         held_task.completed(completed_id);
+                        if let Some(logs) = &operation_logs {
+                            super::operation_events::cleanup_event(
+                                logs,
+                                OperationAction::ScheduledRecordCleanup,
+                                if scheduled {
+                                    OperationSource::System
+                                } else {
+                                    OperationSource::User
+                                },
+                                pruned,
+                                "探测记录",
+                            );
+                        }
                     }
-                    if let (Some(observer), Some(change)) = (observer, health_change) {
-                        observer.changed(&change);
+                    if let Some(change) = health_change {
+                        if let Some(logs) = &operation_logs {
+                            super::operation_events::health_event(
+                                logs,
+                                &change,
+                                &record.context.site_name,
+                            );
+                        }
+                        if let Some(observer) = observer {
+                            observer.changed(&change);
+                        }
                     }
                     Ok::<_, crate::shared::persistence::PersistenceError>(())
                 })
@@ -364,11 +453,16 @@ impl Monitoring {
         Ok(scope.site().clone())
     }
     pub(crate) async fn cleanup_records(&self) {
+        self.cleanup_records_from_source(OperationSource::User)
+            .await;
+    }
+    pub(super) async fn cleanup_records_from_source(&self, source: OperationSource) {
         let access = Arc::new(self.record_access.clone().read_owned().await);
         let general = self.general.clone();
         let records = self.storage.records();
         let result = async {
             let history = records.clone();
+            let logs = self.operation_logs.clone();
             let held_access = access.clone();
             let retention = self
                 .storage
@@ -378,9 +472,18 @@ impl Monitoring {
                         .load()
                         .map_err(|_| MonitoringError::Storage)?
                         .history_retention_days;
-                    history
+                    let pruned = history
                         .prune(health::now_ms().saturating_sub(u64::from(retention) * 86_400_000))
                         .map_err(|_| MonitoringError::Storage)?;
+                    if let Some(logs) = &logs {
+                        super::operation_events::cleanup_event(
+                            logs,
+                            OperationAction::ScheduledRecordCleanup,
+                            source,
+                            pruned,
+                            "探测记录",
+                        );
+                    }
                     Ok::<_, MonitoringError>(retention)
                 })
                 .await
@@ -394,15 +497,38 @@ impl Monitoring {
                         .map_err(|_| OutputError)?
                         .map_err(|_| OutputError)
                 };
-                captures
+                let count = captures
                     .cleanup(retained, retention)
                     .await
                     .map_err(|_| MonitoringError::Capture)?;
+                if let Some(logs) = &self.operation_logs {
+                    super::operation_events::cleanup_event(
+                        logs,
+                        OperationAction::ScheduledLogCleanup,
+                        source,
+                        count,
+                        "探测记录日志文件",
+                    );
+                }
             }
             Ok::<_, MonitoringError>(())
         }
         .await;
         if let Err(error) = result {
+            if let Some(logs) = &self.operation_logs {
+                logs.record_best_effort(OperationEvent::new(
+                    OperationAction::ScheduledRecordCleanup,
+                    source,
+                    OperationResult::Failure,
+                    "探测记录及日志",
+                    "探测记录清理未完成。",
+                    OperationLogContent::Failure {
+                        activity: "清理探测记录".into(),
+                        target: "探测记录及日志".into(),
+                        reason: error.to_string(),
+                    },
+                ));
+            }
             let _ = self
                 .diagnostics
                 .observe("probe_record_cleanup", || Err::<(), _>(error));
@@ -447,8 +573,12 @@ impl Monitoring {
         }
         .await;
         match result {
-            Ok(ids) => ids,
+            Ok(ids) => {
+                self.scheduler_blocked.store(false, Ordering::SeqCst);
+                ids
+            }
             Err(error) => {
+                self.scheduler_blocked(&error.to_string());
                 let _ = self
                     .diagnostics
                     .observe("site_schedule_scan", || Err::<(), _>(error));

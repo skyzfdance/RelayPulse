@@ -46,6 +46,12 @@ pub(crate) struct LogStatistics {
     pub file_count: u64,
 }
 
+/// 同一诊断锁内取得的清理事实；不决定如何展示或记录业务操作。
+pub(crate) struct ClearOutcome {
+    pub remaining: LogStatistics,
+    pub removed: LogStatistics,
+}
+
 #[derive(Default)]
 struct State {
     startup: Option<Outcome>,
@@ -141,13 +147,19 @@ impl Diagnostics {
         self.statistics_unlocked()
     }
 
-    pub(crate) fn clear(&self) -> Result<LogStatistics, DiagnosticsError> {
+    pub(crate) fn clear(&self) -> Result<ClearOutcome, DiagnosticsError> {
         let _guard = self.lock()?;
         // 先验证全部候选，再删除；不持有长期开启的文件句柄，下一次写入可重新创建文件。
-        for (path, _) in self.files()? {
+        let mut removed = LogStatistics::default();
+        for (path, size) in self.files()? {
             fs::remove_file(path)?;
+            removed.file_count += 1;
+            removed.total_bytes += size;
         }
-        self.statistics_unlocked()
+        Ok(ClearOutcome {
+            remaining: self.statistics_unlocked()?,
+            removed,
+        })
     }
 }
 

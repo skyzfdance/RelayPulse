@@ -198,10 +198,10 @@ const labelSource = (source: OperationSource) => sourceLabel[source];
 const labelAction = (action: OperationActionGroup) => operationActionGroupLabels[action];
 const labelResult = (result: OperationResult) => resultLabel[result];
 const colorResult = (result: OperationResult) => resultColor[result];
+const linksToProbeRecords = (item: OperationLogListItem) =>
+  item.detailBehavior.kind === 'probe_records' && item.detailBehavior.availability !== 'none';
 const operationTooltip = (item: OperationLogListItem) =>
-  item.detailBehavior.kind === 'probe_records' && item.detailBehavior.availability !== 'none'
-    ? '查看关联探测记录'
-    : '查看操作详情';
+  linksToProbeRecords(item) ? '查看关联探测记录' : '查看操作详情';
 const activeFilters = computed(() =>
   Boolean(
     query.startDate ||
@@ -325,7 +325,8 @@ const activeFilters = computed(() =>
           </span>
           <a-tooltip v-else-if="column.key === 'operation'" :title="operationTooltip(record)">
             <a-button
-              type="text"
+              variant="text"
+              :color="linksToProbeRecords(record) ? 'cyan' : 'primary'"
               size="small"
               shape="circle"
               :aria-label="operationTooltip(record)"
@@ -355,7 +356,7 @@ const activeFilters = computed(() =>
 
     <div
       v-if="data && data.total > 0"
-      class="flex flex-none flex-wrap items-center justify-end gap-3 border-t border-rp-line pt-3"
+      class="flex flex-none flex-wrap items-center justify-end gap-3 pt-3"
     >
       <a-pagination
         :current="data.page"

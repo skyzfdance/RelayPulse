@@ -64,7 +64,11 @@ impl SiteStore {
             Ok(ExecutionSnapshot { site, target })
         })
     }
+    #[cfg(test)]
     pub(crate) fn create(&self, input: &CreateSite, models: &[String]) -> Result<String> {
+        self.create_committed(input, models).map(|site| site.id)
+    }
+    pub(super) fn create_committed(&self, input: &CreateSite, models: &[String]) -> Result<Site> {
         let name = validation::name(&input.name)?;
         let url = validation::base_url(&input.base_url)?.to_string();
         validation::credential(&input.secret)?;
@@ -79,8 +83,7 @@ impl SiteStore {
                 if !seen.insert(name) { return Err(SiteConfigError::Duplicate); }
                 insert_model(tx, &id, name, index as i64)?;
             }
-            load(tx, &id)?;
-            Ok(id.clone())
+            load(tx, &id)
         })
     }
     pub(crate) fn save_basic(&self, id: &str, draft: &SiteDraft) -> Result<Site> {
@@ -223,7 +226,11 @@ impl SiteStore {
             load(tx, id)
         })
     }
+    #[cfg(test)]
     pub(crate) fn delete(&self, id: &str) -> Result<()> {
+        self.delete_committed(id).map(|_| ())
+    }
+    pub(super) fn delete_committed(&self, id: &str) -> Result<Site> {
         self.write(|tx| {
             let site = load(tx, id)?;
             tx.execute("DELETE FROM sites WHERE id=?1", [id])?;
@@ -231,7 +238,7 @@ impl SiteStore {
                 "UPDATE sites SET priority=priority-1 WHERE priority>?1",
                 [site.priority],
             )?;
-            Ok(())
+            Ok(site)
         })
     }
     pub(crate) fn reorder(&self, ids: &[String]) -> Result<()> {
@@ -255,7 +262,16 @@ impl SiteStore {
             Ok(())
         })
     }
+    #[cfg(test)]
     pub(crate) fn apply_sync(&self, id: &str, revision: i64, input: &ApplySync) -> Result<()> {
+        self.apply_sync_committed(id, revision, input).map(|_| ())
+    }
+    pub(super) fn apply_sync_committed(
+        &self,
+        id: &str,
+        revision: i64,
+        input: &ApplySync,
+    ) -> Result<(Site, Site)> {
         self.write(|tx| {
             let site = load(tx, id)?;
             if site.revision != revision {
@@ -293,8 +309,7 @@ impl SiteStore {
                 insert_model(tx, id, name, position + i as i64)?;
             }
             bump(tx, id)?;
-            load(tx, id)?;
-            Ok(())
+            Ok((site, load(tx, id)?))
         })
     }
 }

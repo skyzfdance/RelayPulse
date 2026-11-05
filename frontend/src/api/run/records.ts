@@ -1,4 +1,4 @@
-/** 页面业务数据的唯一入口；浏览器已接 Mock，真实后端尚待按此契约接入。 */
+/** 页面业务数据的唯一入口；Tauri 读取真实后端，浏览器预览使用 Mock。 */
 import type {
   OpenProbeRecordLogResult,
   ProbeRecordAssociationLookup,
@@ -28,9 +28,24 @@ export function fetchProbeRecords(
   return callBackend('get_probe_records', { query: { ...query } }, READ_OPTIONS);
 }
 
-/** Resolve an event's exact record IDs, independent of the current list filters or page. */
-export function fetchProbeRecordsByIds(recordIds: string[]): Promise<ProbeRecordAssociationLookup> {
-  return callBackend('get_probe_records_by_ids', { recordIds: [...recordIds] }, READ_OPTIONS);
+/** 按真实 ID 集合定位；分批读取大型任务的全部记录，保持每次命令的资源上限。 */
+export async function fetchProbeRecordsByIds(
+  recordIds: string[],
+): Promise<ProbeRecordAssociationLookup> {
+  const ids = [...new Set(recordIds)];
+  const items: ProbeRecordListItem[] = [];
+  const missingIds: string[] = [];
+  // 空参数也交给后端校验；不能把无效请求伪装成成功的空集合。
+  for (let offset = 0; offset < Math.max(1, ids.length); offset += 100) {
+    const result = await callBackend<ProbeRecordAssociationLookup>(
+      'get_probe_records_by_ids',
+      { recordIds: ids.slice(offset, offset + 100) },
+      READ_OPTIONS,
+    );
+    items.push(...result.items);
+    missingIds.push(...result.missingIds);
+  }
+  return { items, missingIds };
 }
 
 export function fetchProbeTokenStats(query: TokenStatsQuery): Promise<TokenStatsPage> {

@@ -2,7 +2,10 @@
 use crate::{
     application::composition::{self, Application},
     modules::{
-        configuration::ConfigurationError, notifications::NotificationError, sites::SiteError,
+        configuration::ConfigurationError,
+        notifications::NotificationError,
+        operation_logs::{defer_startup_failure, StartupFailureStage},
+        sites::SiteError,
     },
     shared::{
         diagnostics::{Diagnostics, Failure, Outcome},
@@ -44,15 +47,32 @@ pub(crate) fn initialize(
         Ok(environment) => environment,
         Err(error) => return (StartupState::Blocked(error.into()), DiagnosticsState(None)),
     };
+    let startup_root = environment.paths().data_root().to_owned();
     let diagnostics = composition::diagnostics(&environment);
     diagnostics.record_best_effort("startup", Outcome::Started);
     let state = match prepare(environment, diagnostics.clone()) {
         Ok(application) => {
             diagnostics.record_best_effort("startup", Outcome::Succeeded);
+            application
+                .operation_logs
+                .record_startup_ready(application.environment.paths());
             StartupState::Ready(application)
         }
         Err((error, stage)) => {
             diagnostics.record_best_effort("startup", Outcome::Failed(stage));
+            let pending_stage = match &error {
+                StartupError::Persistence(_) => StartupFailureStage::Persistence,
+                StartupError::Configuration(_) => StartupFailureStage::Configuration,
+                StartupError::Notifications(_) => StartupFailureStage::Notifications,
+                StartupError::Sites(_) => StartupFailureStage::Sites,
+                StartupError::Environment(_) => {
+                    return (
+                        StartupState::Blocked(error),
+                        DiagnosticsState(Some(diagnostics)),
+                    )
+                }
+            };
+            defer_startup_failure(&startup_root, pending_stage);
             StartupState::Blocked(error)
         }
     };

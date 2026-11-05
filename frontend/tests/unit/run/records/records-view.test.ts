@@ -89,10 +89,12 @@ async function switchTab(
 }
 
 describe('探测记录页面交互', () => {
-  it('单页记录不显示分页器，分页布局具备窄屏收缩容器', async () => {
+  it('两个列表在只有一页时仍显示分页器', async () => {
     seedProbeRecords(createProbeRecordFixtures().slice(0, 5));
     const { wrapper } = await mountPage();
-    expect(wrapper.findComponent(ProbeRecordsTable).find('.ant-pagination').exists()).toBe(false);
+    expect(wrapper.getComponent(ProbeRecordsTable).find('.ant-pagination').exists()).toBe(true);
+    await switchTab(wrapper, 'tokens');
+    expect(wrapper.getComponent(TokenStatsTable).find('.ant-pagination').exists()).toBe(true);
   });
 
   it('默认按探测时间降序加载和分页，表头不显示排序且点击不会重新查询', async () => {
@@ -134,7 +136,10 @@ describe('探测记录页面交互', () => {
       ),
     ).toBe(true);
     await switchTab(wrapper, 'tokens');
-    expect(wrapper.findAllComponents(Select)).toHaveLength(2);
+    expect(wrapper.find('[aria-label="时间范围"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="站点筛选"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="模型筛选"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="探测结果筛选"]').exists()).toBe(false);
     expect(wrapper.find('input[aria-label="搜索模型或错误"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain('记录保留');
     expect(tokenData(wrapper)?.summary).toEqual(stats);

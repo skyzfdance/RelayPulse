@@ -7,12 +7,16 @@ import type {
 } from '@/types/domain/records';
 import type { Ref } from 'vue';
 
-import { computed, onScopeDispose, reactive, ref, shallowRef } from 'vue';
+import { computed, onScopeDispose, reactive, ref, shallowRef, watch } from 'vue';
 
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 import { clearProbeRecords, deleteProbeRecord, fetchProbeRecords } from '@/api/run/records';
 
 /** 探测记录 Tab 的查询与操作状态；列表内容直接使用后端 DTO。 */
-export function useProbeRecords(filters: { range: Ref<RecordTimeRange>; siteId: Ref<string> }) {
+export function useProbeRecords(
+  filters: { range: Ref<RecordTimeRange>; siteId: Ref<string> },
+  isVisible: () => boolean = () => true,
+) {
   const data = shallowRef<RecordsPage<ProbeRecordListItem>>();
   const loading = ref(false);
   const error = ref('');
@@ -23,6 +27,7 @@ export function useProbeRecords(filters: { range: Ref<RecordTimeRange>; siteId: 
   const busy = computed(() => mutation.value !== null);
   let version = 0;
   let disposed = false;
+  let hiddenFailure: { cause: unknown } | undefined;
 
   async function load() {
     if (disposed) return;
@@ -36,6 +41,7 @@ export function useProbeRecords(filters: { range: Ref<RecordTimeRange>; siteId: 
     };
     loading.value = true;
     error.value = '';
+    hiddenFailure = undefined;
     try {
       const next = await fetchProbeRecords(query);
       if (disposed || requestVersion !== version) return;
@@ -43,8 +49,11 @@ export function useProbeRecords(filters: { range: Ref<RecordTimeRange>; siteId: 
       paging.page = next.page;
       return next;
     } catch (cause) {
-      if (!disposed && requestVersion === version)
+      if (!disposed && requestVersion === version) {
         error.value = cause instanceof Error ? cause.message : '探测记录加载失败';
+        if (isVisible()) reportOperationReadFailure('probe_records', 'page', cause);
+        else hiddenFailure = { cause };
+      }
     } finally {
       if (!disposed && requestVersion === version) loading.value = false;
     }
@@ -52,6 +61,7 @@ export function useProbeRecords(filters: { range: Ref<RecordTimeRange>; siteId: 
 
   function invalidate(clearData = false) {
     version += 1;
+    hiddenFailure = undefined;
     loading.value = false;
     if (clearData) data.value = undefined;
   }
@@ -87,6 +97,12 @@ export function useProbeRecords(filters: { range: Ref<RecordTimeRange>; siteId: 
     }
   }
 
+  watch(isVisible, (visible) => {
+    if (visible && hiddenFailure) {
+      reportOperationReadFailure('probe_records', 'page', hiddenFailure.cause);
+      hiddenFailure = undefined;
+    }
+  });
   onScopeDispose(() => {
     disposed = true;
     invalidate();

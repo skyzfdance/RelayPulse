@@ -9,6 +9,7 @@ pub(crate) struct Fixture {
     pub sites: Arc<SiteService>,
     pub monitoring: Arc<Monitoring>,
     pub general: Arc<ConfigurationService>,
+    pub operation_logs: Arc<crate::modules::operation_logs::OperationLogs>,
 }
 impl Fixture {
     pub(crate) fn new() -> Self {
@@ -22,14 +23,19 @@ impl Fixture {
                     notifications::SCHEMA,
                     sites::SCHEMA,
                     monitoring::SCHEMA,
+                    crate::modules::operation_logs::SCHEMA,
                 ],
             )
             .unwrap(),
         );
         let diagnostics = Arc::new(Diagnostics::new(&env));
-        let general = Arc::new(ConfigurationService::new(SqliteSettingsStore::new(
+        let operation_logs = Arc::new(crate::modules::operation_logs::OperationLogs::new(
             database.clone(),
-        )));
+        ));
+        let general = Arc::new(
+            ConfigurationService::new(SqliteSettingsStore::new(database.clone()))
+                .with_operation_logs(operation_logs.clone()),
+        );
         let client = Arc::new(ModelClient::default());
         let store = SiteStore::new(database.clone());
         let sites = Arc::new(SiteService::new(
@@ -37,19 +43,21 @@ impl Fixture {
             client.clone(),
             Arc::new(SiteAccess::default()),
         ));
-        let monitoring = Arc::new(Monitoring::new(
-            sites.clone(),
-            client,
-            database.clone(),
-            general.clone(),
-            diagnostics.clone(),
-            Some(env.paths().data_root().join("probe-records")),
-        ));
-        let service = Arc::new(Sites::new(
-            sites.clone(),
-            monitoring.clone(),
-            diagnostics.clone(),
-        ));
+        let monitoring = Arc::new(
+            Monitoring::new(
+                sites.clone(),
+                client,
+                database.clone(),
+                general.clone(),
+                diagnostics.clone(),
+                Some(env.paths().data_root().join("probe-records")),
+            )
+            .with_operation_logs(operation_logs.clone()),
+        );
+        let service = Arc::new(
+            Sites::new(sites.clone(), monitoring.clone(), diagnostics.clone())
+                .with_operation_logs(operation_logs.clone()),
+        );
         Self {
             _directory: directory,
             service,
@@ -59,6 +67,7 @@ impl Fixture {
             sites,
             monitoring,
             general,
+            operation_logs,
         }
     }
     pub(crate) fn site(&self, url: &str, names: &[&str]) -> String {

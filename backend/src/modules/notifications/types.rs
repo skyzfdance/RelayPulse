@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) struct NotificationContext<'a> {
+    pub source: crate::modules::operation_logs::OperationSource,
     pub model: &'a str,
     pub endpoint: &'a str,
     pub finished_at_ms: u64,

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     commands::register,
-    desktop::diagnostics::DiagnosticsPlatform,
+    desktop::diagnostics::{DiagnosticsPlatform, DiagnosticsPlatformError},
     shared::persistence::test_support::environment,
     startup::{self, StartupState},
 };
@@ -170,4 +170,52 @@ fn environment_failure_does_not_fake_zero_statistics() {
             "diagnostics_unavailable"
         );
     }
+}
+
+#[tokio::test]
+async fn ready_diagnostics_audits_cancel_success_failure_and_actual_export_filename() {
+    let temp = tempfile::tempdir().unwrap();
+    let (state, diagnostics) =
+        startup::initialize(Ok(environment(temp.path(), "com.relaypulse.app.dev")));
+    let StartupState::Ready(application) = &state else {
+        panic!("not ready")
+    };
+    let logs = application.operation_logs.clone();
+    let platform = Arc::new(FakeDesktop::default());
+    let app = register(mock_builder())
+        .manage(state)
+        .manage(diagnostics)
+        .manage(DiagnosticsDesktop(platform.clone()))
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    assert_eq!(
+        invoke(&window, "export_diagnostics").unwrap_err()["category"],
+        "cancelled"
+    );
+    let destination = temp.path().join("renamed-diagnostics.json");
+    *platform.destination.lock().unwrap() = Some(destination);
+    assert_eq!(invoke(&window, "export_diagnostics").unwrap(), true);
+    *platform.fail.lock().unwrap() = true;
+    assert!(invoke(&window, "open_log_directory").is_err());
+    *platform.fail.lock().unwrap() = false;
+    invoke(&window, "clear_diagnostic_logs").unwrap();
+    let query=serde_json::from_value(json!({"startDate":null,"endDate":null,"source":["user"],"result":[],"actions":[],"page":1,"pageSize":100})).unwrap();
+    let page = logs.query(query).await.unwrap();
+    assert_eq!(page.total, 4);
+    let mut details = vec![];
+    for item in page.items {
+        details.push(serde_json::to_value(logs.detail(item.id).await.unwrap()).unwrap());
+    }
+    assert!(details
+        .iter()
+        .any(|detail| detail["item"]["result"] == "cancelled"));
+    assert!(details.iter().any(|detail| detail["content"]["filename"]
+        == "renamed-diagnostics.json"
+        && detail["item"]["result"] == "success"));
+    assert!(!serde_json::to_string(&details)
+        .unwrap()
+        .contains(temp.path().to_str().unwrap()));
 }

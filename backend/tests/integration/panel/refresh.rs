@@ -243,3 +243,105 @@ async fn newly_enabled_models_in_a_running_automatic_batch_expand_the_actual_pla
     assert_eq!(completed["lastProbe"]["totalCount"], 2);
     lifecycle.stop().await;
 }
+
+#[tokio::test]
+async fn panel_and_tray_refreshes_keep_user_origin_including_preflight_blocked_requests() {
+    let f = Fixture::new();
+    f.app.panel.refresh().await.unwrap();
+    let server = Server::new(vec![
+        Response::raw(200, "text/plain", "OK").delayed(Duration::from_millis(100))
+    ]);
+    f.site(&server.url, &["model"], true);
+    let panel = f.app.panel.clone();
+    let task = tokio::spawn(async move { panel.refresh().await });
+    server.wait_requests(1).await;
+    assert!(matches!(f.app.panel.refresh().await, Err(PanelError::Busy)));
+    task.await.unwrap().unwrap();
+    let page = f
+        .app
+        .operation_logs
+        .query(crate::modules::operation_logs::OperationLogQuery {
+            start_date: None,
+            end_date: None,
+            source: vec![],
+            result: vec![],
+            actions: vec![crate::modules::operation_logs::OperationActionGroup::Probe],
+            page: 1,
+            page_size: 100,
+        })
+        .await
+        .unwrap();
+    let page = serde_json::to_value(page).unwrap();
+    let events = page["items"].as_array().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["result"] == "blocked")
+            .count(),
+        2
+    );
+    let completed = events
+        .iter()
+        .find(|event| event["result"] == "success")
+        .unwrap();
+    assert_eq!(
+        completed["detailBehavior"]["recordIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    for event in events {
+        assert_eq!(event["source"], "user");
+        assert_eq!(event["action"], "manual_probe");
+    }
+}
+
+#[tokio::test]
+async fn panel_final_read_failure_keeps_probe_success_and_only_explicit_refresh_adds_read_failure()
+{
+    let f = Fixture::new();
+    let server = Server::new(vec![Response::raw(200, "text/plain", "OK")]);
+    f.site(&server.url, &["model"], true);
+    // 真实记录/健康提交成功后令投影输入异常；探测本身无需读取这张表。
+    f.database
+        .with_connection(|c| {
+            c.execute_batch(
+                "CREATE TRIGGER break_panel AFTER INSERT ON probe_states
+        BEGIN DELETE FROM general_settings; END;",
+            )
+        })
+        .unwrap();
+    assert!(f.app.panel.refresh().await.is_err());
+    assert!(f.app.panel.snapshot().await.is_err());
+    let page = f
+        .app
+        .operation_logs
+        .query(crate::modules::operation_logs::OperationLogQuery {
+            start_date: None,
+            end_date: None,
+            source: vec![],
+            result: vec![],
+            actions: vec![],
+            page: 1,
+            page_size: 100,
+        })
+        .await
+        .unwrap();
+    let page = serde_json::to_value(page).unwrap();
+    let events = page["items"].as_array().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["action"] == "manual_probe" && event["result"] == "success")
+            .count(),
+        1
+    );
+    let reads = events
+        .iter()
+        .filter(|event| event["action"] == "page_load_failed")
+        .collect::<Vec<_>>();
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0]["source"], "user");
+}

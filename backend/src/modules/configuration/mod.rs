@@ -3,7 +3,7 @@ mod service;
 mod sqlite;
 mod types;
 
-pub(crate) use service::{ConfigurationError, ConfigurationService};
+pub(crate) use service::{ConfigurationBoundaryFailure, ConfigurationError, ConfigurationService};
 pub(crate) use sqlite::{SqliteSettingsStore, SCHEMA};
 pub(crate) use types::{GeneralSettings, Language, ThemeMode};
 

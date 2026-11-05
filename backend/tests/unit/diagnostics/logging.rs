@@ -15,7 +15,7 @@ fn write_statistics_clear_and_resume_preserve_other_data_and_environment() {
     let dev = diagnostics(&temp, DEV);
     let prod = diagnostics(&temp, PROD);
     assert_eq!(dev.statistics().unwrap(), LogStatistics::default());
-    assert_eq!(dev.clear().unwrap(), LogStatistics::default());
+    assert_eq!(dev.clear().unwrap().remaining, LogStatistics::default());
     dev.record("startup", Outcome::Started).unwrap();
     prod.record("startup", Outcome::Succeeded).unwrap();
     let logs = dev.log_directory().unwrap();
@@ -40,7 +40,9 @@ fn write_statistics_clear_and_resume_preserve_other_data_and_environment() {
         2
     );
     let prod_before = prod.package().unwrap();
-    assert_eq!(dev.clear().unwrap(), LogStatistics::default());
+    let cleared = dev.clear().unwrap();
+    assert_eq!(cleared.remaining, LogStatistics::default());
+    assert_eq!(cleared.removed, statistics);
     assert_eq!(fs::read(logs.join("unrelated.txt")).unwrap(), b"keep");
     assert!(logs.join("nested").is_dir());
     assert_eq!(
@@ -109,8 +111,9 @@ fn export_is_complete_and_failures_preserve_destination() {
     let diagnostics = diagnostics(&temp, DEV);
     diagnostics.record("startup", Outcome::Succeeded).unwrap();
     let destination = temp.path().join("export.json");
-    diagnostics.export(&destination).unwrap();
+    let exported_bytes = diagnostics.export(&destination).unwrap();
     let before = fs::read(&destination).unwrap();
+    assert_eq!(exported_bytes, before.len() as u64);
     let package: Value = serde_json::from_slice(&before).unwrap();
     assert_eq!(package["events"].as_array().unwrap().len(), 1);
     assert!(diagnostics
@@ -187,7 +190,10 @@ fn concurrent_write_statistics_clear_and_package_are_consistent() {
                         0 | 1 => diagnostics
                             .record("configuration_save", Outcome::Succeeded)
                             .unwrap(),
-                        2 => assert_eq!(diagnostics.clear().unwrap(), LogStatistics::default()),
+                        2 => assert_eq!(
+                            diagnostics.clear().unwrap().remaining,
+                            LogStatistics::default()
+                        ),
                         _ => {
                             let package: Value =
                                 serde_json::from_slice(&diagnostics.package().unwrap()).unwrap();

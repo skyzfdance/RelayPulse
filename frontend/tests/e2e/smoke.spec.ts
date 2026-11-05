@@ -10,10 +10,11 @@ test('分组全展开菜单导航与 404 错误页', async ({ page }) => {
   await expect(page).toHaveURL(/\/config\/sites$/);
 
   const menu = page.getByRole('menu');
-  await expect(menu.getByRole('menuitem')).toHaveCount(4);
+  await expect(menu.getByRole('menuitem')).toHaveCount(5);
+  await expect(menu.getByRole('menuitem', { name: '操作记录' })).toBeVisible();
   await expect(menu.getByText('情报', { exact: true })).toHaveCount(0);
   await expect(menu.getByText('测试', { exact: true })).toHaveCount(0);
-  for (const name of ['操作记录', '智力天梯', '智商测试', '历史记录', '题库管理']) {
+  for (const name of ['智力天梯', '智商测试', '历史记录', '题库管理']) {
     await expect(menu.getByRole('menuitem', { name })).toHaveCount(0);
   }
 
@@ -21,6 +22,10 @@ test('分组全展开菜单导航与 404 错误页', async ({ page }) => {
   await page.getByRole('menuitem', { name: '探测记录' }).click();
   await expect(page.getByRole('heading', { name: '探测记录' })).toBeVisible();
   await expect(page).toHaveURL(/\/run\/records$/);
+
+  await page.getByRole('menuitem', { name: '操作记录' }).click();
+  await expect(page.getByRole('heading', { name: '操作记录' })).toBeVisible();
+  await expect(page).toHaveURL(/\/run\/operation-history$/);
 
   await page.getByRole('menuitem', { name: '通用设置' }).click();
   await expect(page.getByRole('heading', { name: '通用设置' })).toBeVisible();

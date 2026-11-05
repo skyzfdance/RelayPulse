@@ -56,7 +56,7 @@ impl Diagnostics {
         })?)
     }
 
-    pub(crate) fn export(&self, destination: &Path) -> Result<(), DiagnosticsError> {
+    pub(crate) fn export(&self, destination: &Path) -> Result<u64, DiagnosticsError> {
         // 禁止把诊断包保存到任一环境的业务目录，避免覆盖数据库或自己的日志。
         let parent = destination
             .parent()
@@ -90,6 +90,6 @@ impl Diagnostics {
         if result.is_err() {
             let _ = fs::remove_file(temporary);
         }
-        result
+        result.map(|()| bytes.len() as u64)
     }
 }

@@ -53,20 +53,22 @@ impl CaptureStore {
         &self,
         retained: impl Future<Output = Result<HashSet<String>, OutputError>>,
         retention_days: u16,
-    ) -> Result<(), OutputError> {
+    ) -> Result<u64, OutputError> {
         // 先枚举非活动文件，再轮询保留 ID 查询，避免把刚提交的新记录误认成孤儿。
         // 查询由 monitoring 跟踪；此适配器只负责文件，不另起无人等待的数据库 worker。
         let entries = self.output.entries().await?;
         let retained = retained.await?;
         let cutoff = health::now_ms().saturating_sub(u64::from(retention_days) * 86_400_000);
+        let mut count = 0;
         for entry in entries {
             if (entry.published && !retained.contains(&entry.id))
                 || (!entry.published && entry.modified_ms < cutoff)
             {
                 self.output.remove(entry).await?;
+                count += 1;
             }
         }
-        Ok(())
+        Ok(count)
     }
     pub(in crate::modules::monitoring) fn close(&self) {
         self.output.close();

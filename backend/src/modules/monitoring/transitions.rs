@@ -1,5 +1,6 @@
 //! 正式健康状态的边沿变化；不扫描历史、不补发启动前事件。
 use super::{Health, HealthState};
+use crate::modules::operation_logs::OperationSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HealthTransition {
@@ -9,6 +10,7 @@ pub(crate) enum HealthTransition {
 
 pub(crate) struct HealthChange {
     pub transition: HealthTransition,
+    pub source: OperationSource,
     pub model: String,
     pub endpoint: String,
     pub finished_at_ms: u64,
@@ -20,6 +22,7 @@ impl HealthChange {
         next: &HealthState,
         model: &str,
         base_url: &str,
+        source: OperationSource,
     ) -> Option<Self> {
         let transition = match (previous.health, next.health) {
             (Health::Error, Health::Healthy | Health::Warning) => HealthTransition::Recovered,
@@ -33,6 +36,7 @@ impl HealthChange {
             .unwrap_or_else(|| "—".into());
         Some(Self {
             transition,
+            source,
             model: model.into(),
             endpoint,
             finished_at_ms: next.finished_at_ms,

@@ -6,6 +6,10 @@ use crate::{
     modules::{
         configuration::{ConfigurationError, ConfigurationService},
         monitoring::{Monitoring, MonitoringError},
+        operation_logs::{
+            OperationAction, OperationEvent, OperationLogContent, OperationLogs, OperationRecorder,
+            OperationResult, OperationSource,
+        },
         sites::{SiteError, SiteService},
     },
     shared::{
@@ -51,6 +55,7 @@ pub(crate) struct Panel {
     changes: Arc<StateChanges>,
     refresh: tokio::sync::Mutex<()>,
     diagnostics: Recorder,
+    operation_logs: OperationRecorder,
 }
 impl Panel {
     pub(crate) fn new(
@@ -58,6 +63,7 @@ impl Panel {
         sites: Arc<SiteService>,
         monitoring: Arc<Monitoring>,
         diagnostics: Arc<Diagnostics>,
+        operation_logs: Arc<OperationLogs>,
     ) -> Self {
         Self {
             configuration,
@@ -66,6 +72,7 @@ impl Panel {
             monitoring,
             refresh: tokio::sync::Mutex::new(()),
             diagnostics: Recorder::new(diagnostics),
+            operation_logs: OperationRecorder::new(operation_logs),
         }
     }
     pub(crate) fn changes(&self) -> &Arc<StateChanges> {
@@ -125,24 +132,78 @@ impl Panel {
     pub(crate) async fn refresh(&self) -> Result<PanelSnapshot, PanelError> {
         self.diagnostics
             .observe_async("panel_refresh", async {
-                let _refresh = self.refresh.try_lock().map_err(|_| PanelError::Busy)?;
-                let targets = self
-                    .sites
-                    .list()
-                    .await?
+                let _refresh = self.refresh.try_lock().map_err(|_| {
+                    self.record_refresh_preflight(
+                        OperationResult::Blocked,
+                        &PanelError::Busy.to_string(),
+                    );
+                    PanelError::Busy
+                })?;
+                let sites = self.sites.list().await.inspect_err(|error| {
+                    let result = match error {
+                        SiteError::Task(crate::modules::sites::TaskError::Busy) => {
+                            OperationResult::Blocked
+                        }
+                        SiteError::Task(crate::modules::sites::TaskError::Closing) => {
+                            OperationResult::Cancelled
+                        }
+                        _ => OperationResult::Failure,
+                    };
+                    self.record_refresh_preflight(result, &error.to_string());
+                })?;
+                let targets = sites
                     .into_iter()
                     .filter(|site| site.enabled && site.models.iter().any(|model| model.enabled))
-                    .map(|site| site.id);
-                let results = stream::iter(targets.map(|id| self.monitoring.run(id, None)))
-                    .buffer_unordered(8)
-                    .collect::<Vec<_>>()
-                    .await;
+                    .map(|site| site.id)
+                    .collect::<Vec<_>>();
+                if targets.is_empty() {
+                    self.record_refresh_preflight(
+                        OperationResult::Blocked,
+                        "没有启用的站点或模型，未生成正式探测记录。",
+                    );
+                }
+                let results =
+                    stream::iter(targets.into_iter().map(|id| self.monitoring.run(id, None)))
+                        .buffer_unordered(8)
+                        .collect::<Vec<_>>()
+                        .await;
                 for result in results {
                     result?;
                 }
-                self.read().await
+                self.read().await.inspect_err(|error| {
+                    self.record_refresh_read_failure(&error.to_string());
+                })
             })
             .await
+    }
+
+    // 面板选择范围和组合查询的失败归本用例；正式执行的结果仍由 monitoring 记录。
+    fn record_refresh_preflight(&self, result: OperationResult, reason: &str) {
+        self.operation_logs.record_best_effort(OperationEvent::new(
+            OperationAction::ManualProbe,
+            OperationSource::User,
+            result,
+            "面板或托盘探测",
+            "手动探测未能开始。",
+            OperationLogContent::ProbeFailure {
+                reason: reason.into(),
+            },
+        ));
+    }
+
+    fn record_refresh_read_failure(&self, reason: &str) {
+        self.operation_logs.record_best_effort(OperationEvent::new(
+            OperationAction::PageLoadFailed,
+            OperationSource::User,
+            OperationResult::Failure,
+            "监测面板",
+            "无法读取探测后的面板状态。",
+            OperationLogContent::Failure {
+                activity: "读取面板".into(),
+                target: "监测面板".into(),
+                reason: reason.into(),
+            },
+        ));
     }
 }
 

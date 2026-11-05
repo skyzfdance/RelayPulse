@@ -9,7 +9,7 @@ mod validation;
 
 pub(crate) use catalog::{markers, variables};
 pub(crate) use error::NotificationError;
-pub(crate) use service::NotificationService;
+pub(crate) use service::{NotificationBoundaryFailure, NotificationService};
 pub(crate) use sqlite::{SqliteNotificationStore, SCHEMA};
 pub(crate) use types::*;
 

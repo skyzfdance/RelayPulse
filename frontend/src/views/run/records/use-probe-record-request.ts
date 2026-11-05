@@ -3,6 +3,7 @@ import type { MaybeRefOrGetter } from 'vue';
 
 import { onScopeDispose, ref, shallowRef, toValue, watch } from 'vue';
 
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 import { fetchProbeRecordRequest } from '@/api/run/records';
 import { RelayPulseBackendError } from '@/utils/backend-error';
 
@@ -17,12 +18,14 @@ export function useProbeRecordRequest(
   const retryable = ref(false);
   let version = 0;
   let disposed = false;
+  let hiddenFailure: { cause: unknown } | undefined;
 
   async function reload() {
     if (disposed || loading.value) return;
     const requestVersion = ++version;
     const id = toValue(recordId);
     content.value = undefined;
+    hiddenFailure = undefined;
     error.value = '';
     retryable.value = false;
     loading.value = true;
@@ -34,6 +37,8 @@ export function useProbeRecordRequest(
       if (disposed || requestVersion !== version) return;
       error.value = cause instanceof Error ? cause.message : '暂时无法读取请求详情，请重试';
       retryable.value = !(cause instanceof RelayPulseBackendError) || cause.retryable;
+      if (toValue(expanded)) reportOperationReadFailure('probe_record_detail', 'detail', cause);
+      else hiddenFailure = { cause };
     } finally {
       if (!disposed && requestVersion === version) loading.value = false;
     }
@@ -43,6 +48,7 @@ export function useProbeRecordRequest(
     () => toValue(recordId),
     () => {
       version += 1;
+      hiddenFailure = undefined;
       content.value = undefined;
       error.value = '';
       loading.value = retryable.value = false;
@@ -52,6 +58,10 @@ export function useProbeRecordRequest(
   watch(
     () => [toValue(recordId), toValue(expanded)] as const,
     ([, open]) => {
+      if (open && hiddenFailure) {
+        reportOperationReadFailure('probe_record_detail', 'detail', hiddenFailure.cause);
+        hiddenFailure = undefined;
+      }
       if (open && !content.value && !error.value && !loading.value) void reload();
     },
     { immediate: true },

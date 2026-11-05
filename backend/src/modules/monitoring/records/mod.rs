@@ -16,5 +16,6 @@ mod types;
 pub(crate) use dto::*;
 pub(crate) use error::RecordError;
 pub(crate) use query::{ProbeRecordsQuery, TokenStatsQuery};
+pub(crate) use service::ProbeRecordOperation;
 pub(super) use sqlite::{insert, prune, RecordStore};
 pub(super) use types::{CompletedRecord, RecordContext};

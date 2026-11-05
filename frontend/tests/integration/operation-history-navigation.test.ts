@@ -12,6 +12,7 @@ import AntdvNext, {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router';
 
+import * as operationApi from '@/api/run/operation-logs';
 import * as recordApi from '@/api/run/records';
 import { seedProbeRecords } from '@/mocks/handlers/run/records';
 
@@ -100,8 +101,42 @@ describe('operation history navigation', () => {
     await wrapper.get('tbody tr[data-row-key="op-002"] button').trigger('click');
     await flushPromises();
     expect(document.body.textContent).toContain('修改站点连接配置');
-    expect(document.body.textContent).toContain('修改前');
-    expect(document.body.textContent).toContain('已更换');
+    expect(document.body.textContent).not.toContain('修改前');
+    expect(document.body.textContent).not.toContain('修改后');
+    expect(document.querySelector('[role="group"][aria-label="修改前"]')).not.toBeNull();
+    expect(
+      [...document.querySelectorAll('[role="group"][aria-label="修改后"]')].some((group) =>
+        group.textContent?.includes('已更换'),
+      ),
+    ).toBe(true);
+  });
+
+  it('renders backend field paths as configuration labels in the event drawer', async () => {
+    const detail = await operationApi.fetchOperationLogDetail('op-002');
+    vi.spyOn(operationApi, 'fetchOperationLogDetail').mockResolvedValueOnce({
+      ...detail,
+      content: {
+        kind: 'changes',
+        changes: [
+          { field: 'models[1].name', before: '未配置', after: 'gpt-6.1-sol' },
+          { field: 'models[1].enabled', before: '未配置', after: 'true' },
+          { field: 'models[1].customRequest', before: '未配置', after: 'null' },
+          { field: '凭据', before: '未配置', after: '已配置', sensitive: true },
+        ],
+      },
+    });
+    const { wrapper } = await mountRoutes('/run/operation-history');
+    await wrapper.get('tbody tr[data-row-key="op-002"] button').trigger('click');
+    await flushPromises();
+
+    const event = document.querySelector('[aria-label="本次事件内容"]')!;
+    expect(event.textContent).toContain('模型 2「gpt-6.1-sol」 · 自定义探针请求');
+    expect(event.textContent).toContain('已启用');
+    expect(event.textContent).toContain('未启用');
+    expect(event.textContent).toContain('访问凭据');
+    expect(event.textContent).not.toContain('models[1]');
+    expect(event.textContent).not.toContain('null');
+    expect(event.textContent).not.toContain('已更换');
   });
 
   it('opens the single linked record detail directly', async () => {

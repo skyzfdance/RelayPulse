@@ -6,6 +6,7 @@ import { onMounted, onScopeDispose, ref } from 'vue';
 
 import { fetchSiteProtocols } from '@/api/catalog';
 import { createSite } from '@/api/config/sites';
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 import { useSiteDetailsStore, useSiteStore } from '@/stores/site';
 
 const emit = defineEmits<{ close: [] }>();
@@ -32,7 +33,8 @@ onMounted(async () => {
     if (disposed) return;
     protocolOptions.value = options;
     draft.value.protocol = options[0]?.value;
-  } catch {
+  } catch (cause) {
+    if (!disposed) reportOperationReadFailure('site_list', 'page', cause);
     // 接口已提示；不回退到前端写死的协议列表。
   }
 });

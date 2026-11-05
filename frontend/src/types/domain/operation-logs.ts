@@ -151,3 +151,14 @@ export interface OperationLogDetail {
   explanation: string;
   content: OperationLogDetailContent;
 }
+
+/** 前端独有读取失败可上报的固定业务目标，不接受任意事件或对象正文。 */
+export type ReadFailureTarget =
+  | 'site_list'
+  | 'site_detail'
+  | 'probe_records'
+  | 'probe_record_detail'
+  | 'notification_settings'
+  | 'notification_template'
+  | 'general_settings'
+  | 'panel';

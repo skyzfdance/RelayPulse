@@ -1,8 +1,10 @@
 use super::CommandError;
 use crate::{
     modules::notifications::{
-        NotificationError, NotificationPlatform, NotificationPlatformState, NotificationService,
+        NotificationBoundaryFailure, NotificationError, NotificationPlatform,
+        NotificationPlatformState, NotificationService,
     },
+    modules::operation_logs::OperationAction,
     startup::StartupState,
 };
 use serde::de::DeserializeOwned;
@@ -33,17 +35,36 @@ fn unavailable() -> CommandError {
 pub(super) fn parse<T: DeserializeOwned>(
     request: Request<'_>,
     field: &'static str,
+    state: &StartupState,
+    action: OperationAction,
 ) -> Result<T, CommandError> {
-    let InvokeBody::Json(value) = request.body() else {
-        return Err(CommandError::invalid(field, "通知请求必须是 JSON 对象。"));
-    };
-    serde_json::from_value(value.clone())
-        .map_err(|_| CommandError::invalid(field, "通知请求格式或字段取值不合法，请检查后重试。"))
+    let result = (|| {
+        let InvokeBody::Json(value) = request.body() else {
+            return Err(CommandError::invalid(field, "通知请求必须是 JSON 对象。"));
+        };
+        serde_json::from_value(value.clone()).map_err(|_| {
+            CommandError::invalid(field, "通知请求格式或字段取值不合法，请检查后重试。")
+        })
+    })();
+    if result.is_err() {
+        record_failure(state, action, NotificationBoundaryFailure::InvalidRequest);
+    }
+    result
+}
+fn record_failure(
+    state: &StartupState,
+    action: OperationAction,
+    failure: NotificationBoundaryFailure,
+) {
+    if let StartupState::Ready(app) = state {
+        app.notifications.record_boundary_failure(action, failure);
+    }
 }
 
 pub(super) async fn platform_call<R: Runtime, T: Send + 'static>(
     state: &StartupState,
     app: &AppHandle<R>,
+    action: OperationAction,
     operation: impl FnOnce(&NotificationService, &dyn NotificationPlatform) -> Result<T, NotificationError>
         + Send
         + 'static,
@@ -51,12 +72,22 @@ pub(super) async fn platform_call<R: Runtime, T: Send + 'static>(
     let service = service(state)?.clone();
     let platform = app
         .try_state::<NotificationPlatformState>()
-        .ok_or_else(unavailable)?
+        .ok_or_else(|| {
+            record_failure(
+                state,
+                action,
+                NotificationBoundaryFailure::PlatformUnavailable,
+            );
+            unavailable()
+        })?
         .0
         .clone();
     // 系统授权可能等待用户；不阻塞 WebView 主线程或 Tokio 执行线程，也不占用数据库锁。
     tauri::async_runtime::spawn_blocking(move || operation(&service, platform.as_ref()))
         .await
-        .map_err(|_| unavailable())?
+        .map_err(|_| {
+            record_failure(state, action, NotificationBoundaryFailure::TaskFailed);
+            unavailable()
+        })?
         .map_err(Into::into)
 }

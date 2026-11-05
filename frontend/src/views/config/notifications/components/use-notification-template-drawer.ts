@@ -15,6 +15,7 @@ import {
   sendTestNotification,
   updateNotificationTemplate,
 } from '@/api/config/notifications';
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 
 import {
   renderTemplatePreview,
@@ -120,8 +121,11 @@ export function useNotificationTemplateDrawer(
         markers.value = markerList;
         variables.value = variableList;
         if (data.templateType === 'default') restoreDefault();
-      } catch {
-        if (active) onClose(); // API 已提示加载错误。
+      } catch (cause) {
+        if (active) {
+          onClose(); // API 已提示加载错误。
+          reportOperationReadFailure('notification_template', 'detail', cause);
+        }
       } finally {
         if (active) loading.value = false;
       }

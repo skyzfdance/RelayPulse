@@ -4,6 +4,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 
 import { deleteSite, fetchSites } from '@/api/config/sites';
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 
 import { useSiteDetailsStore } from './site-details';
 import { useSiteTasksStore } from './site-tasks';
@@ -12,6 +13,8 @@ import { useSiteTasksStore } from './site-tasks';
 export const useSiteStore = defineStore('site', () => {
   /** 左侧摘要列表，按接口返回的优先级顺序保存，不包含模型明细。 */
   const sites = ref<SiteListItem[]>([]);
+  // Store 跨路由保留；仅站点页面仍在展示时采集可见的读取错误。
+  const viewActive = ref(false);
 
   /** 区分尚未取得列表与已加载但没有站点；不是请求中的 loading。 */
   const sitesLoaded = ref(false);
@@ -76,6 +79,7 @@ export const useSiteStore = defineStore('site', () => {
               if (version !== requestedVersion) continue;
               pendingDetails = false;
               sitesLoadError.value = error instanceof Error ? error.message : '站点列表加载失败';
+              if (viewActive.value) reportOperationReadFailure('site_list', 'page', error);
               // API 已提示；已有列表保留，首次失败由页面提供重试入口。
             }
           }
@@ -103,6 +107,7 @@ export const useSiteStore = defineStore('site', () => {
   }
 
   return {
+    viewActive,
     sites,
     sitesLoaded,
     sitesLoadError,

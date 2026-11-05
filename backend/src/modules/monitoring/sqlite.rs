@@ -98,7 +98,7 @@ impl MonitoringStore {
         record: &CompletedRecord,
         state: &HealthState,
         retention_days: u16,
-    ) -> Result<(), PersistenceError> {
+    ) -> Result<u64, PersistenceError> {
         self.database.with_connection(|connection| {
             let tx = connection.transaction()?;
             records::insert(&tx, record)?;
@@ -115,8 +115,9 @@ impl MonitoringStore {
                 params![record.context.model_id,health,state.first_token_ms.map(sql_integer).transpose()?,
                     sql_integer(record.result.duration_ms)?,state.failures,state.successes,sql_integer(state.finished_at_ms)?],
             )?;
-            records::prune(&tx, state.finished_at_ms.saturating_sub(u64::from(retention_days)*86_400_000))?;
-            tx.commit()
+            let pruned = records::prune(&tx, state.finished_at_ms.saturating_sub(u64::from(retention_days)*86_400_000))?;
+            tx.commit()?;
+            Ok(pruned)
         })
     }
 }

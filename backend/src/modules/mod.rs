@@ -4,3 +4,4 @@ pub(crate) mod notifications;
 pub(crate) mod sites;
 
 pub(crate) mod monitoring;
+pub(crate) mod operation_logs;

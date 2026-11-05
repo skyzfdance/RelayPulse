@@ -2,6 +2,7 @@ use super::*;
 
 fn context(model: &str) -> NotificationContext<'_> {
     NotificationContext {
+        source: crate::modules::operation_logs::OperationSource::System,
         model,
         endpoint: "api.example.com",
         finished_at_ms: 1_792_972_800_000,

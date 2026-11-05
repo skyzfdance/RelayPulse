@@ -4,6 +4,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 
 import { fetchSite } from '@/api/config/sites';
+import { reportOperationReadFailure } from '@/api/operation-read-failures';
 
 import { useSiteStore } from './site';
 
@@ -64,6 +65,7 @@ export const useSiteDetailsStore = defineStore('site-details', () => {
     } catch (error) {
       if (version !== loadVersion || id !== siteStore.selectedSiteId) return;
       siteDetailsLoadError.value = error instanceof Error ? error.message : '站点详情加载失败';
+      if (siteStore.viewActive) reportOperationReadFailure('site_detail', 'detail', error);
     } finally {
       if (version === loadVersion) siteDetailsLoading.value = false;
     }

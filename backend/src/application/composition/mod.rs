@@ -19,6 +19,7 @@ pub(crate) struct Application {
     pub sites: std::sync::Arc<crate::application::sites::Sites>,
     pub monitoring: std::sync::Arc<crate::modules::monitoring::Monitoring>,
     pub notifications: std::sync::Arc<NotificationService>,
+    pub operation_logs: std::sync::Arc<crate::modules::operation_logs::OperationLogs>,
     pub panel: std::sync::Arc<crate::application::snapshots::panel::Panel>,
     pub tray: std::sync::Arc<crate::application::snapshots::tray::Tray>,
 }
@@ -39,17 +40,23 @@ pub(crate) fn compose(
             NOTIFICATIONS_SCHEMA,
             crate::modules::sites::SCHEMA,
             crate::modules::monitoring::SCHEMA,
+            crate::modules::operation_logs::SCHEMA,
         ],
     )?);
+    let operation_logs = std::sync::Arc::new(crate::modules::operation_logs::OperationLogs::new(
+        database.clone(),
+    ));
     let changes = std::sync::Arc::new(crate::shared::state_changes::StateChanges::default());
     let configuration = std::sync::Arc::new(
         ConfigurationService::new(SqliteSettingsStore::new(database.clone()))
             .with_diagnostics(diagnostics.clone())
+            .with_operation_logs(operation_logs.clone())
             .with_changes(changes.clone()),
     );
     let notifications = std::sync::Arc::new(
         NotificationService::new(SqliteNotificationStore::new(database.clone()))
-            .with_diagnostics(diagnostics.clone()),
+            .with_diagnostics(diagnostics.clone())
+            .with_operation_logs(operation_logs.clone()),
     );
     let client = std::sync::Arc::new(crate::shared::model_client::ModelClient::default());
     let access = std::sync::Arc::new(crate::modules::sites::SiteAccess::default());
@@ -57,33 +64,37 @@ pub(crate) fn compose(
         crate::modules::sites::SiteService::new(database.clone(), client.clone(), access)
             .with_changes(changes),
     );
-    let monitoring = std::sync::Arc::new(crate::modules::monitoring::Monitoring::new(
-        site_service.clone(),
-        client,
-        database,
-        configuration.clone(),
-        diagnostics.clone(),
-        Some(environment.paths().data_root().join("probe-records")),
-    ));
+    let monitoring = std::sync::Arc::new(
+        crate::modules::monitoring::Monitoring::new(
+            site_service.clone(),
+            client,
+            database,
+            configuration.clone(),
+            diagnostics.clone(),
+            Some(environment.paths().data_root().join("probe-records")),
+        )
+        .with_operation_logs(operation_logs.clone()),
+    );
     let panel = std::sync::Arc::new(crate::application::snapshots::panel::Panel::new(
         configuration.clone(),
         site_service.clone(),
         monitoring.clone(),
         diagnostics.clone(),
+        operation_logs.clone(),
     ));
     let tray = std::sync::Arc::new(crate::application::snapshots::tray::Tray::new(
         configuration.clone(),
         site_service.clone(),
     ));
-    let sites = std::sync::Arc::new(crate::application::sites::Sites::new(
-        site_service,
-        monitoring.clone(),
-        diagnostics,
-    ));
+    let sites = std::sync::Arc::new(
+        crate::application::sites::Sites::new(site_service, monitoring.clone(), diagnostics)
+            .with_operation_logs(operation_logs.clone()),
+    );
     Ok(Application {
         environment,
         configuration,
         notifications,
+        operation_logs,
         sites,
         monitoring,
         panel,

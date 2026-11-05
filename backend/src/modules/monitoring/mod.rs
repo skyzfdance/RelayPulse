@@ -1,6 +1,7 @@
 //! 正式监测业务：手动/周期探测、健康状态和正式记录。
 mod activity;
 mod health;
+mod operation_events;
 mod records;
 mod scheduler;
 mod service;
@@ -15,9 +16,10 @@ mod transitions;
 pub(crate) use activity::ProbeActivity;
 pub(crate) use health::{next_due_at, summarize, Health, HealthState};
 pub(crate) use records::{
-    OpenProbeRecordLogResult, ProbeRecordDetail, ProbeRecordListItem, ProbeRecordOptions,
-    ProbeRecordRequestContent, ProbeRecordResponseContent, ProbeRecordsQuery, RecordError,
-    RecordsPage, TokenStatsPage, TokenStatsQuery,
+    OpenProbeRecordLogResult, ProbeRecordAssociationLookup, ProbeRecordDetail, ProbeRecordListItem,
+    ProbeRecordOperation, ProbeRecordOptions, ProbeRecordRequestContent,
+    ProbeRecordResponseContent, ProbeRecordsQuery, RecordError, RecordsPage, TokenStatsPage,
+    TokenStatsQuery,
 };
 pub(crate) use service::{Monitoring, MonitoringError};
 pub(crate) use sqlite::SCHEMA;

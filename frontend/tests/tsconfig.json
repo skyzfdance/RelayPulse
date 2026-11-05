@@ -3,5 +3,5 @@
   "compilerOptions": {
     "types": ["node", "vite/client"]
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts", "../src/**/*.d.ts"]
 }

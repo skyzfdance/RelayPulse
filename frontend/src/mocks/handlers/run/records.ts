@@ -6,6 +6,7 @@ import type { MockHandler } from '../registry';
 import type { MockProbeRecord } from './records-fixtures';
 import type {
   OpenProbeRecordLogResult,
+  ProbeRecordAssociationLookup,
   ProbeRecordDetail,
   ProbeRecordListItem,
   ProbeRecordOptions,
@@ -219,6 +220,7 @@ function register(command: string, handler: MockHandler, write = false) {
       scenario() === 'error' ||
       (write && scenario() === 'action-error') ||
       (command === 'get_probe_records' && scenario() === 'records-error') ||
+      (command === 'get_probe_records_by_ids' && scenario() === 'association-error') ||
       (command === 'get_probe_record_detail' && scenario() === 'detail-error') ||
       (command === 'get_probe_record_request' && scenario() === 'request-error') ||
       (command === 'get_probe_record_response' && scenario() === 'response-error') ||
@@ -232,6 +234,7 @@ function register(command: string, handler: MockHandler, write = false) {
       if (command === 'get_probe_record_response') message = '暂时无法读取原始返回，请重试';
       if (command === 'open_probe_record_log_directory')
         message = '暂时无法打开探测日志目录，请重试';
+      if (command === 'get_probe_records_by_ids') message = '暂时无法定位关联的探测记录，请重试';
       throw new RelayPulseBackendError({
         code:
           command === 'open_probe_record_log_directory'
@@ -362,6 +365,39 @@ register('get_probe_records', (args) => {
     totalTokens: record.usage?.totalTokens ?? null,
   }));
   return paginate(items, input, retained.length);
+});
+register('get_probe_records_by_ids', (args): ProbeRecordAssociationLookup => {
+  const recordIds = object(args).recordIds;
+  if (
+    !Array.isArray(recordIds) ||
+    recordIds.length < 1 ||
+    recordIds.length > 100 ||
+    recordIds.some((id) => typeof id !== 'string' || !id.trim())
+  )
+    validation('关联探测记录 ID 列表无效', 'recordIds');
+  const requested = recordIds as string[];
+  const retained = new Map(retainedRecords(Date.now()).map((record) => [record.id, record]));
+  const items: ProbeRecordListItem[] = [];
+  const missingIds: string[] = [];
+  for (const id of requested) {
+    const record = retained.get(id);
+    if (!record || scenario() === 'association-missing') {
+      missingIds.push(id);
+      continue;
+    }
+    items.push({
+      id: record.id,
+      siteName: record.siteName,
+      modelName: record.modelName,
+      probedAt: record.probedAt,
+      result: record.result,
+      resultMessage: record.resultMessage,
+      firstTokenMs: record.firstTokenMs,
+      durationMs: record.durationMs,
+      totalTokens: record.usage?.totalTokens ?? null,
+    });
+  }
+  return { items, missingIds };
 });
 register('get_probe_token_stats', (args): TokenStatsPage => {
   const input = query(args, 'tokens');

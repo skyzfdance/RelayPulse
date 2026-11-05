@@ -42,7 +42,7 @@ describe('App 路由与布局骨架', () => {
     expect(menu.text()).toContain('通用设置');
     expect(menu.text()).toContain('消息通知');
     expect(menu.text()).toContain('探测记录');
-    expect(menu.text()).not.toContain('操作记录');
+    expect(menu.text()).toContain('操作记录');
     expect(menu.text()).not.toContain('情报');
     expect(menu.text()).not.toContain('智力天梯');
     expect(menu.text()).not.toContain('测试');

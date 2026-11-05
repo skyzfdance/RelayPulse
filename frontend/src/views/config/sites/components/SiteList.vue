@@ -136,13 +136,13 @@ function move(index: number, delta: number) {
               role="img"
               :aria-label="healthLabels[site.health]"
             />
-            <span class="truncate" :title="site.name">{{ site.name }}</span>
+            <span v-overflow-tooltip>{{ site.name }}</span>
             <span
               class="inline-flex h-4.25 min-w-4.25 items-center justify-center rounded-sm bg-(--ant-color-fill-secondary) px-1 text-[11px] font-normal text-rp-tertiary"
               >{{ site.priority }}</span
             >
           </span>
-          <span class="mt-px block truncate text-xs leading-5 font-normal text-rp-tertiary">{{
+          <span v-overflow-tooltip class="mt-px text-xs leading-5 font-normal text-rp-tertiary">{{
             `${site.modelCount} 个模型 · ${site.statusText}`
           }}</span>
         </button>

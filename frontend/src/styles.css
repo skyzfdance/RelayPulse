@@ -121,3 +121,13 @@ html[data-surface='panel'] .ant-app {
   font-size: 14px;
   color: var(--ant-color-primary);
 }
+
+/* v-overflow-tooltip：宽度由宿主布局约束，仅实际截断时显示 antdv Tooltip。 */
+.rp-overflow-tooltip {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

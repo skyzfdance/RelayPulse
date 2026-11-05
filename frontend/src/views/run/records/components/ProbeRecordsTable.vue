@@ -42,8 +42,20 @@ const columns: TableProps<ProbeRecordListItem>['columns'] = [
       ),
   },
   { key: 'probedAt', title: '探测时间', width: 154 },
-  { key: 'siteName', dataIndex: 'siteName', title: '站点', width: 158, ellipsis: true },
-  { key: 'modelName', dataIndex: 'modelName', title: '模型', width: 168, ellipsis: true },
+  {
+    key: 'siteName',
+    dataIndex: 'siteName',
+    title: '站点',
+    width: 158,
+    ellipsis: { showTitle: false },
+  },
+  {
+    key: 'modelName',
+    dataIndex: 'modelName',
+    title: '模型',
+    width: 168,
+    ellipsis: { showTitle: false },
+  },
   {
     key: 'firstTokenMs',
     title: () =>
@@ -71,7 +83,12 @@ const columns: TableProps<ProbeRecordListItem>['columns'] = [
   },
   { key: 'durationMs', title: '总耗时', width: 112 },
   { key: 'totalTokens', title: 'Token', width: 100, align: 'right' },
-  { key: 'resultMessage', title: '结果', dataIndex: 'resultMessage', ellipsis: true },
+  {
+    key: 'resultMessage',
+    title: '结果',
+    dataIndex: 'resultMessage',
+    ellipsis: { showTitle: false },
+  },
   { key: 'actions', title: '操作', width: 96, align: 'center', fixed: 'end' },
 ];
 const pagination = computed(() =>
@@ -119,6 +136,12 @@ function changePage(page: number, pageSize: number) {
           >
             {{ formatRecordTime(record.probedAt) }}
           </span>
+          <span v-else-if="column.key === 'siteName'" v-overflow-tooltip>{{
+            record.siteName
+          }}</span>
+          <span v-else-if="column.key === 'modelName'" v-overflow-tooltip>{{
+            record.modelName
+          }}</span>
           <span v-else-if="column.key === 'firstTokenMs'" class="whitespace-nowrap tabular-nums">{{
             formatDuration(record.firstTokenMs)
           }}</span>
@@ -130,9 +153,8 @@ function changePage(page: number, pageSize: number) {
           }}</span>
           <span
             v-else-if="column.key === 'resultMessage'"
-            class="block truncate"
+            v-overflow-tooltip
             :class="{ 'text-(--ant-color-error)': record.result === 'failure' }"
-            :title="record.resultMessage"
             >{{ record.resultMessage }}</span
           >
           <div v-else-if="column.key === 'actions'" class="flex items-center justify-center gap-1">
@@ -173,8 +195,13 @@ function changePage(page: number, pageSize: number) {
         </template>
       </a-table>
     </div>
-    <div v-if="data?.total" class="flex flex-none justify-end pt-4">
-      <a-pagination v-bind="pagination" @change="changePage" />
+    <div
+      v-if="data && data.total > pageSize"
+      class="flex min-w-0 flex-none flex-wrap items-center gap-2 pt-4 sm:justify-end"
+    >
+      <div class="min-w-0 max-w-full overflow-x-auto pb-1">
+        <a-pagination v-bind="pagination" @change="changePage" />
+      </div>
     </div>
   </section>
 </template>

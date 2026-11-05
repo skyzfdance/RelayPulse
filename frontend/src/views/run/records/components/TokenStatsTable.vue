@@ -27,7 +27,7 @@ const columns: TableProps<SiteTokenStats>['columns'] = [
     key: 'siteName',
     title: '站点',
     dataIndex: 'siteName',
-    ellipsis: true,
+    ellipsis: { showTitle: false },
     width: 240,
     fixed: 'start',
   },
@@ -78,12 +78,7 @@ function changePage(page: number, pageSize: number) {
         :sticky="{ getContainer: getScrollContainer }"
       >
         <template #bodyCell="{ column, record }">
-          <strong
-            v-if="column.key === 'siteName'"
-            class="block truncate"
-            :title="record.siteName"
-            >{{ record.siteName }}</strong
-          >
+          <strong v-if="column.key === 'siteName'" v-overflow-tooltip>{{ record.siteName }}</strong>
           <span v-else-if="column.key === 'probeCount'" class="tabular-nums">{{
             formatCount(record.probeCount)
           }}</span>
@@ -149,8 +144,13 @@ function changePage(page: number, pageSize: number) {
         </template>
       </a-table>
     </div>
-    <div v-if="pagination" class="flex flex-none justify-end pt-4">
-      <a-pagination v-bind="pagination" @change="changePage" />
+    <div
+      v-if="pagination"
+      class="flex min-w-0 flex-none flex-wrap items-center gap-2 pt-4 sm:justify-end"
+    >
+      <div class="min-w-0 max-w-full overflow-x-auto pb-1">
+        <a-pagination v-bind="pagination" @change="changePage" />
+      </div>
     </div>
   </section>
 </template>

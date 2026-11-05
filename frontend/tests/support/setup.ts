@@ -1,4 +1,10 @@
+import { config } from '@vue/test-utils';
+
+import { vOverflowTooltip } from '@/directives/overflow-tooltip';
+
 import '@testing-library/jest-dom/vitest';
+
+config.global.directives['overflow-tooltip'] = vOverflowTooltip;
 
 // JSDOM 不实现伪元素样式；组件测量滚动条时使用元素样式，避免无关的未实现警告。
 const getComputedStyle = window.getComputedStyle.bind(window);

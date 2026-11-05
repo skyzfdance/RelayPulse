@@ -26,13 +26,13 @@ const runRoutes: RouteRecordRaw = {
     {
       path: 'operation-history',
       name: 'operation-history',
-      component: () => import('@/views/OperationHistoryView.vue'),
+      component: () => import('@/views/run/operation-history/OperationHistoryView.vue'),
       meta: {
         title: '操作记录',
         mainTitle: '操作记录',
-        subTitle: '查看应用运行、配置变更、数据采集和诊断维护记录',
+        subTitle: '查看系统自动执行与用户操作的记录',
         icon: 'ProfileOutlined',
-        isMenu: false,
+        isMenu: true,
       },
     },
   ],

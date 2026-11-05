@@ -90,7 +90,9 @@ const enabledParameterCount = computed(() => {
             role="img"
             :aria-label="healthLabels[status.health]"
           />
-          <h2 class="m-0! truncate text-lg! leading-6.5! font-normal!">{{ site.name }}</h2>
+          <h2 v-overflow-tooltip class="m-0! text-lg! leading-6.5! font-normal!">
+            {{ site.name }}
+          </h2>
           <a-tag color="blue" class="m-0!">优先级 {{ status?.priority }}</a-tag>
           <a-tag :color="site.enabled ? 'green' : undefined" class="m-0!">{{
             site.enabled ? '小面板显示' : '小面板隐藏'
@@ -149,7 +151,7 @@ const enabledParameterCount = computed(() => {
           /></span>
           <div class="flex min-w-0 flex-1 flex-col gap-0.5">
             <strong>站点默认策略</strong>
-            <span class="truncate text-xs text-rp-tertiary"
+            <span v-overflow-tooltip class="text-xs text-rp-tertiary"
               >已启用 {{ enabledParameterCount }} /
               {{ site.policy.parameters.length }} 个请求参数</span
             >

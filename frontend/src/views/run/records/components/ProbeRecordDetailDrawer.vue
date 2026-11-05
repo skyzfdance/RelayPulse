@@ -81,11 +81,7 @@ const requestFields = computed(() => {
     <template #title>
       <div class="min-w-0">
         <span class="text-base font-semibold">探测详情</span>
-        <div
-          v-if="detail"
-          class="mt-0.5 truncate text-xs font-normal text-rp-secondary"
-          :title="`${detail.modelName} · ${detail.siteName}`"
-        >
+        <div v-if="detail" v-overflow-tooltip class="mt-0.5 text-xs font-normal text-rp-secondary">
           {{ detail.modelName }} · {{ detail.siteName }}
         </div>
       </div>

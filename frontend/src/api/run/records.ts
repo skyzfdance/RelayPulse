@@ -1,6 +1,7 @@
 /** 页面业务数据的唯一入口；浏览器已接 Mock，真实后端尚待按此契约接入。 */
 import type {
   OpenProbeRecordLogResult,
+  ProbeRecordAssociationLookup,
   ProbeRecordDetail,
   ProbeRecordListItem,
   ProbeRecordOptions,
@@ -25,6 +26,11 @@ export function fetchProbeRecords(
   query: ProbeRecordsQuery,
 ): Promise<RecordsPage<ProbeRecordListItem>> {
   return callBackend('get_probe_records', { query: { ...query } }, READ_OPTIONS);
+}
+
+/** Resolve an event's exact record IDs, independent of the current list filters or page. */
+export function fetchProbeRecordsByIds(recordIds: string[]): Promise<ProbeRecordAssociationLookup> {
+  return callBackend('get_probe_records_by_ids', { recordIds: [...recordIds] }, READ_OPTIONS);
 }
 
 export function fetchProbeTokenStats(query: TokenStatsQuery): Promise<TokenStatsPage> {

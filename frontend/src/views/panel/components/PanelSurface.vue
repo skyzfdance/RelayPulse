@@ -129,12 +129,12 @@ const visibleModelCount = computed(() =>
             :data-model-id="model.id"
           >
             <td class="panel-model-cell">
-              <a-tooltip :title="model.modelName" :trigger="['hover', 'focus']" placement="topLeft">
-                <span class="panel-model-name" tabindex="0">{{ model.modelName }}</span>
-              </a-tooltip>
-              <a-tooltip :title="site.siteName" :trigger="['hover', 'focus']" placement="topLeft">
-                <span class="panel-site-name" tabindex="0">{{ site.siteName }}</span>
-              </a-tooltip>
+              <span v-overflow-tooltip class="panel-model-name" tabindex="0">{{
+                model.modelName
+              }}</span>
+              <span v-overflow-tooltip class="panel-site-name" tabindex="0">{{
+                site.siteName
+              }}</span>
             </td>
             <td>
               <a-tooltip
@@ -402,14 +402,6 @@ const visibleModelCount = computed(() =>
 
 .panel-group-last td:last-child {
   border-bottom-right-radius: 6px;
-}
-
-.panel-model-name,
-.panel-site-name {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .panel-model-name {

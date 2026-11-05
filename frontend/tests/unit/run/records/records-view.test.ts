@@ -3,6 +3,7 @@ import type { ProbeRecordListItem, RecordsPage } from '@/types/domain/records';
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils';
 import AntdvNext, { Drawer, Dropdown, Modal, Segmented, Select } from 'antdv-next';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryHistory, createRouter } from 'vue-router';
 
 import * as api from '@/api/run/records';
 import { resetFeedbackForTests } from '@/composables/useFeedback';
@@ -32,10 +33,16 @@ afterEach(() => {
   window.history.replaceState({}, '', '/');
 });
 async function mountPage({ waitForRecords = true } = {}) {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/run/records', name: 'records', component: RecordsView }],
+  });
+  await router.push('/run/records');
+  await router.isReady();
   const wrapper = mount(RecordsView, {
     attachTo: document.body,
     global: {
-      plugins: [AntdvNext],
+      plugins: [AntdvNext, router],
     },
   });
   disposals.push(() => wrapper.unmount());
@@ -82,6 +89,12 @@ async function switchTab(
 }
 
 describe('探测记录页面交互', () => {
+  it('单页记录不显示分页器，分页布局具备窄屏收缩容器', async () => {
+    seedProbeRecords(createProbeRecordFixtures().slice(0, 5));
+    const { wrapper } = await mountPage();
+    expect(wrapper.findComponent(ProbeRecordsTable).find('.ant-pagination').exists()).toBe(false);
+  });
+
   it('默认按探测时间降序加载和分页，表头不显示排序且点击不会重新查询', async () => {
     const { wrapper } = await mountPage();
     expect(wrapper.findAll('tbody tr[data-row-key]')).toHaveLength(20);

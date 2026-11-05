@@ -4,8 +4,6 @@ import { computed } from 'vue';
 
 import { useSiteDetailsStore, useSiteTasksStore } from '@/stores/site';
 
-import { healthLabels } from '../site-policy';
-
 import AppIcon from '@/components/AppIcon.vue';
 
 const props = defineProps<{ dirty: boolean }>();
@@ -26,8 +24,8 @@ const probingModelId = computed(() =>
 );
 const columns = [
   { key: 'enabled', title: '启用', width: 72, align: 'center' as const, fixed: 'left' as const },
-  { key: 'name', dataIndex: 'name', title: '模型', width: 230, ellipsis: true },
-  { key: 'policy', title: '推理设置', width: 190, ellipsis: true },
+  { key: 'name', dataIndex: 'name', title: '模型', width: 230, ellipsis: { showTitle: false } },
+  { key: 'policy', title: '推理设置', width: 190, ellipsis: { showTitle: false } },
   { key: 'firstToken', title: '首 Token', width: 125 },
   { key: 'duration', title: '总耗时', width: 110 },
   { key: 'actions', title: '操作', width: 140, align: 'center' as const, fixed: 'right' as const },
@@ -89,13 +87,10 @@ const columns = [
           :aria-label="`${record.enabled ? '停用' : '启用'}模型 ${record.name}`"
           @change="!disabled && emit('toggle', site.id, record.id, $event as boolean)"
         />
-        <span
-          v-else-if="column.key === 'name'"
-          class="block truncate font-semibold"
-          :title="`${record.name} · ${healthLabels[record.health as keyof typeof healthLabels]}`"
-          >{{ record.name }}</span
-        >
-        <span v-else-if="column.key === 'policy'" class="text-rp-secondary">{{
+        <span v-else-if="column.key === 'name'" v-overflow-tooltip class="font-semibold">{{
+          record.name
+        }}</span>
+        <span v-else-if="column.key === 'policy'" v-overflow-tooltip class="text-rp-secondary">{{
           record.customRequest ? '自定义请求' : record.policy ? '独立策略' : '继承站点默认'
         }}</span>
         <span v-else-if="column.key === 'firstToken'">{{

@@ -50,6 +50,7 @@ export function tablePagination(
     showSizeChanger: true,
     pageSizeOptions: [20, 50, 70, 100],
     size: 'small',
+    responsive: true,
     showTotal: (count, range) => `第 ${range[0]}–${range[1]} 条，共 ${count} 条`,
   };
 }

@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import type { ProbeRecordListItem, ProbeResult, RecordTimeRange } from '@/types/domain/records';
+import type {
+  ProbeRecordAssociationLookup,
+  ProbeRecordListItem,
+  ProbeResult,
+  RecordsPage,
+  RecordTimeRange,
+} from '@/types/domain/records';
 import type { MenuItemType } from 'antdv-next';
 
 import { DeleteOutlined } from '@antdv-next/icons';
-import { computed, onMounted, onScopeDispose, ref, shallowRef } from 'vue';
+import { computed, onMounted, onScopeDispose, reactive, ref, shallowRef, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
+import { fetchProbeRecordsByIds } from '@/api/run/records';
 import { onMainWindowRefresh } from '@/composables/useMainWindowNavigation';
 
 import { rangeOptions, resultOptions, USAGE_EXPLANATION } from './records-presentation';
@@ -46,15 +54,41 @@ const {
   modelOptions,
 } = filterOptions;
 const detailRecordId = ref<string | null>(null);
+const association = shallowRef<ProbeRecordAssociationLookup | null>(null);
+const associationRecordIds = ref<string[]>([]);
+const associationPaging = reactive({ page: 1, pageSize: 20 });
+const hasAssociation = computed(() => associationRecordIds.value.length > 0);
+const associationLoading = ref(false);
+const associationError = ref('');
+const returnToOperationHistory = ref(false);
+const route = useRoute();
+const router = useRouter();
 const deleteTarget = shallowRef<ProbeRecordListItem | 'all' | null>(null);
-const loading = computed(() => optionsLoading.value || recordsLoading.value || tokensLoading.value);
+const loading = computed(
+  () =>
+    associationLoading.value || optionsLoading.value || recordsLoading.value || tokensLoading.value,
+);
 const retainedCount = computed(
   () => recordData.value?.retainedCount ?? tokenData.value?.retainedCount ?? 0,
 );
-const currentError = computed(() =>
-  tab.value === 'records' ? recordsError.value : tokensError.value,
-);
+const associationPage = computed<RecordsPage<ProbeRecordListItem> | undefined>(() => {
+  if (!association.value) return undefined;
+  return {
+    items: association.value.items.slice(
+      (associationPaging.page - 1) * associationPaging.pageSize,
+      associationPaging.page * associationPaging.pageSize,
+    ),
+    total: association.value.items.length,
+    page: associationPaging.page,
+    retainedCount: association.value.items.length,
+  };
+});
+const currentError = computed(() => {
+  if (hasAssociation.value) return associationError.value;
+  return tab.value === 'records' ? recordsError.value : tokensError.value;
+});
 let disposed = false;
+let associationVersion = 0;
 const tabs = [
   { value: 'records', label: '探测记录' },
   { value: 'tokens', label: 'Token 统计' },
@@ -73,8 +107,75 @@ const clearAll = computed(() => deleteTarget.value === 'all');
 function loadLists() {
   return Promise.all([recordList.load(), tokenList.load()]);
 }
+async function resolveAssociatedRecords() {
+  const idsValue = route?.query.recordIds;
+  const idsText = Array.isArray(idsValue) ? idsValue[0] : idsValue;
+  if (typeof idsText === 'string' && idsText.trim()) {
+    tab.value = 'records';
+    detailRecordId.value = null;
+    association.value = null;
+    associationPaging.page = 1;
+    associationRecordIds.value = [
+      ...new Set(
+        idsText
+          .split(',')
+          .map((id) => id.trim())
+          .filter(Boolean),
+      ),
+    ];
+  }
+  const recordIds = associationRecordIds.value;
+  if (!recordIds.length) return;
+  const requestVersion = ++associationVersion;
+  returnToOperationHistory.value = route?.query.fromOperationHistory === '1';
+  associationLoading.value = true;
+  associationError.value = '';
+  try {
+    const result = await fetchProbeRecordsByIds(recordIds);
+    if (disposed || requestVersion !== associationVersion) return;
+    association.value = result;
+    associationPaging.page = Math.min(
+      associationPaging.page,
+      Math.max(1, Math.ceil(result.items.length / associationPaging.pageSize)),
+    );
+    if (recordIds.length === 1 && result.items[0]) detailRecordId.value = result.items[0].id;
+  } catch (cause) {
+    if (!disposed && requestVersion === associationVersion)
+      associationError.value = cause instanceof Error ? cause.message : '无法读取关联的探测记录';
+  } finally {
+    if (!disposed && requestVersion === associationVersion) associationLoading.value = false;
+    const query = { ...(route?.query ?? {}) };
+    delete query.recordIds;
+    if (!disposed && requestVersion === associationVersion && router && route?.query.recordIds)
+      void router.replace({ query });
+  }
+}
+function returnToOperationLog() {
+  if (router) router.back();
+}
+function exitAssociation() {
+  associationVersion += 1;
+  associationRecordIds.value = [];
+  association.value = null;
+  associationLoading.value = false;
+  associationError.value = '';
+  detailRecordId.value = null;
+  void refresh();
+}
+function paginateRecords(page: number, pageSize: number) {
+  if (!hasAssociation.value) {
+    recordList.paginate(page, pageSize);
+    return;
+  }
+  associationPaging.page = pageSize === associationPaging.pageSize ? page : 1;
+  associationPaging.pageSize = pageSize;
+}
 async function refresh() {
   if (disposed || busy.value) return;
+  if (hasAssociation.value) {
+    await resolveAssociatedRecords();
+    return;
+  }
   await Promise.all([filterOptions.load(), loadLists()]);
 }
 function changeRange(value: RecordTimeRange) {
@@ -114,19 +215,35 @@ async function confirmDelete() {
   deleteTarget.value = null;
   await refresh();
 }
-onMounted(refresh);
+onMounted(() => {
+  if (route?.query.recordIds) void resolveAssociatedRecords();
+  else void refresh();
+});
+watch(
+  () => route?.query.recordIds,
+  (recordIds) => {
+    if (recordIds) void resolveAssociatedRecords();
+  },
+);
 onMainWindowRefresh('/run/records', () => {
   tab.value = 'records';
   return refresh();
 });
 onScopeDispose(() => {
   disposed = true;
+  associationVersion += 1;
 });
 </script>
 <template>
   <div class="flex h-full min-w-0 flex-col overflow-hidden p-6">
     <div class="mb-4 flex flex-wrap items-center gap-2">
-      <a-segmented v-model:value="tab" :options="tabs" aria-label="探测记录视图" />
+      <a-segmented
+        v-if="!hasAssociation"
+        v-model:value="tab"
+        :options="tabs"
+        aria-label="探测记录视图"
+      />
+      <a-button v-else @click="exitAssociation">查看全部探测记录</a-button>
       <a-tooltip
         v-if="tab === 'tokens'"
         :title="USAGE_EXPLANATION"
@@ -140,6 +257,10 @@ onScopeDispose(() => {
           /></template>
         </a-button>
       </a-tooltip>
+      <a-button v-if="returnToOperationHistory" @click="returnToOperationLog">
+        <template #icon><AppIcon name="ArrowRightOutlined" class="rotate-180" /></template>
+        返回操作记录
+      </a-button>
       <div class="ml-auto flex items-center gap-2">
         <a-tooltip title="刷新列表">
           <a-button
@@ -153,6 +274,7 @@ onScopeDispose(() => {
           </a-button>
         </a-tooltip>
         <a-dropdown
+          v-if="!hasAssociation"
           :menu="{ items: menuItems }"
           :trigger="['click']"
           placement="bottomRight"
@@ -165,6 +287,19 @@ onScopeDispose(() => {
         </a-dropdown>
       </div>
     </div>
+    <a-alert
+      v-if="association && (association.items.length || association.missingIds.length)"
+      class="mb-3"
+      :type="association.missingIds.length ? 'warning' : 'info'"
+      show-icon
+      :title="association.missingIds.length ? '关联探测记录已不可用' : '本次探测关联记录'"
+      :description="
+        association.missingIds.length
+          ? `已定位 ${association.items.length} 条记录；${association.missingIds.length} 条关联记录已过期或清理。`
+          : `已按事件关联 ID 定位 ${association.items.length} 条探测记录。`
+      "
+      role="status"
+    />
     <a-alert
       v-if="optionsError"
       class="mb-4"
@@ -179,10 +314,13 @@ onScopeDispose(() => {
         ></template
       >
     </a-alert>
-    <div class="mb-4 flex flex-wrap gap-2 border-b border-rp-line pb-4">
+    <div
+      v-if="!hasAssociation"
+      class="mb-4 flex min-w-0 flex-wrap gap-2 border-b border-rp-line pb-4"
+    >
       <a-select
         :value="range"
-        class="w-44"
+        class="min-w-0 w-full sm:w-44"
         aria-label="时间范围"
         :options="rangeOptions"
         :disabled="busy"
@@ -190,7 +328,7 @@ onScopeDispose(() => {
       />
       <a-select
         :value="siteId"
-        class="w-44"
+        class="min-w-0 w-full sm:w-44"
         aria-label="站点筛选"
         :options="siteOptions"
         show-search
@@ -201,7 +339,7 @@ onScopeDispose(() => {
       <template v-if="tab === 'records'">
         <a-select
           :value="modelName"
-          class="w-48"
+          class="min-w-0 w-full sm:w-48"
           aria-label="模型筛选"
           :options="modelOptions"
           show-search
@@ -211,7 +349,7 @@ onScopeDispose(() => {
         />
         <a-select
           :value="result"
-          class="w-40"
+          class="min-w-0 w-full sm:w-40"
           aria-label="探测结果筛选"
           :options="resultOptions"
           :disabled="busy"
@@ -223,26 +361,40 @@ onScopeDispose(() => {
       v-if="currentError"
       type="error"
       show-icon
-      :title="tab === 'records' ? '探测记录加载失败' : 'Token 统计加载失败'"
+      :title="
+        hasAssociation
+          ? '关联探测记录读取失败'
+          : tab === 'records'
+            ? '探测记录加载失败'
+            : 'Token 统计加载失败'
+      "
       :description="currentError"
       role="alert"
     >
       <template #action>
         <a-button
-          :loading="tab === 'records' ? recordsLoading : tokensLoading"
-          @click="tab === 'records' ? recordList.load() : tokenList.load()"
+          :loading="
+            hasAssociation ? associationLoading : tab === 'records' ? recordsLoading : tokensLoading
+          "
+          @click="
+            hasAssociation
+              ? resolveAssociatedRecords()
+              : tab === 'records'
+                ? recordList.load()
+                : tokenList.load()
+          "
           >重新加载</a-button
         >
       </template>
     </a-alert>
-    <div v-else class="flex-1 overflow-hidden">
+    <div v-else class="min-h-0 flex-1 overflow-hidden">
       <ProbeRecordsTable
         v-if="tab === 'records'"
-        :data="recordData"
-        :loading="recordsLoading"
+        :data="hasAssociation ? associationPage : recordData"
+        :loading="recordsLoading || associationLoading"
         :busy="busy"
-        v-bind="recordPaging"
-        @paginate="recordList.paginate"
+        v-bind="hasAssociation ? associationPaging : recordPaging"
+        @paginate="paginateRecords"
         @reset="resetFilters"
         @detail="detailRecordId = $event.id"
         @remove="requestDelete"

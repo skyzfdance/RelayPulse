@@ -25,6 +25,12 @@ export interface ProbeRecordListItem {
   totalTokens: number | null;
 }
 
+/** Exact record lookup for an operation event; names are never used to infer a match. */
+export interface ProbeRecordAssociationLookup {
+  items: ProbeRecordListItem[];
+  missingIds: string[];
+}
+
 /** 本次正式探测保存的请求信息快照，不从当前站点或模型配置补算。 */
 export interface ProbeRecordRequestInfo {
   /** 实际请求端点的展示值，不包含凭据或敏感查询参数。 */

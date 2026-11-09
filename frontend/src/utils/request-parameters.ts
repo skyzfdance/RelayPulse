@@ -1,8 +1,5 @@
 import type { ParameterType, RequestParameter } from '@/types/domain/sites';
-
-export interface RequestParameterDraft extends RequestParameter {
-  id: string;
-}
+import type { RequestParameterDraft } from '@/types/request-parameters';
 
 let nextId = 0;
 
@@ -63,6 +60,114 @@ export function createRequestParameters(body: Record<string, unknown>): RequestP
   }
   for (const [key, value] of Object.entries(body)) append(value, key);
   return parameters;
+}
+
+/** 粘贴内容覆盖相同路径；未提及的参数和草稿状态保持不变。 */
+export function mergeRequestParametersFromJson(
+  parameters: RequestParameterDraft[],
+  json: string,
+): RequestParameterDraft[] {
+  let body: unknown;
+  try {
+    body = JSON.parse(json);
+  } catch {
+    throw new Error('JSON 格式错误，请粘贴有效的 JSON 对象');
+  }
+  if (body === null || typeof body !== 'object' || Array.isArray(body))
+    throw new Error('参数须为 JSON 对象，不能是数组、null 或单个值');
+
+  function validateValue(value: unknown) {
+    if (typeof value === 'number' && !Number.isFinite(value))
+      throw new Error('JSON 中的数字必须是有限数值');
+    if (value === null || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (
+        key
+          .split('.')
+          .some((part) => ['__proto__', 'prototype', 'constructor'].includes(part.toLowerCase()))
+      )
+        throw new Error('JSON 中包含不安全的对象字段');
+      validateValue(child);
+    }
+  }
+  validateValue(body);
+
+  const imported = createRequestParameters(body as Record<string, unknown>);
+  for (const [index, parameter] of imported.entries()) {
+    const keyError = parameterKeyError(imported, index);
+    if (keyError) throw new Error(keyError);
+    const children = imported.some((child) => child.key.startsWith(`${parameter.key}.`));
+    const binding = parameters.find(
+      (existing) => existing.key === parameter.key && existing.binding,
+    );
+    if (binding) {
+      if (children) throw new Error(`动态模型参数 ${parameter.key} 不能包含子参数`);
+      parameter.binding = binding.binding;
+      parameter.type = 'string';
+      parameter.value = binding.value;
+    }
+    if (children && parameter.type !== 'object')
+      throw new Error(`参数路径冲突：${parameter.key} 同时包含值和子参数`);
+    const valueError = parameterValueError(parameter);
+    if (valueError) throw new Error(valueError);
+  }
+
+  const result = parameters.map((parameter) => ({ ...parameter }));
+  function upsert(parameter: RequestParameterDraft, replaceChildren = false) {
+    const matches = result.filter((existing) => existing.key === parameter.key);
+    const previous = matches.find((existing) => existing.binding) ?? matches[0];
+    if (previous?.binding && parameter.type === 'object')
+      throw new Error(`动态模型参数 ${parameter.key} 不能包含子参数`);
+    // JSON 对象同样参与叶路径合并；仅在需要保留对象子字段时展开。
+    if (previous?.type === 'json' && parameter.type === 'object' && !replaceChildren) {
+      let value: unknown;
+      try {
+        value = JSON.parse(previous.value);
+        validateValue(value);
+      } catch {
+        // 无效 JSON 按被覆盖的普通值处理。
+        value = undefined;
+      }
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        const expanded = createRequestParameters({ [previous.key]: value });
+        const valid = requestParameterValidation(expanded).every(
+          (item) => !item.key && !item.value,
+        );
+        if (valid) {
+          for (const child of expanded.slice(1))
+            if (!result.some((existing) => existing.key === child.key)) result.push(child);
+        }
+      }
+    }
+    const replacement = { ...parameter, id: previous?.id ?? parameter.id, enabled: true };
+    if (previous?.binding) {
+      replacement.binding = previous.binding;
+      replacement.type = 'string';
+      replacement.value = previous.value;
+    }
+    let insertion = result.length;
+    for (let index = result.length - 1; index >= 0; index--) {
+      const existing = result[index];
+      if (
+        existing.key === parameter.key ||
+        (replaceChildren && existing.key.startsWith(`${parameter.key}.`))
+      ) {
+        insertion = index;
+        result.splice(index, 1);
+      }
+    }
+    result.splice(insertion, 0, replacement);
+  }
+
+  const ordered = imported.sort((a, b) => a.key.split('.').length - b.key.split('.').length);
+  for (const parameter of ordered) {
+    const path = parameter.key.split('.');
+    for (let depth = 1; depth < path.length; depth++)
+      upsert(newRequestParameter(path.slice(0, depth).join('.'), 'object'));
+    const hasImportedChildren = imported.some((child) => child.key.startsWith(`${parameter.key}.`));
+    upsert(parameter, parameter.type !== 'object' || !hasImportedChildren);
+  }
+  return result;
 }
 
 function ancestors<T extends RequestParameter>(parameters: T[], parameter: T) {

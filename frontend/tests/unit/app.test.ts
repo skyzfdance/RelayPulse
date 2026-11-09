@@ -34,7 +34,7 @@ describe('App 路由与布局骨架', () => {
     // 头部标题与子标题由路由 meta 驱动
     expect(wrapper.find('h1').text()).toBe('站点管理');
     expect(wrapper.text()).toContain('配置多个模型站点，并通过拖动顺序决定故障时的优先级');
-    // 只展示配置与运行分组，未完成模块由 meta.isMenu 隐藏
+    // 配置、运行与测试分组可见；情报模块仍由 meta.isMenu 隐藏
     const menu = wrapper.get('.ant-menu');
     expect(menu.text()).toContain('配置');
     expect(menu.text()).toContain('运行');
@@ -45,9 +45,11 @@ describe('App 路由与布局骨架', () => {
     expect(menu.text()).toContain('操作记录');
     expect(menu.text()).not.toContain('情报');
     expect(menu.text()).not.toContain('智力天梯');
-    expect(menu.text()).not.toContain('测试');
-    expect(menu.text()).not.toContain('历史记录');
-    expect(menu.text()).not.toContain('题库管理');
+    expect(menu.text()).toContain('测试');
+    expect(menu.text()).toContain('智商测试');
+    expect(menu.findAll('[role="menuitem"]')).toHaveLength(8);
+    expect(menu.text()).toContain('历史记录');
+    expect(menu.text()).toContain('题库管理');
     expect(wrapper.text()).not.toContain('页面不存在');
   });
 
@@ -70,8 +72,17 @@ describe('App 路由与布局骨架', () => {
     await router.push('/iq-test/detail/abc');
     await flushPromises();
 
-    expect(wrapper.find('h1').text()).toBe('测试详情');
+    expect(wrapper.find('h1').text()).toBe('输出回放');
     expect(wrapper.find('.ant-menu').text()).not.toContain('测试详情');
+    expect(wrapper.get('.ant-menu-item-selected').text()).toContain('智商测试');
+
+    await router.push('/iq-test/detail/abc?from=history');
+    await flushPromises();
+    expect(wrapper.get('.ant-menu-item-selected').text()).toContain('历史记录');
+
+    await router.push('/iq-test/detail/abc?from=run');
+    await flushPromises();
+    expect(wrapper.get('.ant-menu-item-selected').text()).toContain('智商测试');
   });
 
   it('未知路由落入 404 独立整页（根记录无布局，错误页不带侧边栏）', async () => {

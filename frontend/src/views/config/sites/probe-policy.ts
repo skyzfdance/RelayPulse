@@ -1,6 +1,6 @@
 import type { CustomProbeRequest, ProbePolicy, RequestParameter } from '@/types/domain/sites';
 
-import { requestParameterValidation } from './request-parameters';
+import { requestParameterValidation } from '@/utils/request-parameters';
 
 export function parametersError(parameters: RequestParameter[]): string | null {
   return (

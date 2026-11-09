@@ -17,6 +17,12 @@ export type OperationActionGroup =
   | 'status_change';
 
 export type OperationAction =
+  | 'iq_question_created'
+  | 'iq_question_updated'
+  | 'iq_question_deleted'
+  | 'iq_run_started'
+  | 'iq_run_aborted'
+  | 'iq_run_deleted'
   | 'automatic_probe'
   | 'model_failure'
   | 'model_recovered'
@@ -65,6 +71,12 @@ export const operationActionGroupLabels: Record<OperationActionGroup, string> = 
 };
 
 export const operationActionGroupByAction: Record<OperationAction, OperationActionGroup> = {
+  iq_question_created: 'create',
+  iq_question_updated: 'update',
+  iq_question_deleted: 'delete',
+  iq_run_started: 'create',
+  iq_run_aborted: 'status_change',
+  iq_run_deleted: 'delete',
   automatic_probe: 'probe',
   model_failure: 'status_change',
   model_recovered: 'status_change',

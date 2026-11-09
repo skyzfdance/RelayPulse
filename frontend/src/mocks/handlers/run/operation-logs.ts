@@ -1,4 +1,5 @@
 import type {
+  OperationAction,
   OperationLogDetail,
   OperationLogDetailContent,
   OperationLogListItem,
@@ -792,3 +793,36 @@ register('get_operation_log_detail', (args, activeScenario): OperationLogDetail 
 });
 
 export { logs as operationLogFixtures };
+
+/** IQ 浏览器操作夹具，独立于通知开关；不写入真实数据库或诊断日志。 */
+export function appendMockIqOperation(
+  action: OperationAction,
+  actionLabel: string,
+  objectSnapshot: string,
+) {
+  const log: OperationLogListItem = {
+    id: crypto.randomUUID(),
+    occurredAt: new Date().toISOString(),
+    source: 'user',
+    actorSnapshot: '当前用户',
+    action,
+    actionGroup: operationActionGroupByAction[action],
+    actionLabel,
+    objectSnapshot,
+    result: 'success',
+    summary: `${actionLabel}：${objectSnapshot}`,
+    detailBehavior: { kind: 'drawer' },
+  };
+  logs.unshift(log);
+  details.set(log.id, {
+    item: log,
+    explanation: log.summary,
+    content: {
+      kind: 'snapshot',
+      fields: [
+        { label: '操作对象', value: objectSnapshot },
+        { label: '数据来源', value: '浏览器模拟会话' },
+      ],
+    },
+  });
+}

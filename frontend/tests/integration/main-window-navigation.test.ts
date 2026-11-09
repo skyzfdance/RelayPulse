@@ -1,4 +1,4 @@
-import type { MainWindowRoute } from '@/api/main-window';
+import type { MainWindowNavigationTarget } from '@/api/main-window';
 
 import { flushPromises, mount } from '@vue/test-utils';
 import { Segmented, Select } from 'antdv-next';
@@ -7,9 +7,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
 import * as sitesApi from '@/api/config/sites';
+import * as iqHistoryApi from '@/api/iq-test/history';
+import * as iqTaskApi from '@/api/iq-test/task';
 import * as recordsApi from '@/api/run/records';
 import { resetGlobalLoadingForTests, useGlobalLoading } from '@/composables/useGlobalLoading';
 import { seedSites } from '@/mocks/handlers/config/sites';
+import { advanceIqRun, seedIqState } from '@/mocks/handlers/iq-test';
 import { seedProbeRecords } from '@/mocks/handlers/run/records';
 import { routes } from '@/router';
 
@@ -17,15 +20,16 @@ import { deferred } from '../support/deferred';
 
 import App from '@/App.vue';
 import SitesView from '@/views/config/sites/SitesView.vue';
+import IqHistoryView from '@/views/iq-test/history/IqHistoryView.vue';
 import ProbeRecordsTable from '@/views/run/records/components/ProbeRecordsTable.vue';
 import RecordsView from '@/views/run/records/RecordsView.vue';
 
 const navigation = vi.hoisted(() => ({
-  handler: undefined as ((route: MainWindowRoute) => void) | undefined,
+  handler: undefined as ((target: MainWindowNavigationTarget) => void) | undefined,
   stop: vi.fn(),
 }));
 vi.mock('@/api/main-window', () => ({
-  subscribeMainWindowNavigation: (handler: (route: MainWindowRoute) => void) => {
+  subscribeMainWindowNavigation: (handler: (target: MainWindowNavigationTarget) => void) => {
     navigation.handler = handler;
     return Promise.resolve(navigation.stop);
   },
@@ -33,12 +37,15 @@ vi.mock('@/api/main-window', () => ({
 const disposals: (() => void)[] = [];
 beforeEach(() => {
   seedSites();
+  seedIqState();
   seedProbeRecords();
   resetGlobalLoadingForTests();
   navigation.stop.mockClear();
 });
 afterEach(() => {
   disposals.splice(0).forEach((dispose) => dispose());
+  seedIqState();
+  document.body.innerHTML = '';
   vi.restoreAllMocks();
   resetGlobalLoadingForTests();
 });
@@ -49,6 +56,22 @@ async function open(route: string) {
   disposals.push(() => wrapper.unmount());
   await flushPromises();
   return { router, wrapper };
+}
+
+async function completedIqRun() {
+  const participant = await iqTaskApi.createIqParticipant({
+    modelKey: 'site-1/model-0-0',
+    preset: 'high',
+    parameters: { reasoning_effort: 'high' },
+  });
+  await iqTaskApi.runIqPrecheck(participant.snapshotId);
+  const run = await iqTaskApi.startIqRun({
+    questionIds: ['iq-question-1'],
+    timeoutSeconds: 120,
+    timeoutRetryMax: 5,
+  });
+  for (let tick = 0; tick < run.participants.length * 2 + 1; tick++) advanceIqRun();
+  return run;
 }
 
 it('通知点击经 Vue 路由进入记录页，应用根节点保留，卸载后释放监听', async () => {
@@ -62,6 +85,44 @@ it('通知点击经 Vue 路由进入记录页，应用根节点保留，卸载�
   expect(useGlobalLoading().visible.value).toBe(false);
   disposals.pop()?.();
   expect(navigation.stop).toHaveBeenCalledOnce();
+});
+
+it('系统通知携带运行标识进入对应 IQ 详情，不创建应用内完成浮层', async () => {
+  const run = await completedIqRun();
+  const { router, wrapper } = await open('/config/sites');
+  const root = wrapper.vm.$.uid;
+  const read = vi.spyOn(iqHistoryApi, 'fetchIqRun');
+  navigation.handler?.({ path: '/iq-test/history', query: { runId: run.id } });
+  await flushPromises();
+  expect(router.currentRoute.value.path).toBe('/iq-test/history');
+  expect(router.currentRoute.value.query).toEqual({ runId: run.id });
+  expect(read).toHaveBeenCalledWith(run.id);
+  expect(wrapper.findComponent(IqHistoryView).exists()).toBe(true);
+  expect(document.querySelector('.ant-drawer-body')?.textContent).toContain(
+    run.questions[0]!.content,
+  );
+  expect(wrapper.vm.$.uid).toBe(root);
+  expect(document.querySelector('[aria-label="智商测试完成提醒"]')).toBeNull();
+});
+
+it('已在 IQ 历史时通知切换到另一场详情，保留页面与现有筛选', async () => {
+  const previous = await completedIqRun();
+  const next = await completedIqRun();
+  const read = vi.spyOn(iqHistoryApi, 'fetchIqRun');
+  const { router, wrapper } = await open(`/iq-test/history?runId=${previous.id}`);
+  const view = wrapper.getComponent(IqHistoryView);
+  const result = view
+    .findAllComponents(Select)
+    .find((item) => item.vm.$attrs['aria-label'] === 'IQ 执行结果筛选')!;
+  result.vm.$emit('update:value', 'all-success');
+  await flushPromises();
+  read.mockClear();
+  navigation.handler?.({ path: '/iq-test/history', query: { runId: next.id } });
+  await flushPromises();
+  expect(router.currentRoute.value.query).toEqual({ runId: next.id });
+  expect(read).toHaveBeenCalledWith(next.id);
+  expect(wrapper.getComponent(IqHistoryView).vm.$.uid).toBe(view.vm.$.uid);
+  expect(result.props('value')).toBe('all-success');
 });
 
 it('已在记录页时保留实例、筛选及现有数据，只切回记录 Tab 并重新取数', async () => {

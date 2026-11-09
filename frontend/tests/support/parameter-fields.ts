@@ -4,7 +4,7 @@ import {
   buildRequestParametersPreview,
   createRequestParameters,
   serializeRequestParameters,
-} from '@/views/config/sites/request-parameters';
+} from '@/utils/request-parameters';
 
 export const parameterKeySelector = (key: string) =>
   `[data-parameter-key="${key}"] [aria-label^="参数字段 "]`;

@@ -1,5 +1,7 @@
 import 'vue-router';
 
+type RouteHighlightContext = { path: string; query: Record<string, unknown> };
+
 declare module 'vue-router' {
   interface RouteMeta {
     /** 菜单显示名字 */
@@ -12,6 +14,8 @@ declare module 'vue-router' {
     icon?: string;
     /** 是否在菜单栏显示 */
     isMenu?: boolean;
+    /** 侧边菜单高亮目标；为空时高亮当前路由，函数可按当前路由解析 */
+    highlightRoute?: string | ((route: RouteHighlightContext) => string);
     /** 主路由排序，数字越小越靠前 */
     sort?: number;
   }

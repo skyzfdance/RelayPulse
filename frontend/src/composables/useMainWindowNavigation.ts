@@ -1,4 +1,4 @@
-import type { MainWindowRoute } from '@/api/main-window';
+import type { MainWindowNavigationTarget, MainWindowRoute } from '@/api/main-window';
 import type { InjectionKey } from 'vue';
 
 import { inject, onScopeDispose, provide } from 'vue';
@@ -24,14 +24,15 @@ export function provideMainWindowNavigation() {
     reportFrontendError('background-task', cause);
     useFeedback().error('无法打开目标页面，请重试。', 'message');
   }
-  async function navigate(route: MainWindowRoute) {
+  async function navigate(target: MainWindowNavigationTarget) {
     await router.isReady();
     if (disposed) return;
-    if (router.currentRoute.value.path === route) await refreshers.get(route)?.();
-    else await router.push(route);
+    if (typeof target === 'string' && router.currentRoute.value.path === target)
+      await refreshers.get(target)?.();
+    else await router.push(target);
   }
-  void subscribeMainWindowNavigation((route) => {
-    void navigate(route).catch(failed);
+  void subscribeMainWindowNavigation((target) => {
+    void navigate(target).catch(failed);
   }).then((stop) => {
     if (disposed) stop();
     else unsubscribe = stop;

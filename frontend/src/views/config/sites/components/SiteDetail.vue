@@ -3,8 +3,8 @@ import { storeToRefs } from 'pinia';
 import { computed } from 'vue';
 
 import { useSiteDetailsStore, useSiteStore } from '@/stores/site';
+import { parameterEnabled } from '@/utils/request-parameters';
 
-import { parameterEnabled } from '../request-parameters';
 import { healthColors, healthLabels } from '../site-policy';
 import { useSiteDetail } from '../use-site-detail';
 

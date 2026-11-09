@@ -1,11 +1,12 @@
 import type { CustomProbeRequest, ProbePolicy, SiteProtocol } from '@/types/domain/sites';
 
-import { customProbeError, policyError, resolveCustomProbeEndpoint } from './probe-policy';
 import {
   buildRequestParametersPreview,
   createRequestParameters,
   serializeRequestParameters,
-} from './request-parameters';
+} from '@/utils/request-parameters';
+
+import { customProbeError, policyError, resolveCustomProbeEndpoint } from './probe-policy';
 
 /** 只在创建配置时提供基础参数，之后由使用者维护整张参数表。 */
 export function defaultProbePolicy(protocol: SiteProtocol): ProbePolicy {

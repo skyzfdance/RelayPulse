@@ -10,12 +10,13 @@ test('分组全展开菜单导航与 404 错误页', async ({ page }) => {
   await expect(page).toHaveURL(/\/config\/sites$/);
 
   const menu = page.getByRole('menu');
-  await expect(menu.getByRole('menuitem')).toHaveCount(5);
+  await expect(menu.getByRole('menuitem')).toHaveCount(8);
   await expect(menu.getByRole('menuitem', { name: '操作记录' })).toBeVisible();
   await expect(menu.getByText('情报', { exact: true })).toHaveCount(0);
-  await expect(menu.getByText('测试', { exact: true })).toHaveCount(0);
-  for (const name of ['智力天梯', '智商测试', '历史记录', '题库管理']) {
-    await expect(menu.getByRole('menuitem', { name })).toHaveCount(0);
+  await expect(menu.getByText('测试', { exact: true })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '智力天梯' })).toHaveCount(0);
+  for (const name of ['智商测试', '历史记录', '题库管理']) {
+    await expect(menu.getByRole('menuitem', { name })).toBeVisible();
   }
 
   // 分组全展开：菜单项直接点击切换路由
@@ -33,7 +34,7 @@ test('分组全展开菜单导航与 404 错误页', async ({ page }) => {
 
   // 隐藏路由测试详情可直达
   await page.goto('/iq-test/detail/abc');
-  await expect(page.getByRole('heading', { name: '测试详情' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '输出回放' })).toBeVisible();
 
   // 未知地址落入 404 独立整页（根记录无布局，错误页不带侧边栏）
   await page.goto('/definitely-not-exist');

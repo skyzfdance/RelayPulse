@@ -9,16 +9,16 @@ const iqTestRoutes: RouteRecordRaw = {
   name: 'iq-test',
   component: () => import('@/layouts/MainLayout.vue'),
   redirect: '/iq-test/task',
-  meta: { title: '测试', sort: 4, isMenu: false },
+  meta: { title: '测试', sort: 4, isMenu: true },
   children: [
     {
       path: 'task',
       name: 'iq-test-task',
-      component: () => import('@/views/IqTestView.vue'),
+      component: () => import('@/views/iq-test/task/IqTestView.vue'),
       meta: {
         title: '智商测试',
         mainTitle: '智商测试',
-        subTitle: '模型 IQ 评测任务',
+        subTitle: '用独立 IQ 参数对比模型表现，逐题观察运行状态',
         icon: 'ExperimentOutlined',
         isMenu: true,
       },
@@ -26,7 +26,7 @@ const iqTestRoutes: RouteRecordRaw = {
     {
       path: 'history',
       name: 'iq-test-history',
-      component: () => import('@/views/IqHistoryView.vue'),
+      component: () => import('@/views/iq-test/history/IqHistoryView.vue'),
       meta: {
         title: '历史记录',
         mainTitle: '历史记录',
@@ -38,7 +38,7 @@ const iqTestRoutes: RouteRecordRaw = {
     {
       path: 'bank',
       name: 'iq-test-bank',
-      component: () => import('@/views/IqBankView.vue'),
+      component: () => import('@/views/iq-test/bank/IqBankView.vue'),
       meta: {
         title: '题库管理',
         mainTitle: '题库管理',
@@ -51,12 +51,14 @@ const iqTestRoutes: RouteRecordRaw = {
       // 隐藏路由：菜单不展示，由测试页跳转进入
       path: 'detail/:id',
       name: 'iq-test-detail',
-      component: () => import('@/views/IqDetailView.vue'),
+      component: () => import('@/views/iq-test/history/IqDetailView.vue'),
       meta: {
         title: '测试详情',
-        mainTitle: '测试详情',
-        subTitle: '单次评测的完整报告',
+        mainTitle: '输出回放',
+        subTitle: '本次调用实际使用的脱敏快照与原始流入口',
         isMenu: false,
+        highlightRoute: (route) =>
+          route.query.from === 'history' ? '/iq-test/history' : '/iq-test/task',
       },
     },
   ],

@@ -11,3 +11,4 @@ import './config/sites';
 import './panel';
 import './run/records';
 import './run/operation-logs';
+import './iq-test';

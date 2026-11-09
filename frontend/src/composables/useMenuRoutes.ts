@@ -39,7 +39,11 @@ export function useMenuRoutes() {
       .filter((main) => main.children.length > 0),
   );
 
-  const selectedKeys = computed(() => [route.path]);
+  const selectedKeys = computed(() => {
+    const highlightRoute = route.meta.highlightRoute;
+    const target = typeof highlightRoute === 'function' ? highlightRoute(route) : highlightRoute;
+    return [target || route.path];
+  });
 
   function handleMenuClick(info: { key: string | number }) {
     void router.push(String(info.key));

@@ -1,4 +1,4 @@
-import type { IqRun, IqSnapshot } from '@/types/domain/iq-test';
+import type { IqEntryOutput, IqRun, IqSnapshot } from '@/types/domain/iq-test';
 
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils';
 import AntdvNext, {
@@ -30,15 +30,13 @@ function fixture(): IqRun {
   return {
     id: 'history-run',
     status: 'completed',
-    timeoutSeconds: 120,
-    timeoutRetryMax: 5,
     startedAtMs: 1794000000000,
     finishedAtMs: 1794000010000,
     questions: [
       {
         id: 'q1',
         content: '已固化题目',
-        referenceAnswer: '不渲染的参考答案',
+        referenceAnswer: '已保存的参考答案',
         enabled: true,
         createdAtMs: 1,
         updatedAtMs: 1,
@@ -133,6 +131,29 @@ beforeEach(() => {
   vi.mocked(historyApi.fetchIqRun).mockImplementation(async () => fixture());
   vi.mocked(historyApi.deleteIqRuns).mockResolvedValue();
   vi.mocked(historyApi.openIqRawFile).mockResolvedValue();
+  vi.mocked(historyApi.fetchIqEntryOutput).mockResolvedValue({
+    entryId: 'entry-one',
+    attempt: 1,
+    attempts: [
+      {
+        attempt: 1,
+        status: 'completed',
+        startedAtMs: 1,
+        finishedAtMs: 2,
+        firstTokenMs: 1,
+        totalTimeMs: 1000,
+        statusCode: 200,
+        errorCode: null,
+        bodyComplete: true,
+        streamBytes: 100,
+        usage: { outputTokens: 30 },
+      },
+    ],
+    parts: [{ kind: 'text', text: '**已保存的回答**' }],
+    encryptedReasoning: false,
+    parsingComplete: true,
+    rawResponse: null,
+  });
 });
 afterEach(() => {
   cleanups
@@ -662,14 +683,66 @@ describe('IQ 历史与回放来源', () => {
     expect(JSON.parse(parameterContent.textContent!)).toEqual(run.participants[0]!.parameters);
     expect(parameterContent.textContent).toContain('末尾字段保留');
     expect(parameterContent.classList.contains('overflow-auto')).toBe(true);
-    expect(wrapper.text()).not.toContain('不渲染的参考答案');
-    expect(wrapper.text()).toContain('回放正文留空');
+    expect(wrapper.text()).toContain('已保存的参考答案');
+    expect(wrapper.text()).toContain('已保存的回答');
+    expect(wrapper.text()).not.toContain('回放正文留空');
     await wrapper
       .findAll('button')
-      .find((button) => button.text().includes('打开原始流文件'))!
+      .find((button) => button.text().includes('打开记录目录'))!
       .trigger('click');
     await flushPromises();
-    expect(historyApi.openIqRawFile).toHaveBeenCalledExactlyOnceWith('entry-one');
+    expect(historyApi.openIqRawFile).toHaveBeenCalledExactlyOnceWith('entry-one', 1);
+  });
+
+  it('切换旧尝试时显示 loading，按该次状态和内容回放并打开对应原始流', async () => {
+    const latest: IqEntryOutput = {
+      entryId: 'entry-one',
+      attempt: 2,
+      attempts: [1, 2].map((attempt) => ({
+        attempt,
+        status: attempt === 1 ? 'timeout' : 'completed',
+        startedAtMs: attempt * 1000,
+        finishedAtMs: attempt * 2000,
+        firstTokenMs: null,
+        totalTimeMs: 1000,
+        statusCode: 200,
+        errorCode: attempt === 1 ? 'output_timeout' : null,
+        bodyComplete: attempt === 2,
+        streamBytes: 100,
+        usage: {},
+      })),
+      parts: [{ kind: 'text', text: '最后一次完整回答' }],
+      encryptedReasoning: false,
+      parsingComplete: true,
+      rawResponse: null,
+    };
+    const earlier = deferred<IqEntryOutput>();
+    vi.mocked(historyApi.fetchIqEntryOutput)
+      .mockResolvedValueOnce(latest)
+      .mockReturnValueOnce(earlier.promise);
+    const { wrapper } = await setup('/iq-test/detail/entry-one?from=history&runId=history-run');
+    expect(wrapper.text()).toContain('最后一次完整回答');
+    wrapper.getComponent(Select).vm.$emit('change', 1);
+    await flushPromises();
+    expect(wrapper.find('.ant-spin').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain('最后一次完整回答');
+    earlier.resolve({
+      ...latest,
+      attempt: 1,
+      parts: [],
+      encryptedReasoning: true,
+    });
+    await flushPromises();
+    expect(historyApi.fetchIqEntryOutput).toHaveBeenLastCalledWith('entry-one', 1);
+    expect(wrapper.get('h2').text()).toContain('超时');
+    expect(wrapper.text()).toContain('本次包含加密推理数据');
+    expect(wrapper.text()).toContain('本次尝试未收到可展示的回答正文');
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('打开记录目录'))!
+      .trigger('click');
+    await flushPromises();
+    expect(historyApi.openIqRawFile).toHaveBeenCalledExactlyOnceWith('entry-one', 1);
   });
 
   it('未发起调用的中止项保留骨架，禁用原始流入口，运行来源返回看板', async () => {
@@ -678,9 +751,7 @@ describe('IQ 历史与回放来源', () => {
     run.entries[0] = { ...run.entries[0]!, status: 'aborted', attempt: 0, hasRawStream: false };
     vi.mocked(historyApi.fetchIqRun).mockResolvedValue(run);
     const { wrapper, router } = await setup('/iq-test/detail/entry-one?from=run&runId=history-run');
-    const raw = wrapper
-      .findAll('button')
-      .find((button) => button.text().includes('打开原始流文件'))!;
+    const raw = wrapper.findAll('button').find((button) => button.text().includes('打开记录目录'))!;
     expect(raw.attributes('disabled')).toBeDefined();
     await raw.trigger('click');
     expect(historyApi.openIqRawFile).not.toHaveBeenCalled();

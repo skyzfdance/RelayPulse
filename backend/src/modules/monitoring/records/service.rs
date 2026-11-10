@@ -1,4 +1,5 @@
 //! 正式历史的公开用例；命令层不接触存储或文件适配器。
+use super::super::actions as OperationAction;
 use super::{
     capture::{CaptureStore, CapturedRecord},
     dto::*,
@@ -11,15 +12,14 @@ use super::{
 use crate::modules::{
     monitoring::{health, Monitoring},
     operation_logs::{
-        OperationAction, OperationEvent, OperationLogContent, OperationResult, OperationSource,
-        SnapshotField,
+        OperationEvent, OperationLogContent, OperationResult, OperationSource, SnapshotField,
     },
 };
 use std::{collections::BTreeMap, path::Path};
 
 /// 正式记录用例拥有诊断标识和失败动作；IPC 只选择实际调用的用例。
 #[derive(Clone, Copy)]
-pub(crate) enum ProbeRecordOperation {
+pub enum ProbeRecordOperation {
     Options,
     List,
     Association,
@@ -46,7 +46,7 @@ impl ProbeRecordOperation {
             Self::Clear => "probe_records_clear",
         }
     }
-    fn failure_action(self) -> OperationAction {
+    fn failure_action(self) -> relaypulse_operations::ActionDefinition {
         match self {
             Self::Options | Self::List | Self::Association | Self::TokenStats => {
                 OperationAction::PageLoadFailed
@@ -61,7 +61,7 @@ impl ProbeRecordOperation {
 }
 
 impl Monitoring {
-    pub(crate) async fn get_probe_record_options(&self) -> Result<ProbeRecordOptions> {
+    pub async fn get_probe_record_options(&self) -> Result<ProbeRecordOptions> {
         let result = async {
             if *self.cancellation().subscribe().borrow() {
                 return Err(RecordError::Unavailable);
@@ -100,7 +100,7 @@ impl Monitoring {
         }
         result
     }
-    pub(crate) async fn get_probe_records(
+    pub async fn get_probe_records(
         &self,
         query: ProbeRecordsQuery,
     ) -> Result<RecordsPage<ProbeRecordListItem>> {
@@ -125,7 +125,7 @@ impl Monitoring {
         )
         .await
     }
-    pub(crate) async fn get_probe_records_by_ids(
+    pub async fn get_probe_records_by_ids(
         &self,
         ids: Vec<String>,
     ) -> Result<ProbeRecordAssociationLookup> {
@@ -144,10 +144,7 @@ impl Monitoring {
         )
         .await
     }
-    pub(crate) async fn get_probe_token_stats(
-        &self,
-        query: TokenStatsQuery,
-    ) -> Result<TokenStatsPage> {
+    pub async fn get_probe_token_stats(&self, query: TokenStatsQuery) -> Result<TokenStatsPage> {
         let query = query.records();
         self.validate_record_operation(ProbeRecordOperation::TokenStats, query.validate())?;
         self.read_records(
@@ -160,7 +157,7 @@ impl Monitoring {
         )
         .await
     }
-    pub(crate) async fn get_probe_record_detail(&self, id: String) -> Result<ProbeRecordDetail> {
+    pub async fn get_probe_record_detail(&self, id: String) -> Result<ProbeRecordDetail> {
         self.validate_record_operation(ProbeRecordOperation::Detail, query::record_id(&id))?;
         self.read_records(
             ProbeRecordOperation::Detail,
@@ -172,10 +169,7 @@ impl Monitoring {
         )
         .await
     }
-    pub(crate) async fn get_probe_record_request(
-        &self,
-        id: String,
-    ) -> Result<ProbeRecordRequestContent> {
+    pub async fn get_probe_record_request(&self, id: String) -> Result<ProbeRecordRequestContent> {
         self.validate_record_operation(ProbeRecordOperation::Request, query::record_id(&id))?;
         self.read_records(
             ProbeRecordOperation::Request,
@@ -187,7 +181,7 @@ impl Monitoring {
         )
         .await
     }
-    pub(crate) async fn get_probe_record_response(
+    pub async fn get_probe_record_response(
         &self,
         id: String,
     ) -> Result<ProbeRecordResponseContent> {
@@ -207,7 +201,7 @@ impl Monitoring {
         )
         .await
     }
-    pub(crate) async fn open_probe_record_log_directory(
+    pub async fn open_probe_record_log_directory(
         &self,
         id: String,
         open: impl FnOnce(&Path) -> Result<()> + Send + 'static,
@@ -227,7 +221,7 @@ impl Monitoring {
         )
         .await
     }
-    pub(crate) async fn delete_probe_record(&self, id: String) -> Result<()> {
+    pub async fn delete_probe_record(&self, id: String) -> Result<()> {
         self.validate_record_operation(ProbeRecordOperation::Delete, query::record_id(&id))?;
         let logs = self.operation_logs.clone();
         self.write_records(
@@ -267,7 +261,7 @@ impl Monitoring {
         )
         .await
     }
-    pub(crate) async fn clear_probe_records(&self) -> Result<()> {
+    pub async fn clear_probe_records(&self) -> Result<()> {
         let logs = self.operation_logs.clone();
         self.write_records(ProbeRecordOperation::Clear, move |store, captures, _, _| {
             if captures.is_none() && store.has_captures().map_err(|_| RecordError::Unavailable)? {
@@ -358,7 +352,7 @@ impl Monitoring {
     ) -> Result<T> {
         validation.inspect_err(|error| self.record_history_failure(operation, error))
     }
-    pub(crate) fn record_probe_record_boundary_failure(&self, operation: ProbeRecordOperation) {
+    pub fn record_probe_record_boundary_failure(&self, operation: ProbeRecordOperation) {
         let Some(logs) = &self.operation_logs else {
             return;
         };

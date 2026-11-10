@@ -1,5 +1,7 @@
 mod capture;
+mod endpoint_paths;
 mod first_token;
+mod generation;
 mod metadata;
 mod response_reading;
 

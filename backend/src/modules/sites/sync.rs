@@ -35,7 +35,7 @@ pub(super) fn same_set(a: &[String], b: &[String]) -> bool {
     let unique: HashSet<_> = a.iter().collect();
     a.len() == b.len() && unique.len() == a.len() && b.iter().all(|v| unique.contains(v))
 }
-pub(crate) fn differences(local: &[Model], remote: &[String]) -> SyncChanges {
+pub fn differences(local: &[Model], remote: &[String]) -> SyncChanges {
     let existing: HashSet<_> = local.iter().map(|m| m.name.as_str()).collect();
     let incoming: HashSet<_> = remote.iter().map(String::as_str).collect();
     let mut seen = HashSet::new();

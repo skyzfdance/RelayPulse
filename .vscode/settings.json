@@ -2,7 +2,11 @@
   "editor.formatOnSave": true,
   "prettier.requireConfig": true,
   "eslint.workingDirectories": ["./frontend", "./scripts"],
-  "rust-analyzer.linkedProjects": ["backend/Cargo.toml"],
+  "rust-analyzer.linkedProjects": [
+    "backend/Cargo.toml",
+    "backend/tests/integration/sdk/Cargo.toml"
+  ],
+  "rust-analyzer.vfs.extraIncludes": ["${workspaceFolder}/backend/tests"],
   "[vue]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
   "[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
   "[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },

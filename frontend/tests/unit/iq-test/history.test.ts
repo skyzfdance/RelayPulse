@@ -50,8 +50,6 @@ function run(patch: Partial<IqRun> = {}, callResult: Partial<IqCallResult> = {})
     questions: [],
     participants: [participant('site-1', 'model-1')],
     entries: [entry('completed')],
-    timeoutSeconds: 120,
-    timeoutRetryMax: 5,
     startedAtMs: 1_000,
     finishedAtMs: 2_000,
     summary: {

@@ -52,7 +52,7 @@ fn real_registered_commands_validate_strict_boundary_and_return_structured_error
         ("pageSize", json!(70), "query.pageSize"),
         ("source", json!(["panel"]), "query.source"),
         ("result", json!(["skipped"]), "query.result"),
-        ("actions", json!(["site_created"]), "query.actions"),
+        ("actions", json!(["unsafe/group"]), "query"),
         ("unknown", json!(1), "query"),
     ] {
         let mut q = query();
@@ -172,4 +172,56 @@ fn unavailable_startup_never_falls_back_to_mock() {
         assert_eq!(error["category"], "unavailable");
         assert_eq!(error["retryable"], true);
     }
+}
+
+#[test]
+fn legacy_probe_history_is_decoded_by_business_and_preserves_the_existing_ipc_shape() {
+    use tauri::Manager;
+    let temp = tempfile::tempdir().unwrap();
+    let env = environment(temp.path(), "com.relaypulse.app.dev");
+    let root = env.paths().data_root().to_owned();
+    let (state, _) = startup::initialize(Ok(env));
+    let db = rusqlite::Connection::open(root.join("relaypulse.sqlite3")).unwrap();
+    let behavior =
+        r#"{"kind":"probe_records","recordIds":["original-id"],"availability":"expired"}"#;
+    let content = r#"{"kind":"probe_failure","reason":"original explanation"}"#;
+    db.execute("INSERT INTO operation_logs VALUES ('old',1,'1970-01-01T00:00:00Z','user','original actor','manual_probe','probe','original label','original object','failure','original summary',?1,'original detail',?2)", rusqlite::params![behavior, content]).unwrap();
+    let app = register(mock_builder())
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let detail = invoke(&window, "get_operation_log_detail", json!({"logId":"old"})).unwrap();
+    assert_eq!(
+        detail["content"],
+        serde_json::from_str::<Value>(content).unwrap()
+    );
+    assert_eq!(
+        detail["item"]["detailBehavior"],
+        serde_json::from_str::<Value>(behavior).unwrap()
+    );
+    let page = invoke(&window, "get_operation_logs", json!({"query":query()})).unwrap();
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == "old")
+            .unwrap()["detailBehavior"],
+        detail["item"]["detailBehavior"]
+    );
+    let saved: (String, String) = db
+        .query_row(
+            "SELECT detail_behavior,content FROM operation_logs WHERE id='old'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(saved, (behavior.into(), content.into()));
+    assert!(matches!(
+        app.state::<startup::StartupState>().inner(),
+        startup::StartupState::Ready(_)
+    ));
 }

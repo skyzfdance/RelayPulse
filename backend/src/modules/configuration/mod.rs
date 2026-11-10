@@ -3,16 +3,16 @@ mod service;
 mod sqlite;
 mod types;
 
-pub(crate) use service::{ConfigurationBoundaryFailure, ConfigurationError, ConfigurationService};
-pub(crate) use sqlite::{SqliteSettingsStore, SCHEMA};
-pub(crate) use types::{GeneralSettings, Language, ThemeMode};
+pub use service::{ConfigurationBoundaryFailure, ConfigurationError, ConfigurationService};
+pub use sqlite::{SqliteSettingsStore, SCHEMA};
+pub use types::{GeneralSettings, Language, ThemeMode};
 
 use std::error::Error;
 
 type StorageError = Box<dyn Error + Send + Sync>;
 
 /// 保存应原子覆盖整份设置，返回该次提交的结果，不能读到另一次并发保存。
-pub(crate) trait SettingsStore: Send + Sync {
+pub trait SettingsStore: Send + Sync {
     fn load(&self) -> Result<GeneralSettings, StorageError>;
     fn save(&self, settings: &GeneralSettings) -> Result<GeneralSettings, StorageError>;
 }
@@ -20,3 +20,5 @@ pub(crate) trait SettingsStore: Send + Sync {
 #[cfg(test)]
 #[path = "../../../tests/unit/configuration.rs"]
 mod tests;
+
+mod actions;

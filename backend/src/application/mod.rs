@@ -6,3 +6,11 @@ pub(crate) mod lifecycle;
 pub(crate) mod notifications;
 pub(crate) mod sites;
 pub(crate) mod snapshots;
+
+pub(crate) mod action_definitions;
+pub(crate) mod operation_history;
+pub(crate) mod startup_history;
+
+pub(crate) mod environment;
+
+pub(crate) mod data_transfer;

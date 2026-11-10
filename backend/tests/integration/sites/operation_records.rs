@@ -1,16 +1,14 @@
 use super::*;
-use crate::modules::{
-    monitoring::RecordError,
-    operation_logs::{OperationAction, OperationLogQuery},
-};
+use crate::modules::{monitoring::RecordError, operation_logs::OperationLogQuery};
+use crate::test_actions::actions as OperationAction;
 
-fn operation_query(action: OperationAction) -> OperationLogQuery {
+fn operation_query(action: relaypulse_operations::ActionDefinition) -> OperationLogQuery {
     OperationLogQuery {
         start_date: None,
         end_date: None,
         source: vec![],
         result: vec![],
-        actions: vec![action.group()],
+        actions: vec![action.group().into()],
         page: 1,
         page_size: 100,
     }
@@ -58,7 +56,7 @@ async fn exact_associations_survive_partial_task_failure_and_report_cleanup_and_
     let reads = f
         .operation_logs
         .query(OperationLogQuery {
-            actions: vec![crate::modules::operation_logs::OperationActionGroup::Read],
+            actions: vec![String::from("read")],
             ..operation_query(OperationAction::ManualProbe)
         })
         .await
@@ -156,6 +154,7 @@ async fn failures_without_records_use_drawer_and_failed_models_still_complete_th
             .unwrap(),
     )
     .unwrap();
+    let detail = crate::application::operation_history::wire(detail);
     assert_eq!(detail["content"]["kind"], "probe_failure");
 }
 
@@ -249,13 +248,37 @@ async fn cancelled_tasks_keep_already_committed_ids_and_release_resources() {
     assert_eq!(log["detailBehavior"]["recordIds"], json!(ids));
 }
 
-async fn operation_logs(f: &Fixture, action: OperationAction) -> Vec<Value> {
+async fn operation_logs(
+    f: &Fixture,
+    action: relaypulse_operations::ActionDefinition,
+) -> Vec<Value> {
     let logs = f
         .operation_logs
         .query(operation_query(action))
         .await
         .unwrap();
-    serde_json::to_value(logs).unwrap()["items"]
+    // Actual monitoring writes persist only the generic SDK payload, before wire adaptation.
+    for item in &logs.items {
+        let (behavior, content): (String, String) = f
+            .database
+            .with_connection(|c| {
+                c.query_row(
+                    "SELECT detail_behavior,content FROM operation_logs WHERE id=?1",
+                    [&item.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .unwrap();
+        assert_ne!(
+            serde_json::from_str::<Value>(&behavior).unwrap()["kind"],
+            "probe_records"
+        );
+        assert_ne!(
+            serde_json::from_str::<Value>(&content).unwrap()["kind"],
+            "probe_failure"
+        );
+    }
+    crate::application::operation_history::wire(serde_json::to_value(logs).unwrap())["items"]
         .as_array()
         .unwrap()
         .iter()

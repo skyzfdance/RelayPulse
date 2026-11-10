@@ -1,7 +1,7 @@
 use super::error::{RecordError, Result};
 
 #[derive(Clone, Debug)]
-pub(crate) struct ProbeRecordsQuery {
+pub struct ProbeRecordsQuery {
     pub range: String,
     pub site_id: Option<String>,
     pub model_name: Option<String>,
@@ -10,7 +10,7 @@ pub(crate) struct ProbeRecordsQuery {
     pub page_size: u64,
 }
 #[derive(Clone, Debug)]
-pub(crate) struct TokenStatsQuery {
+pub struct TokenStatsQuery {
     pub range: String,
     pub site_id: Option<String>,
     pub page: u64,

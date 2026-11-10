@@ -1,7 +1,7 @@
 use crate::shared::diagnostics::{DiagnosticFailure, Failure};
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum RecordError {
+pub enum RecordError {
     #[error("{message}")]
     Validation {
         field: &'static str,

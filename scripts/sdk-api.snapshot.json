@@ -1,0 +1,753 @@
+{
+  "packageVersions": {
+    "runtime": "0.1.0",
+    "storage": "0.1.0",
+    "model-client": "0.1.0",
+    "diagnostics": "0.1.0",
+    "notifications": "0.1.0",
+    "operations": "0.1.0"
+  },
+  "backend/crates/runtime/src/lib.rs": {
+    "publicItems": [
+      "pub mod shared",
+      "pub mod shared > pub mod environment;",
+      "pub mod shared > pub mod file_output;",
+      "pub mod shared > pub mod state_changes;",
+      "pub mod shared > pub mod tasks;",
+      "pub use shared::environment::*;",
+      "pub use shared::file_output::*;",
+      "pub use shared::state_changes::*;",
+      "pub use shared::tasks;",
+      "pub use shared::{environment, file_output, state_changes};"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/environment/mod.rs": {
+    "publicItems": [
+      "mod paths;",
+      "#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum AppEnvironment { Development, Production, }",
+      "#[derive(Debug, Clone)] pub struct EnvironmentDefinition { pub identifier: &'static str, pub environment: AppEnvironment, pub data_root: PathBuf, }",
+      "#[derive(Debug, Clone)] pub struct ApplicationInfo { name: String, version: String, }",
+      "impl ApplicationInfo > pub fn new( name: impl Into<String>, version: impl Into<String>, ) -> Result<Self, EnvironmentError>",
+      "impl ApplicationInfo > pub fn name(&self) -> &str",
+      "impl ApplicationInfo > pub fn version(&self) -> &str",
+      "#[derive(Debug, thiserror::Error)] pub enum EnvironmentError { #[error(\"invalid application metadata or isolation policy\")] InvalidDefinition, #[error(\"unknown application identity: {0}\")] UnknownApplicationIdentity(String), #[error(\"the host could not resolve the {0} directory\")] SystemDataDirectoryUnavailable(&'static str), #[error(\"the application data directory does not match its environment\")] DataDirectoryMismatch, #[error(\"data directory conflict at {path}: {reason}\")] DataDirectoryConflict { path: PathBuf, reason: &'static str }, #[error(\"cannot inspect data directory {path}: {source}\")] DataDirectoryInspectionFailed { path: PathBuf, #[source] source: io::Error, }, }",
+      "#[derive(Debug)] pub struct AppPaths { data_root: PathBuf, }",
+      "impl AppPaths > pub fn data_root(&self) -> &Path",
+      "#[derive(Debug)] pub struct EnvironmentContext { environment: AppEnvironment, paths: AppPaths, application: ApplicationInfo, protected_roots: Vec<PathBuf>, }",
+      "impl EnvironmentContext > pub fn resolve( identifier: &str, app_data_root: &Path, definitions: &[EnvironmentDefinition], application: ApplicationInfo, ) -> Result<Self, EnvironmentError>",
+      "impl EnvironmentContext > pub fn application(&self) -> &ApplicationInfo",
+      "impl EnvironmentContext > pub fn protected_roots(&self) -> &[PathBuf]",
+      "impl EnvironmentContext > pub fn environment(&self) -> AppEnvironment",
+      "impl EnvironmentContext > pub fn paths(&self) -> &AppPaths",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/environment.rs\"] mod tests;"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/environment/paths.rs": {
+    "publicItems": [
+      "pub(super) fn validate_current(current: &Path) -> Result<(), EnvironmentError>",
+      "pub(super) fn validate(current: &Path, other: &Path) -> Result<PathBuf, EnvironmentError>",
+      "pub(super) fn resolve_directory(path: &Path) -> Result<PathBuf, EnvironmentError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/file_output/filesystem.rs": {
+    "publicItems": [
+      "#[derive(Debug, thiserror::Error)] pub enum FileError { #[error(\"local filesystem operation failed\")] Io(#[from] std::io::Error), #[error(\"local path is not an isolated regular file or directory\")] UnsafePath, }",
+      "pub fn directory(path: &Path, create: bool) -> Result<bool>",
+      "pub fn ensure_directory_tree(path: &Path) -> Result<()>",
+      "pub fn create_directory(path: &Path) -> Result<()>",
+      "pub fn regular_file(path: &Path) -> Result<Option<Metadata>>",
+      "pub struct FileWriter { file: File, }",
+      "impl FileWriter > pub fn create_new(path: &Path) -> Result<Self>",
+      "impl FileWriter > pub fn open_append(path: &Path) -> Result<Self>",
+      "impl FileWriter > pub fn write_all(&mut self, bytes: &[u8]) -> Result<()>",
+      "impl FileWriter > pub fn flush(&mut self) -> Result<()>",
+      "impl FileWriter > pub fn sync_all(&self) -> Result<()>",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/file_output/filesystem.rs\"] mod tests;"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/file_output/managed.rs": {
+    "publicItems": [
+      "impl OutputStore > pub fn inspect<T>(&self, id: &str, read: impl FnOnce(&Path) -> Result<T>) -> Result<T>",
+      "impl OutputStore > pub fn remove_ids(&self, ids: &[String]) -> Result<()>",
+      "impl OutputStore > pub fn remove_all(&self) -> Result<()>"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/file_output/mod.rs": {
+    "publicItems": [
+      "pub mod filesystem;",
+      "mod managed;",
+      "mod paths;",
+      "mod session;",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/file_output/lifecycle.rs\"] mod tests;",
+      "pub use session::OutputSession;",
+      "#[derive(Debug, thiserror::Error)] #[error(\"本地文件输出失败。\")] pub struct OutputError;",
+      "impl From<std::io::Error> for OutputError",
+      "impl From<std::io::Error> for OutputError > fn from(_: std::io::Error) -> Self",
+      "impl From<filesystem::FileError> for OutputError",
+      "impl From<filesystem::FileError> for OutputError > fn from(_: filesystem::FileError) -> Self",
+      "#[derive(Clone)] pub struct OutputStore(Arc<Inner>);",
+      "#[derive(Debug)] pub struct OutputEntry { pub id: String, pub published: bool, pub modified_ms: u64, }",
+      "impl OutputStore > pub fn new(root: PathBuf) -> Self",
+      "impl OutputStore > pub async fn start(&self, id: String) -> Result<OutputSession>",
+      "impl OutputStore > pub async fn entries(&self) -> Result<Vec<OutputEntry>>",
+      "impl OutputStore > pub async fn remove(&self, entry: OutputEntry) -> Result<()>",
+      "impl OutputStore > pub fn close(&self)",
+      "impl OutputStore > pub async fn drained(&self)",
+      "impl Drop for SessionLease",
+      "impl Drop for SessionLease > fn drop(&mut self)",
+      "impl Drop for WorkerLease",
+      "impl Drop for WorkerLease > fn drop(&mut self)"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/file_output/paths.rs": {
+    "publicItems": [
+      "pub(super) fn identifier(value: &str) -> Result<()>",
+      "pub(super) fn filename(value: &str) -> Result<()>"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/file_output/session.rs": {
+    "publicItems": [
+      "pub struct OutputSession { files: Arc<Mutex<Files>>, lease: Arc<SessionLease>, }",
+      "impl OutputSession > pub(super) fn new(path: PathBuf, lease: Arc<SessionLease>) -> Self",
+      "impl OutputSession > pub async fn append(&self, name: &str, bytes: &[u8]) -> Result<()>",
+      "impl OutputSession > pub async fn publish(&self) -> Result<()>"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/state_changes.rs": {
+    "publicItems": [
+      "#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)] pub struct StateVersion { pub revision: u64, pub writers: usize, }",
+      "pub struct StateChanges(watch::Sender<StateVersion>);",
+      "impl Default for StateChanges",
+      "impl Default for StateChanges > fn default() -> Self",
+      "impl StateChanges > pub fn subscribe(&self) -> watch::Receiver<StateVersion>",
+      "impl StateChanges > pub fn version(&self) -> StateVersion",
+      "impl StateChanges > pub fn begin(self: &Arc<Self>) -> StateWrite",
+      "pub struct StateWrite { changes: Arc<StateChanges>, }",
+      "impl Drop for StateWrite",
+      "impl Drop for StateWrite > fn drop(&mut self)",
+      "#[cfg(test)] #[path = \"../../../../tests/unit/state_changes.rs\"] mod tests;"
+    ],
+    "wire": []
+  },
+  "backend/crates/runtime/src/shared/tasks.rs": {
+    "publicItems": [
+      "pub struct BlockingActivity { count: Mutex<usize>, change: watch::Sender<usize>, }",
+      "impl Default for BlockingActivity",
+      "impl Default for BlockingActivity > fn default() -> Self",
+      "pub struct BlockingGuard(Arc<BlockingActivity>);",
+      "impl BlockingActivity > pub fn enter(self: &Arc<Self>) -> BlockingGuard",
+      "impl BlockingActivity > pub async fn drained(&self)",
+      "impl Drop for BlockingGuard",
+      "impl Drop for BlockingGuard > fn drop(&mut self)",
+      "#[derive(Clone)] pub struct Cancellation(watch::Sender<bool>);",
+      "impl Default for Cancellation",
+      "impl Default for Cancellation > fn default() -> Self",
+      "impl Cancellation > pub fn cancel(&self)",
+      "impl Cancellation > pub fn is_cancelled(&self) -> bool",
+      "impl Cancellation > pub fn subscribe(&self) -> watch::Receiver<bool>",
+      "impl Cancellation > pub async fn cancelled(&self)"
+    ],
+    "wire": []
+  },
+  "backend/crates/storage/src/lib.rs": {
+    "publicItems": [
+      "pub mod shared",
+      "pub mod shared > pub mod persistence;",
+      "pub mod shared > pub use relaypulse_runtime::shared::environment;",
+      "pub mod shared > pub use relaypulse_runtime::shared::file_output;",
+      "pub mod shared > pub use relaypulse_runtime::shared::state_changes;",
+      "pub use shared::persistence::*;"
+    ],
+    "wire": []
+  },
+  "backend/crates/storage/src/shared/persistence/migrations.rs": {
+    "publicItems": [
+      "#[derive(Clone, Copy)] pub struct Migration { pub name: &'static str, pub sql: &'static str, }",
+      "pub const FORMAT_VERSION: i64 = 3;",
+      "pub fn schema_objects(connection: &Connection) -> rusqlite::Result<Vec<(String, String)>>",
+      "pub fn validate(connection: &Connection, baseline: &[Migration]) -> Result<(), PersistenceError>",
+      "pub(super) fn apply( connection: &mut Connection, baseline: &[Migration], ) -> Result<(), PersistenceError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/storage/src/shared/persistence/mod.rs": {
+    "publicItems": [
+      "mod migrations;",
+      "pub use migrations::{schema_objects, validate as validate_format, Migration, FORMAT_VERSION};",
+      "#[derive(Debug, thiserror::Error)] pub enum PersistenceError { #[error(\"cannot prepare database path {path}: {source}\")] Io { path: PathBuf, #[source] source: std::io::Error, }, #[error(\"database path conflict: {0}\")] PathConflict(PathBuf), #[error(\"database connection lock is poisoned\")] LockPoisoned, #[error(\"unsupported database schema: {0}\")] UnsupportedSchema(&'static str), #[error(\"database operation failed: {0}\")] Sqlite(#[from] rusqlite::Error), }",
+      "pub struct Database { connection: Mutex<Connection>, }",
+      "impl Database > pub fn inspect_directory(root: &Path, baseline: &[Migration]) -> Result<(), PersistenceError>",
+      "impl Database > pub fn open(paths: &AppPaths, migrations: &[Migration]) -> Result<Self, PersistenceError>",
+      "impl Database > pub fn open_directory(root: &Path, migrations: &[Migration]) -> Result<Self, PersistenceError>",
+      "impl Database > pub fn with_connection<T>( &self, operation: impl FnOnce(&mut Connection) -> rusqlite::Result<T>, ) -> Result<T, PersistenceError>",
+      "#[cfg(any(test, feature = \"test-support\"))] #[path = \"../../../../../tests/support/environment.rs\"] pub mod test_support;",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/persistence.rs\"] mod tests;"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/lib.rs": {
+    "publicItems": [
+      "pub mod shared",
+      "pub mod shared > pub mod model_client;",
+      "pub use shared::model_client::*;"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/cancellation.rs": {
+    "publicItems": [
+      "pub use relaypulse_runtime::tasks::Cancellation;"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/capture.rs": {
+    "publicItems": [
+      "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)] #[serde(rename_all = \"snake_case\")] pub enum ResponseKind { EventStream, Json, Other, }",
+      "pub enum CaptureEvent<'a> { Started { protocol: Protocol, method: &'static str, url: &'a str, body: &'a serde_json::Value, headers: &'a reqwest::header::HeaderMap, }, Response { status: u16, kind: ResponseKind, content_type: &'a str, headers: &'a reqwest::header::HeaderMap, elapsed_ms: u64, }, Chunk { bytes: &'a [u8], elapsed_ms: u64, }, /// 协议中明确的输出增量；原始字节总是先于本事件交付。 Output { kind: OutputKind, text: &'a str, elapsed_ms: u64, }, Finished { outcome: CaptureOutcome, body_complete: bool, elapsed_ms: u64, metadata: &'a ResponseMetadata, }, }",
+      "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)] #[serde(rename_all = \"lowercase\")] pub enum OutputKind { Text, Reasoning, Tool, }",
+      "#[derive(Clone, Copy, Serialize)] #[serde(tag = \"status\", content = \"failure\", rename_all = \"snake_case\")] pub enum CaptureOutcome { Succeeded, Failed(CheckFailure), Cancelled, Invalid, WriteFailed, }",
+      "impl CaptureOutcome > pub(super) fn from_result(result: &Result<CheckResult, ClientError>) -> Self",
+      "#[derive(Debug)] pub struct CaptureError;",
+      "pub trait CaptureSink: Send",
+      "pub trait CaptureSink: Send > fn record<'a>(&'a mut self, event: CaptureEvent<'a>) -> BoxFuture<'a, Result<(), CaptureError>>;",
+      "pub(super) async fn emit( sink: &mut Option<&mut dyn CaptureSink>, event: CaptureEvent<'_>, ) -> Result<(), ClientError>"
+    ],
+    "wire": [
+      "#[serde(rename_all = \"snake_case\")]",
+      "#[serde(rename_all = \"lowercase\")]",
+      "#[serde(tag = \"status\", content = \"failure\", rename_all = \"snake_case\")]"
+    ]
+  },
+  "backend/crates/model-client/src/shared/model_client/catalog.rs": {
+    "publicItems": [
+      "pub(super) async fn discover( client: &super::ModelClient, request: &super::CatalogRequest, options: super::ExecutionOptions, ) -> Result<Vec<String>, ClientError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/check.rs": {
+    "publicItems": [
+      "impl super::ModelClient > pub(super) async fn perform_check( &self, config: &RequestTarget, request: PreparedRequest, options: ExecutionOptions, capture: &mut Option<&mut dyn CaptureSink>, start: Instant, metadata: &mut ResponseMetadata, ) -> Result<CheckResult, ClientError>",
+      "pub(super) fn elapsed(start: Instant) -> u64"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/endpoint.rs": {
+    "publicItems": [
+      "pub fn base_url(value: &str) -> Result<Url, InputError>",
+      "pub fn endpoint(base: &str, value: &str, custom: bool) -> Result<Url, InputError>",
+      "pub fn credential(value: &str) -> Result<(), InputError>",
+      "pub(super) fn target(value: &super::RequestTarget) -> Result<(), InputError>",
+      "pub fn headers(values: &[super::RequestHeader]) -> Result<(), InputError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/generation.rs": {
+    "publicItems": [
+      "pub fn validate_parameters(parameters: &Map<String, Value>) -> Result<(), InputError>",
+      "impl ModelClient > pub async fn generate_once( &self, request: &GenerationRequest, options: GenerationOptions, cancellation: &super::Cancellation, sink: &mut dyn CaptureSink, ) -> Result<GenerationResult, ClientError>",
+      "#[derive(Debug, Default)] pub struct DecodedGenerationOutput { pub parts: Vec<GenerationOutputPart>, pub encrypted_reasoning: bool, pub parsing_complete: bool, }",
+      "#[derive(Debug, serde::Serialize)] pub struct GenerationOutputPart { pub kind: OutputKind, pub text: String, }",
+      "pub fn decode_generation_output(protocol: Protocol, body: &[u8]) -> DecodedGenerationOutput"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/http.rs": {
+    "publicItems": [
+      "#[derive(Clone)] pub struct Transport { client: Result<Client, ()>, generation_client: Result<Client, ()>, defaults: HeaderMap, }",
+      "impl Transport > pub(super) fn new(application: &relaypulse_runtime::ApplicationInfo) -> Self",
+      "impl Transport > pub(super) fn request( &self, config: &RequestTarget, url: Url, body: Option<&serde_json::Value>, options: ExecutionOptions, ) -> Result<Request, ClientError>",
+      "impl Transport > pub(super) fn generation_request( &self, config: &RequestTarget, url: Url, body: &serde_json::Value, ) -> Result<Request, ClientError>",
+      "impl Transport > pub(super) async fn execute(&self, request: Request) -> Result<Response, ClientError>",
+      "impl Transport > pub(super) async fn execute_generation( &self, request: Request, ) -> Result<Response, ClientError>",
+      "impl Transport > pub async fn send( &self, config: &RequestTarget, url: Url, body: Option<&serde_json::Value>, options: ExecutionOptions, ) -> Result<Response, ClientError>",
+      "impl Transport > pub async fn read_buffered( &self, response: Response, limit: usize, options: ExecutionOptions, ) -> Result<Vec<u8>, ClientError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/mod.rs": {
+    "publicItems": [
+      "mod cancellation;",
+      "mod capture;",
+      "mod catalog;",
+      "mod check;",
+      "mod endpoint;",
+      "mod generation;",
+      "mod http;",
+      "mod parameters;",
+      "mod request;",
+      "mod stream;",
+      "#[cfg(any(test, feature = \"test-support\"))] #[path = \"../../../../../tests/support/model_client.rs\"] pub mod test_support;",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/model_client/mod.rs\"] mod tests;",
+      "mod types;",
+      "mod usage;",
+      "mod user_agent;",
+      "pub use cancellation::Cancellation;",
+      "pub use capture::{ CaptureError, CaptureEvent, CaptureOutcome, CaptureSink, OutputKind, ResponseKind, };",
+      "pub use endpoint::{base_url, credential, endpoint, headers as validate_headers};",
+      "pub use generation::{ decode_generation_output, validate_parameters as validate_generation_parameters, DecodedGenerationOutput, GenerationOutputPart, };",
+      "pub use parameters::{enabled as parameter_enabled, parameter_value, parameters};",
+      "pub use types::*;",
+      "#[derive(Clone)] pub struct ModelClient { transport: http::Transport, }",
+      "impl Default for ModelClient",
+      "impl Default for ModelClient > fn default() -> Self",
+      "impl ModelClient > pub fn new(application: &relaypulse_runtime::ApplicationInfo) -> Self",
+      "impl ModelClient > pub async fn check_once( &self, request: &CheckRequest, options: ExecutionOptions, cancellation: &Cancellation, mut capture: Option<&mut dyn CaptureSink>, ) -> Result<CheckResult, ClientError>",
+      "impl ModelClient > pub async fn list_models( &self, request: &CatalogRequest, options: ExecutionOptions, cancellation: &Cancellation, ) -> Result<Vec<String>, ClientError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/parameters.rs": {
+    "publicItems": [
+      "pub fn enabled(values: &[Parameter], parameter: &Parameter) -> bool",
+      "pub fn parameters(values: &[Parameter]) -> Result<(), InputError>",
+      "pub fn parameter_value(value: &Parameter) -> Result<Value, InputError>",
+      "pub(super) fn append( body: &mut Value, values: &[Parameter], model: &str, ) -> Result<(), InputError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/request.rs": {
+    "publicItems": [
+      "pub(super) struct PreparedRequest { pub url: Url, pub body: Value, pub custom: bool, }",
+      "pub(super) fn prepare(request: &CheckRequest) -> Result<PreparedRequest, InputError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/stream.rs": {
+    "publicItems": [
+      "#[derive(Default)] pub(super) struct Content { answer_text: bool, pub ended: bool, pub failed: bool, pub usage: TokenUsage, }",
+      "impl Content > pub fn observe(&mut self, value: &Value, protocol: Protocol) -> bool",
+      "impl Content > pub fn success(&self) -> bool",
+      "#[derive(Default)] pub(super) struct Sse { buffer: Vec<u8>, lines: Vec<String>, event_bytes: usize, skip_lf: bool, }",
+      "impl Sse > pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>, ClientError>",
+      "impl Sse > pub fn complete(&self) -> bool"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/types.rs": {
+    "publicItems": [
+      "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"kebab-case\")] pub enum Protocol { OpenaiCompatible, OpenaiResponses, Anthropic, CustomHttp, }",
+      "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] #[serde(rename_all = \"lowercase\")] pub enum ParameterType { String, Boolean, Number, Object, Json, }",
+      "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"lowercase\")] pub enum ParameterBinding { Model, }",
+      "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] #[serde(deny_unknown_fields)] pub struct Parameter { pub key: String, pub value: String, #[serde(rename = \"type\")] pub kind: ParameterType, #[serde(default = \"enabled_by_default\")] pub enabled: bool, #[serde(default, skip_serializing_if = \"Option::is_none\")] pub binding: Option<ParameterBinding>, }",
+      "impl Parameter > pub fn new(key: impl Into<String>, value: impl Into<String>, kind: ParameterType) -> Self",
+      "impl Parameter > pub fn model() -> Self",
+      "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] #[serde(deny_unknown_fields)] pub struct RequestHeader { pub key: String, pub value: String, }",
+      "#[derive(Clone)] pub struct RequestTarget { pub protocol: Protocol, pub base_url: String, pub headers: Vec<RequestHeader>, pub secret: Zeroizing<String>, }",
+      "#[derive(Clone, Copy)] pub enum EndpointMode { Relative, SameOriginAppend, }",
+      "#[derive(Clone)] pub enum CheckBody { Standard { parameters: Vec<Parameter> }, Custom { parameters: Vec<Parameter> }, }",
+      "#[derive(Clone)] pub struct CheckRequest { pub target: RequestTarget, pub model: String, pub endpoint: String, pub endpoint_mode: EndpointMode, pub body: CheckBody, }",
+      "pub struct CatalogRequest { pub target: RequestTarget, pub endpoint: String, }",
+      "#[derive(Clone)] pub struct GenerationRequest { pub target: RequestTarget, pub model: String, pub endpoint: String, pub prompt: String, pub parameters: serde_json::Map<String, serde_json::Value>, }",
+      "#[derive(Clone, Copy)] pub struct GenerationOptions { /// None leaves execution bounded only by cancellation and transport errors. pub output_timeout: Option<Duration>, }",
+      "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)] #[serde(rename_all = \"snake_case\")] pub enum GenerationFailure { Http, Network, Timeout, InvalidResponse, Cancelled, }",
+      "#[derive(Debug, Clone)] pub struct GenerationResult { pub status_code: Option<u16>, pub first_token_ms: Option<u64>, pub duration_ms: u64, pub failure: Option<GenerationFailure>, pub metadata: ResponseMetadata, }",
+      "#[derive(Clone, Copy)] pub struct ExecutionOptions { pub total_timeout: Duration, pub idle_timeout: Duration, }",
+      "impl Default for ExecutionOptions",
+      "impl Default for ExecutionOptions > fn default() -> Self",
+      "#[derive(Debug, Clone, thiserror::Error)] #[error(\"{message}\")] pub struct InputError { pub field: &'static str, pub message: &'static str, }",
+      "pub(super) fn invalid(field: &'static str, message: &'static str) -> InputError",
+      "#[derive(Debug, thiserror::Error)] pub enum ClientError { #[error(\"请求记录写入失败。\")] Capture, #[error(transparent)] Invalid(#[from] InputError), #[error(\"请求已取消。\")] Cancelled, #[error(\"远端请求超时。\")] Timeout, #[error(\"无法连接远端服务。\")] Network, #[error(\"远端返回 HTTP {0}。\")] Status(u16), #[error(\"远端响应格式无效或超过大小限制。\")] Response, }",
+      "impl ClientError > pub(super) fn transport(error: reqwest::Error) -> Self",
+      "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)] #[serde(rename_all = \"snake_case\")] pub enum CheckFailure { Http, Network, Timeout, InvalidResponse, }",
+      "#[derive(Debug, Clone)] pub struct CheckResult { pub success: bool, pub status_code: Option<u16>, pub duration_ms: u64, /// 从请求开始到首段非空思考或回答文本；自定义请求及非流式响应为 None。 pub first_token_ms: Option<u64>, pub failure: Option<CheckFailure>, pub metadata: ResponseMetadata, }",
+      "#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)] #[serde(rename_all = \"camelCase\")] pub struct TokenUsage { pub input_tokens: Option<u64>, pub output_tokens: Option<u64>, pub total_tokens: Option<u64>, }",
+      "#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)] #[serde(rename_all = \"camelCase\")] pub struct ResponseMetadata { pub request_id: Option<String>, pub kind: Option<super::ResponseKind>, pub usage: TokenUsage, pub received_bytes: u64, pub body_complete: bool, }",
+      "impl CheckResult > pub fn message(&self) -> &'static str"
+    ],
+    "wire": [
+      "#[serde(rename_all = \"kebab-case\")]",
+      "#[serde(rename_all = \"lowercase\")]",
+      "#[serde(rename_all = \"lowercase\")]",
+      "#[serde(deny_unknown_fields)]",
+      "#[serde(rename = \"type\")]",
+      "#[serde(default = \"enabled_by_default\")]",
+      "#[serde(default, skip_serializing_if = \"Option::is_none\")]",
+      "#[serde(deny_unknown_fields)]",
+      "#[serde(rename_all = \"snake_case\")]",
+      "#[serde(rename_all = \"snake_case\")]",
+      "#[serde(rename_all = \"camelCase\")]",
+      "#[serde(rename_all = \"camelCase\")]"
+    ]
+  },
+  "backend/crates/model-client/src/shared/model_client/usage.rs": {
+    "publicItems": [
+      "impl TokenUsage > pub(super) fn observe(&mut self, value: &Value, protocol: Protocol)",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/model_client/usage.rs\"] mod tests;"
+    ],
+    "wire": []
+  },
+  "backend/crates/model-client/src/shared/model_client/user_agent.rs": {
+    "publicItems": [
+      "pub(super) fn value(application: &relaypulse_runtime::ApplicationInfo) -> String"
+    ],
+    "wire": []
+  },
+  "backend/crates/diagnostics/src/lib.rs": {
+    "publicItems": [
+      "pub mod shared",
+      "pub mod shared > #[cfg(test)] pub use relaypulse_storage::shared::persistence;",
+      "pub mod shared > pub mod diagnostics;",
+      "pub mod shared > pub use relaypulse_runtime::shared::environment;",
+      "pub mod shared > pub use relaypulse_runtime::shared::file_output;",
+      "pub mod shared > pub use relaypulse_runtime::shared::state_changes;",
+      "pub use shared::diagnostics::*;"
+    ],
+    "wire": []
+  },
+  "backend/crates/diagnostics/src/shared/diagnostics/event.rs": {
+    "publicItems": [
+      "#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)] #[serde(try_from = \"String\", into = \"String\")] pub struct Failure(std::borrow::Cow<'static, str>);",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const fn code(code: &'static str) -> Self",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const Persistence: Self = Self::code(\"persistence\");",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const Validation: Self = Self::code(\"validation\");",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const Storage: Self = Self::code(\"storage\");",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const Permission: Self = Self::code(\"permission\");",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const Platform: Self = Self::code(\"platform\");",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const Disabled: Self = Self::code(\"disabled\");",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const Network: Self = Self::code(\"network\");",
+      "#[allow(non_upper_case_globals)] impl Failure > pub const Conflict: Self = Self::code(\"conflict\");",
+      "#[allow(non_upper_case_globals)] impl Failure > pub fn as_str(&self) -> &str",
+      "#[derive(Clone, Debug, Serialize, Deserialize)] #[serde( tag = \"status\", content = \"error\", rename_all = \"snake_case\", deny_unknown_fields )] pub enum Outcome { Started, Succeeded, Failed(Failure), }",
+      "#[derive(Debug, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\", deny_unknown_fields)] pub(super) struct Event { #[serde(default = \"event_version\")] pub format_version: u8, pub timestamp_ms: u64, // 写入端只接收模块内定义的静态操作标识；读取日志时拥有其字符串。 pub operation: String, pub outcome: Outcome, }",
+      "impl TryFrom<String> for Failure",
+      "impl TryFrom<String> for Failure > type Error = &'static str;",
+      "impl TryFrom<String> for Failure > fn try_from(value: String) -> Result<Self, Self::Error>",
+      "impl From<Failure> for String",
+      "impl From<Failure> for String > fn from(value: Failure) -> Self",
+      "impl Event > pub(super) fn valid(&self) -> bool"
+    ],
+    "wire": [
+      "#[serde(try_from = \"String\", into = \"String\")]",
+      "#[serde( tag = \"status\", content = \"error\", rename_all = \"snake_case\", deny_unknown_fields )]",
+      "#[serde(rename_all = \"camelCase\", deny_unknown_fields)]",
+      "#[serde(default = \"event_version\")]"
+    ]
+  },
+  "backend/crates/diagnostics/src/shared/diagnostics/files.rs": {
+    "publicItems": [
+      "pub(super) const EVENTS: &str = \"diagnostic-events.jsonl\";",
+      "pub(super) fn logs(directory: &Path) -> Result<Vec<(PathBuf, u64)>, DiagnosticsError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/diagnostics/src/shared/diagnostics/mod.rs": {
+    "publicItems": [
+      "mod event;",
+      "mod files;",
+      "mod package;",
+      "mod recorder;",
+      "pub use event::{Failure, Outcome};",
+      "pub use recorder::{DiagnosticFailure, Recorder};",
+      "#[derive(Debug, thiserror::Error)] pub enum DiagnosticsError { #[error(\"diagnostic filesystem operation failed\")] Io(#[from] std::io::Error), #[error(\"diagnostic path is not an isolated regular file or directory\")] UnsafePath, #[error(\"diagnostic lock unavailable\")] Lock, #[error(\"diagnostic event data is invalid\")] InvalidData(#[from] serde_json::Error), }",
+      "impl From<FileError> for DiagnosticsError",
+      "impl From<FileError> for DiagnosticsError > fn from(error: FileError) -> Self",
+      "#[derive(Debug, Default, PartialEq, Eq, Serialize)] #[serde(rename_all = \"camelCase\")] pub struct LogStatistics { pub total_bytes: u64, pub file_count: u64, }",
+      "pub struct ClearOutcome { pub remaining: LogStatistics, pub removed: LogStatistics, }",
+      "pub struct Diagnostics { root: PathBuf, environment: &'static str, application: ApplicationInfo, protected_roots: Vec<PathBuf>, state: Mutex<State>, }",
+      "impl Diagnostics > pub fn new(environment: &EnvironmentContext) -> Self",
+      "impl Diagnostics > pub fn log_directory(&self) -> Result<PathBuf, DiagnosticsError>",
+      "impl Diagnostics > pub fn record( &self, operation: &'static str, outcome: Outcome, ) -> Result<(), DiagnosticsError>",
+      "impl Diagnostics > pub fn record_best_effort(&self, operation: &'static str, outcome: Outcome)",
+      "impl Diagnostics > pub fn statistics(&self) -> Result<LogStatistics, DiagnosticsError>",
+      "impl Diagnostics > pub fn clear(&self) -> Result<ClearOutcome, DiagnosticsError>",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/diagnostics/logging.rs\"] mod tests;"
+    ],
+    "wire": [
+      "#[serde(rename_all = \"camelCase\")]"
+    ]
+  },
+  "backend/crates/diagnostics/src/shared/diagnostics/package.rs": {
+    "publicItems": [
+      "impl Diagnostics > pub fn package(&self) -> Result<Vec<u8>, DiagnosticsError>",
+      "impl Diagnostics > pub fn export(&self, destination: &Path) -> Result<u64, DiagnosticsError>"
+    ],
+    "wire": [
+      "#[serde(rename_all = \"camelCase\")]"
+    ]
+  },
+  "backend/crates/diagnostics/src/shared/diagnostics/recorder.rs": {
+    "publicItems": [
+      "pub trait DiagnosticFailure",
+      "pub trait DiagnosticFailure > fn diagnostic_failure(&self) -> Failure;",
+      "#[derive(Default)] pub struct Recorder(Option<Arc<Diagnostics>>);",
+      "impl Recorder > pub fn new(diagnostics: Arc<Diagnostics>) -> Self",
+      "impl Recorder > pub async fn observe_async<T, E: DiagnosticFailure>( &self, operation: &'static str, action: impl std::future::Future<Output = Result<T, E>>, ) -> Result<T, E>",
+      "impl Recorder > pub fn observe<T, E: DiagnosticFailure>( &self, operation: &'static str, action: impl FnOnce() -> Result<T, E>, ) -> Result<T, E>",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/diagnostics/recorder.rs\"] mod tests;"
+    ],
+    "wire": []
+  },
+  "backend/crates/notifications/src/lib.rs": {
+    "publicItems": [
+      "pub mod shared",
+      "pub mod shared > pub use relaypulse_diagnostics::shared::diagnostics;",
+      "pub mod shared > pub use relaypulse_storage::shared::persistence;",
+      "pub mod modules",
+      "pub mod modules > pub mod notifications;",
+      "pub use modules::notifications::*;",
+      "#[cfg(test)] #[path = \"../../../tests/support/notification_definitions.rs\"] mod notification_test_definitions;"
+    ],
+    "wire": []
+  },
+  "backend/crates/notifications/src/modules/notifications/catalog.rs": {
+    "publicItems": [
+      "#[derive(Clone)] pub struct RuleDefinition { pub id: &'static str, pub title: &'static str, pub sub_title: &'static str, pub marker: &'static str, pub title_template: &'static str, pub body_template: &'static str, }",
+      "impl RuleDefinition > pub fn default_template(&self) -> TemplateUpdate",
+      "pub fn markers() -> Vec<NotificationMarker>",
+      "#[derive(Clone, Default)] pub struct EventCatalog { pub rules: Vec<RuleDefinition>, pub variables: Vec<NotificationVariable>, }",
+      "impl EventCatalog > pub fn new( rules: Vec<RuleDefinition>, variables: Vec<NotificationVariable>, ) -> Result<Self, NotificationError>",
+      "impl EventCatalog > pub fn rule(&self, id: &str) -> Result<&RuleDefinition, NotificationError>",
+      "impl EventCatalog > pub fn defaults(&self) -> Vec<super::StoredRule>"
+    ],
+    "wire": []
+  },
+  "backend/crates/notifications/src/modules/notifications/error.rs": {
+    "publicItems": [
+      "#[derive(Debug, thiserror::Error)] pub enum NotificationError { #[error(\"invalid notification field {field}: {message}\")] InvalidInput { field: &'static str, message: &'static str, }, #[error(\"notification rule not found\")] RuleNotFound, #[error(\"invalid stored notification configuration\")] CorruptSettings, #[error(\"notification storage failed: {0}\")] Storage(#[from] PersistenceError), #[error(\"notifications are disabled\")] Disabled, #[error(\"notification permission: {0:?}\")] Permission(NotificationPermission), #[error(\"native notification requires an application bundle\")] ApplicationIdentity, #[error(\"notification platform operation failed: {0}\")] Platform(&'static str), }",
+      "impl DiagnosticFailure for NotificationError",
+      "impl DiagnosticFailure for NotificationError > fn diagnostic_failure(&self) -> Failure"
+    ],
+    "wire": []
+  },
+  "backend/crates/notifications/src/modules/notifications/mod.rs": {
+    "publicItems": [
+      "mod catalog;",
+      "mod error;",
+      "mod rendering;",
+      "mod service;",
+      "mod sqlite;",
+      "mod types;",
+      "mod validation;",
+      "pub use catalog::{markers, EventCatalog, RuleDefinition};",
+      "pub use error::NotificationError;",
+      "pub use service::{DeliveryAttempt, NotificationService, SettingsChange};",
+      "pub use sqlite::{SqliteNotificationStore, SCHEMA};",
+      "pub use types::*;",
+      "pub trait NotificationStore: Send + Sync",
+      "pub trait NotificationStore: Send + Sync > fn load(&self) -> Result<StoredSettings, NotificationError>;",
+      "pub trait NotificationStore: Send + Sync > fn save_settings( &self, settings: &NotificationSettings, ) -> Result<StoredSettings, NotificationError>;",
+      "pub trait NotificationStore: Send + Sync > fn save_template( &self, id: &str, custom: Option<&TemplateUpdate>, ) -> Result<StoredSettings, NotificationError>;",
+      "pub trait NotificationPlatform: Send + Sync",
+      "pub trait NotificationPlatform: Send + Sync > fn permission(&self) -> Result<NotificationPermission, NotificationError>;",
+      "pub trait NotificationPlatform: Send + Sync > fn request_permission(&self) -> Result<NotificationPermission, NotificationError>;",
+      "pub trait NotificationPlatform: Send + Sync > fn send( &self, title: &str, body: &str, action: Option<NotificationAction>, ) -> Result<(), NotificationError>;",
+      "pub trait NotificationPlatform: Send + Sync > fn open_settings(&self) -> Result<(), NotificationError>;",
+      "pub struct NotificationPlatformState(pub std::sync::Arc<dyn NotificationPlatform>);",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/notifications/mod.rs\"] pub mod tests;"
+    ],
+    "wire": []
+  },
+  "backend/crates/notifications/src/modules/notifications/notifications.sql": "-- Generic notification configuration. Event defaults belong to their providers.\nCREATE TABLE notification_settings (singleton INTEGER PRIMARY KEY CHECK(singleton=1), enabled INTEGER NOT NULL CHECK(enabled IN (0,1))) STRICT;\nINSERT INTO notification_settings VALUES (1,0);\nCREATE TABLE notification_rules (\n id TEXT PRIMARY KEY NOT NULL CHECK(length(id) BETWEEN 1 AND 200),\n status INTEGER NOT NULL CHECK(status IN (0,1)),\n custom_template TEXT CHECK(custom_template IS NULL OR json_valid(custom_template))\n) STRICT;\n",
+  "backend/crates/notifications/src/modules/notifications/rendering.rs": {
+    "publicItems": [
+      "pub(super) fn render( template: &TemplateUpdate, context: &NotificationContext<'_>, ) -> Result<(String, String), NotificationError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/notifications/src/modules/notifications/service.rs": {
+    "publicItems": [
+      "pub struct SettingsChange<T> { pub before: Option<T>, pub after: T, }",
+      "pub struct DeliveryAttempt { pub trigger: String, pub title: String, pub body: String, pub result: Result<(), NotificationError>, }",
+      "pub struct NotificationService { catalog: EventCatalog, diagnostics: Recorder, mutation: std::sync::Mutex<()>, store: Box<dyn NotificationStore>, }",
+      "impl NotificationService > pub fn new(store: impl NotificationStore + 'static, catalog: EventCatalog) -> Self",
+      "impl NotificationService > pub fn with_diagnostics(mut self, diagnostics: Arc<Diagnostics>) -> Self",
+      "impl NotificationService > pub fn check_ready(&self) -> Result<(), NotificationError>",
+      "impl NotificationService > pub fn load( &self, platform: &dyn NotificationPlatform, ) -> Result<NotificationSettings, NotificationError>",
+      "impl NotificationService > pub fn save( &self, input: NotificationSettings, platform: &dyn NotificationPlatform, ) -> Result<NotificationSettings, NotificationError>",
+      "impl NotificationService > pub fn save_with_snapshot( &self, input: NotificationSettings, platform: &dyn NotificationPlatform, ) -> Result<SettingsChange<NotificationSettings>, NotificationError>",
+      "impl NotificationService > pub fn template(&self, id: &str) -> Result<TemplateDetail, NotificationError>",
+      "impl NotificationService > pub fn save_template( &self, id: &str, update: TemplateUpdate, ) -> Result<TemplateDetail, NotificationError>",
+      "impl NotificationService > pub fn save_template_with_snapshot( &self, id: &str, update: TemplateUpdate, ) -> Result<SettingsChange<TemplateDetail>, NotificationError>",
+      "impl NotificationService > pub fn request_permission( &self, platform: &dyn NotificationPlatform, ) -> Result<NotificationPermission, NotificationError>",
+      "impl NotificationService > pub fn send_test( &self, notification: TestNotification, platform: &dyn NotificationPlatform, ) -> Result<(), NotificationError>",
+      "impl NotificationService > pub fn variables(&self) -> Vec<NotificationVariable>",
+      "impl NotificationService > pub fn send_rule( &self, id: &str, context: &NotificationContext<'_>, platform: &dyn NotificationPlatform, ) -> Result<(), NotificationError>",
+      "impl NotificationService > pub fn deliver_rule( &self, id: &str, context: &NotificationContext<'_>, platform: &dyn NotificationPlatform, ) -> Result<Option<DeliveryAttempt>, NotificationError>",
+      "impl NotificationService > pub fn open_settings( &self, platform: &dyn NotificationPlatform, ) -> Result<(), NotificationError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/notifications/src/modules/notifications/sqlite.rs": {
+    "publicItems": [
+      "pub const SCHEMA: Migration = Migration { name: \"notification_configuration\", sql: include_str!(\"notifications.sql\"), }",
+      "pub struct SqliteNotificationStore { database: Arc<Database>, }",
+      "impl SqliteNotificationStore > pub fn new(database: Arc<Database>) -> Self",
+      "impl NotificationStore for SqliteNotificationStore",
+      "impl NotificationStore for SqliteNotificationStore > fn load(&self) -> Result<StoredSettings, NotificationError>",
+      "impl NotificationStore for SqliteNotificationStore > fn save_settings( &self, settings: &NotificationSettings, ) -> Result<StoredSettings, NotificationError>",
+      "impl NotificationStore for SqliteNotificationStore > fn save_template( &self, id: &str, custom: Option<&TemplateUpdate>, ) -> Result<StoredSettings, NotificationError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/notifications/src/modules/notifications/types.rs": {
+    "publicItems": [
+      "pub struct NotificationContext<'a> { pub values: std::collections::BTreeMap<&'a str, String>, pub action: NotificationAction, }",
+      "#[derive(Debug, Clone, PartialEq, Eq)] pub struct NotificationAction { pub target: String, pub parameters: std::collections::BTreeMap<String, String>, }",
+      "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"snake_case\")] pub enum NotificationPermission { Unknown, NotRequested, Denied, Granted, Unsupported, }",
+      "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"lowercase\")] pub enum TemplateMode { Default, Custom, }",
+      "#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\", deny_unknown_fields)] pub struct RuleSummary { pub id: String, pub title: String, pub sub_title: String, pub status: bool, pub template_type: TemplateMode, pub channel: String, }",
+      "#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\", deny_unknown_fields)] pub struct NotificationSettings { pub notifications_enabled: bool, pub authorization: NotificationPermission, pub rules: Vec<RuleSummary>, }",
+      "#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\", deny_unknown_fields)] pub struct TemplateUpdate { pub template_type: TemplateMode, pub marker_id: String, pub title_template: String, pub body_template: String, }",
+      "#[derive(Debug, Clone, PartialEq, Eq, Serialize)] #[serde(rename_all = \"camelCase\")] pub struct TemplateDetail { #[serde(flatten)] pub summary: RuleSummary, pub marker_id: String, pub title_template: String, pub body_template: String, pub default_marker_id: String, pub default_title_template: String, pub default_body_template: String, }",
+      "#[derive(Debug, Clone, Deserialize)] #[serde(rename_all = \"camelCase\", deny_unknown_fields)] pub struct TestNotification { pub title: String, pub body: String, pub marker_id: Option<String>, }",
+      "#[derive(Debug, Clone, Serialize)] #[serde(rename_all = \"camelCase\")] pub struct NotificationMarker { pub marker_id: &'static str, pub symbol: &'static str, pub name: &'static str, pub tone: &'static str, }",
+      "#[derive(Debug, Clone, Serialize)] pub struct NotificationVariable { pub key: &'static str, pub label: &'static str, pub description: &'static str, pub example: &'static str, pub group: &'static str, }",
+      "#[derive(Debug, Clone, PartialEq, Eq)] pub struct StoredRule { pub id: String, pub status: bool, pub custom: Option<TemplateUpdate>, }",
+      "#[derive(Debug, Clone, PartialEq, Eq)] pub struct StoredSettings { pub enabled: bool, pub rules: Vec<StoredRule>, }"
+    ],
+    "wire": [
+      "#[serde(rename_all = \"snake_case\")]",
+      "#[serde(rename_all = \"lowercase\")]",
+      "#[serde(rename_all = \"camelCase\", deny_unknown_fields)]",
+      "#[serde(rename_all = \"camelCase\", deny_unknown_fields)]",
+      "#[serde(rename_all = \"camelCase\", deny_unknown_fields)]",
+      "#[serde(rename_all = \"camelCase\")]",
+      "#[serde(flatten)]",
+      "#[serde(rename_all = \"camelCase\", deny_unknown_fields)]",
+      "#[serde(rename_all = \"camelCase\")]"
+    ]
+  },
+  "backend/crates/notifications/src/modules/notifications/validation.rs": {
+    "publicItems": [
+      "pub(super) fn template( update: &TemplateUpdate, catalog: &catalog::EventCatalog, ) -> Result<(), NotificationError>",
+      "pub(super) fn test_notification(notification: &TestNotification) -> Result<(), NotificationError>",
+      "pub(super) fn rule_ids<'a>( ids: impl Iterator<Item = &'a str>, catalog: &catalog::EventCatalog, ) -> Result<(), NotificationError>",
+      "pub(super) fn stored(settings: &StoredSettings) -> Result<(), NotificationError>",
+      "pub(super) fn stored_catalog( settings: &StoredSettings, catalog: &catalog::EventCatalog, ) -> Result<(), NotificationError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/operations/src/lib.rs": {
+    "publicItems": [
+      "pub mod shared",
+      "pub mod shared > pub use relaypulse_runtime::shared::environment;",
+      "pub mod shared > pub use relaypulse_runtime::shared::file_output;",
+      "pub mod shared > pub use relaypulse_runtime::shared::state_changes;",
+      "pub mod shared > pub use relaypulse_storage::shared::persistence;",
+      "pub mod modules",
+      "pub mod modules > pub mod operation_logs;",
+      "pub use modules::operation_logs::*;",
+      "#[cfg(test)] #[path = \"../../../tests/support/action_definitions.rs\"] mod test_actions;"
+    ],
+    "wire": []
+  },
+  "backend/crates/operations/src/modules/operation_logs/mod.rs": {
+    "publicItems": [
+      "mod privacy;",
+      "mod query;",
+      "mod service;",
+      "mod sqlite;",
+      "mod types;",
+      "pub use privacy::{changes, snapshot_fields};",
+      "pub use query::OperationLogQuery;",
+      "pub use service::{OperationLogs, OperationRecorder};",
+      "pub use sqlite::SCHEMA;",
+      "pub use types::*;",
+      "#[derive(Debug, thiserror::Error)] pub enum OperationLogError { #[error(\"{message}\")] Validation { field: &'static str, message: &'static str, }, #[error(\"这条操作记录已不存在或已过期。\")] NotFound, #[error(\"暂时无法读取操作记录，请重试。\")] Unavailable, }",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/operation_logs/history.rs\"] mod tests;",
+      "#[cfg(test)] #[path = \"../../../../../tests/unit/operation_logs/lifecycle.rs\"] mod lifecycle_tests;"
+    ],
+    "wire": []
+  },
+  "backend/crates/operations/src/modules/operation_logs/operation_logs.sql": "CREATE TABLE operation_logs (\n    id TEXT PRIMARY KEY NOT NULL,\n    occurred_at_ms INTEGER NOT NULL,\n    occurred_at TEXT NOT NULL,\n    source TEXT NOT NULL CHECK(source IN ('system','user')),\n    actor_snapshot TEXT NOT NULL,\n    action TEXT NOT NULL,\n    action_group TEXT NOT NULL,\n    action_label TEXT NOT NULL,\n    object_snapshot TEXT NOT NULL,\n    result TEXT NOT NULL CHECK(result IN ('success','failure','cancelled','blocked')),\n    summary TEXT NOT NULL,\n    detail_behavior TEXT NOT NULL CHECK(json_valid(detail_behavior)),\n    explanation TEXT NOT NULL,\n    content TEXT NOT NULL CHECK(json_valid(content))\n);\n\nCREATE INDEX operation_logs_time ON operation_logs(occurred_at_ms DESC, id ASC);\nCREATE INDEX operation_logs_filters ON operation_logs(source, result, action_group);\n",
+  "backend/crates/operations/src/modules/operation_logs/privacy.rs": {
+    "publicItems": [
+      "pub(super) fn text(value: &str) -> String",
+      "pub fn snapshot_fields(value: &impl Serialize) -> Vec<SnapshotField>",
+      "pub fn changes(before: &impl Serialize, after: &impl Serialize) -> Vec<ChangeField>",
+      "pub(super) fn sanitize(event: &mut OperationEvent)"
+    ],
+    "wire": []
+  },
+  "backend/crates/operations/src/modules/operation_logs/query.rs": {
+    "publicItems": [
+      "#[derive(Clone, Debug, serde::Deserialize)] #[serde(rename_all = \"camelCase\", deny_unknown_fields)] pub struct OperationLogQuery { pub start_date: Option<String>, pub end_date: Option<String>, pub source: Vec<OperationSource>, pub result: Vec<OperationResult>, pub actions: Vec<OperationActionGroup>, pub page: u64, pub page_size: u64, }",
+      "pub(super) fn invalid(field: &'static str, message: &'static str) -> OperationLogError",
+      "impl OperationLogQuery > pub fn validate(&self) -> Result<(), OperationLogError>",
+      "pub(super) fn log_id(value: &str) -> Result<(), OperationLogError>"
+    ],
+    "wire": [
+      "#[serde(rename_all = \"camelCase\", deny_unknown_fields)]"
+    ]
+  },
+  "backend/crates/operations/src/modules/operation_logs/service.rs": {
+    "publicItems": [
+      "pub struct OperationLogs { store: Store, accepting: std::sync::Mutex<bool>, activity: Arc<relaypulse_runtime::tasks::BlockingActivity>, }",
+      "impl OperationLogs > pub fn new(database: Arc<Database>) -> Self",
+      "impl OperationLogs > pub fn with_history_decoder(mut self, decoder: Arc<dyn super::HistoryDecoder>) -> Self",
+      "impl OperationLogs > pub fn record(&self, mut event: OperationEvent) -> Result<(), OperationLogError>",
+      "impl OperationLogs > pub fn record_best_effort(&self, event: OperationEvent)",
+      "impl OperationLogs > pub fn close(&self)",
+      "impl OperationLogs > pub async fn drained(&self)",
+      "impl OperationLogs > pub async fn query( self: &Arc<Self>, query: OperationLogQuery, ) -> Result<OperationLogPage, OperationLogError>",
+      "impl OperationLogs > pub async fn detail( self: &Arc<Self>, id: String, ) -> Result<OperationLogDetail, OperationLogError>",
+      "#[derive(Clone, Default)] pub struct OperationRecorder(Option<Arc<OperationLogs>>);",
+      "impl OperationRecorder > pub fn new(logs: Arc<OperationLogs>) -> Self",
+      "impl OperationRecorder > pub fn record_best_effort(&self, event: OperationEvent)"
+    ],
+    "wire": []
+  },
+  "backend/crates/operations/src/modules/operation_logs/sqlite.rs": {
+    "publicItems": [
+      "pub const SCHEMA: Migration = Migration { name: \"operation_history\", sql: include_str!(\"operation_logs.sql\"), }",
+      "pub(super) struct Store { database: Arc<Database>, pub(super) decoder: Arc<dyn HistoryDecoder>, }",
+      "impl Store > pub(super) fn new(database: Arc<Database>) -> Self",
+      "impl Store > pub(super) fn insert( &self, at: i64, detail: &OperationLogDetail, ) -> Result<(), OperationLogError>",
+      "impl Store > pub(super) fn query( &self, q: OperationLogQuery, ) -> Result<OperationLogPage, OperationLogError>",
+      "impl Store > pub(super) fn detail(&self, id: &str) -> Result<OperationLogDetail, OperationLogError>"
+    ],
+    "wire": []
+  },
+  "backend/crates/operations/src/modules/operation_logs/types.rs": {
+    "publicItems": [
+      "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"snake_case\")] pub enum OperationSource { System, User, }",
+      "#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)] #[serde(rename_all = \"snake_case\")] pub enum OperationResult { Success, Failure, Cancelled, Blocked, }",
+      "#[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct ActionDefinition { pub id: &'static str, pub label: &'static str, pub group: &'static str, }",
+      "impl ActionDefinition > pub const fn new(id: &'static str, label: &'static str, group: &'static str) -> Self",
+      "impl ActionDefinition > pub fn group(self) -> &'static str",
+      "impl ActionDefinition > pub fn label(self) -> &'static str",
+      "pub type OperationActionGroup = String;",
+      "#[derive(Clone, Debug, Serialize, Deserialize)] #[serde( tag = \"kind\", rename_all = \"snake_case\", rename_all_fields = \"camelCase\" )] pub enum DetailBehavior { Drawer, Navigate { target: String, parameters: std::collections::BTreeMap<String, String>, }, }",
+      "#[derive(Clone, Debug, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\")] pub struct SnapshotField { pub label: String, pub value: String, #[serde(skip_serializing_if = \"Option::is_none\")] pub sensitive: Option<bool>, }",
+      "#[derive(Clone, Debug, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\")] pub struct ChangeField { pub field: String, pub before: String, pub after: String, #[serde(skip_serializing_if = \"Option::is_none\")] pub sensitive: Option<bool>, }",
+      "#[derive(Clone, Debug, Serialize, Deserialize)] #[serde( tag = \"kind\", rename_all = \"snake_case\", rename_all_fields = \"camelCase\" )] pub enum OperationLogContent { Snapshot { fields: Vec<SnapshotField>, }, Changes { changes: Vec<ChangeField>, }, Deletion { summary: String, #[serde(serialize_with = \"deletion_fields\")] fields: Vec<SnapshotField>, }, Notification { trigger: String, title: String, body: String, send_result: String, }, Cleanup { target: String, scope: String, count: u64, #[serde(skip_serializing_if = \"Option::is_none\")] space: Option<String>, }, Export { filename: String, file_size: String, outcome: String, }, Failure { activity: String, target: String, reason: String, }, Presentation { format: String, fields: Vec<SnapshotField>, }, }",
+      "#[derive(Clone, Debug, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\")] pub struct OperationLogListItem { pub id: String, pub occurred_at: String, pub source: OperationSource, pub actor_snapshot: String, pub action: String, pub action_group: OperationActionGroup, pub action_label: String, pub object_snapshot: String, pub result: OperationResult, pub summary: String, pub detail_behavior: DetailBehavior, }",
+      "#[derive(Clone, Debug, Serialize, Deserialize)] #[serde(rename_all = \"camelCase\")] pub struct OperationLogDetail { pub item: OperationLogListItem, pub explanation: String, pub content: OperationLogContent, }",
+      "#[derive(Debug, Serialize)] #[serde(rename_all = \"camelCase\")] pub struct OperationLogPage { pub action_groups: Vec<String>, pub items: Vec<OperationLogListItem>, pub total: u64, pub page: u64, pub page_size: u64, }",
+      "#[derive(Clone, Debug)] pub struct OperationEvent { // 原始标识与时间仅供模块内部补记；普通业务事件由记录器统一生成。 pub id: Option<String>, pub occurred_at_ms: Option<i64>, pub action: ActionDefinition, pub source: OperationSource, pub result: OperationResult, pub object: String, pub summary: String, pub explanation: String, pub content: OperationLogContent, pub detail_behavior: DetailBehavior, }",
+      "impl OperationEvent > pub fn new( action: ActionDefinition, source: OperationSource, result: OperationResult, object: impl Into<String>, summary: impl Into<String>, content: OperationLogContent, ) -> Self",
+      "pub(super) fn enum_string(value: impl Serialize) -> String",
+      "impl PartialEq<ActionDefinition> for String",
+      "impl PartialEq<ActionDefinition> for String > fn eq(&self, other: &ActionDefinition) -> bool",
+      "impl Serialize for ActionDefinition",
+      "impl Serialize for ActionDefinition > fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error>",
+      "pub trait HistoryDecoder: Send + Sync",
+      "pub trait HistoryDecoder: Send + Sync > fn behavior(&self, value: serde_json::Value) -> Result<DetailBehavior, serde_json::Error>",
+      "pub trait HistoryDecoder: Send + Sync > fn content(&self, value: serde_json::Value) -> Result<OperationLogContent, serde_json::Error>",
+      "pub struct GenericHistoryDecoder;",
+      "impl HistoryDecoder for GenericHistoryDecoder"
+    ],
+    "wire": [
+      "#[serde(rename_all = \"snake_case\")]",
+      "#[serde(rename_all = \"snake_case\")]",
+      "#[serde( tag = \"kind\", rename_all = \"snake_case\", rename_all_fields = \"camelCase\" )]",
+      "#[serde(rename_all = \"camelCase\")]",
+      "#[serde(skip_serializing_if = \"Option::is_none\")]",
+      "#[serde(rename_all = \"camelCase\")]",
+      "#[serde(skip_serializing_if = \"Option::is_none\")]",
+      "#[serde( tag = \"kind\", rename_all = \"snake_case\", rename_all_fields = \"camelCase\" )]",
+      "#[serde(serialize_with = \"deletion_fields\")]",
+      "#[serde(skip_serializing_if = \"Option::is_none\")]",
+      "#[serde(rename_all = \"camelCase\")]",
+      "#[serde(rename_all = \"camelCase\")]",
+      "#[serde(rename_all = \"camelCase\")]"
+    ]
+  }
+}

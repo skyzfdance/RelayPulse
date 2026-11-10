@@ -1,0 +1,23 @@
+[package]
+name = "relaypulse-notifications"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
+unicode-segmentation = "1.13.3"
+relaypulse-diagnostics = { version = "0.1", path = "../diagnostics" }
+relaypulse-storage = { version = "0.1", path = "../storage" }
+
+[dev-dependencies]
+relaypulse-storage = { version = "0.1",path="../storage", features = ["test-support"]}
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }

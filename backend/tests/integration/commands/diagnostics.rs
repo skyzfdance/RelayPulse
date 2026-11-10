@@ -63,12 +63,19 @@ fn invoke(window: &WebviewWindow<MockRuntime>, command: &str) -> Result<Value, V
 }
 
 #[test]
-fn four_registered_commands_work_even_when_database_startup_fails() {
+fn four_registered_commands_work_even_when_configuration_startup_fails() {
     let temp = tempfile::tempdir().unwrap();
     let env = environment(temp.path(), "com.relaypulse.app.dev");
     fs::create_dir_all(env.paths().data_root()).unwrap();
     let database = env.paths().data_root().join("relaypulse.sqlite3");
-    fs::write(&database, b"broken database").unwrap();
+    let db = crate::shared::persistence::Database::open(
+        env.paths(),
+        crate::application::composition::BASELINE,
+    )
+    .unwrap();
+    db.with_connection(|c| c.execute("DELETE FROM general_settings", []))
+        .unwrap();
+    drop(db);
     let (state, diagnostics) = startup::initialize(Ok(env));
     assert!(matches!(state, StartupState::Blocked(_)));
     let resource = diagnostics.0.clone().unwrap();
@@ -103,7 +110,7 @@ fn four_registered_commands_work_even_when_database_startup_fails() {
     *platform.destination.lock().unwrap() = Some(destination.clone());
     assert_eq!(invoke(&window, "export_diagnostics").unwrap(), true);
     let package: Value = serde_json::from_slice(&fs::read(destination).unwrap()).unwrap();
-    assert_eq!(package["startup"]["error"], "persistence");
+    assert_eq!(package["startup"]["error"], "validation");
     assert_eq!(package["logStatistics"], statistics);
     invoke(&window, "open_log_directory").unwrap();
     assert_eq!(
@@ -142,7 +149,15 @@ fn four_registered_commands_work_even_when_database_startup_fails() {
         invoke(&window, "get_log_statistics").unwrap()["fileCount"],
         1
     );
-    assert_eq!(fs::read(database).unwrap(), b"broken database");
+    let db =
+        rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM general_settings", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }
 
 #[test]

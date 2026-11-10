@@ -7,7 +7,7 @@ use crate::shared::persistence::{Database, Migration, PersistenceError};
 use rusqlite::params;
 use std::{collections::HashMap, sync::Arc};
 
-pub(crate) const SCHEMA: Migration = Migration {
+pub const SCHEMA: Migration = Migration {
     name: "site_probe_records",
     sql: include_str!("monitoring.sql"),
 };

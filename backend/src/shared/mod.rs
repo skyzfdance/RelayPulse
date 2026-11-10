@@ -1,11 +1,7 @@
-//! 只声明已经实现并接入的公共能力。
-
-pub(crate) mod diagnostics;
-pub(crate) mod environment;
-pub(crate) mod persistence;
-
-pub(crate) mod model_client;
-
-pub(crate) mod file_output;
-
-pub(crate) mod state_changes;
+//! Host imports for independent workspace libraries.
+pub(crate) use relaypulse_diagnostics::shared::diagnostics;
+pub(crate) use relaypulse_model_client::shared::model_client;
+pub(crate) use relaypulse_runtime::shared::environment;
+pub(crate) use relaypulse_runtime::shared::file_output;
+pub(crate) use relaypulse_runtime::shared::state_changes;
+pub(crate) use relaypulse_storage::shared::persistence;

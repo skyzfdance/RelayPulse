@@ -41,3 +41,25 @@ pub(crate) fn sites<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 pub(super) fn records<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     show(app, Some("/run/records"))
 }
+pub(super) fn iq_history<R: Runtime>(app: &AppHandle<R>, run_id: &str) -> tauri::Result<()> {
+    if run_id.is_empty()
+        || !run_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        return Err(std::io::Error::other("invalid IQ run identity").into());
+    }
+    if app.get_webview_window("main").is_some() {
+        show(app, None)?;
+        app.emit_to(
+            EventTarget::webview_window("main"),
+            NAVIGATE,
+            serde_json::json!({
+                "path":"/iq-test/history","query":{"runId":run_id}
+            }),
+        )
+    } else {
+        // 新建 WebView 时通过初始地址携带目标，避免早于 Vue 订阅的事件丢失。
+        show(app, Some(&format!("/iq-test/history?runId={run_id}")))
+    }
+}

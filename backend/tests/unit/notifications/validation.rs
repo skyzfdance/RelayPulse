@@ -1,5 +1,5 @@
 use super::*;
-use crate::modules::notifications::validation::{template, test_notification};
+use crate::modules::notifications::validation::test_notification;
 use serde_json::json;
 
 #[test]
@@ -51,7 +51,7 @@ fn validates_placeholder_syntax_catalog_and_preview_length() {
     input.title_template = "{{model}}".into();
     input.marker_id = "unknown".into();
     assert!(template(&input).is_err());
-    for rule in catalog::RULES {
+    for rule in crate::notification_test_definitions::catalog().rules {
         assert!(template(&rule.default_template()).is_ok());
     }
     assert!(test_notification(&TestNotification {
@@ -95,4 +95,11 @@ fn json_enums_and_exact_camel_case_contract() {
     let mut extra = input;
     extra["revision"] = json!(1);
     assert!(serde_json::from_value::<TemplateUpdate>(extra).is_err());
+}
+
+fn template(update: &TemplateUpdate) -> Result<(), NotificationError> {
+    crate::modules::notifications::validation::template(
+        update,
+        &crate::notification_test_definitions::catalog(),
+    )
 }

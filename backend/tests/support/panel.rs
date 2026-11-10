@@ -1,9 +1,6 @@
 use crate::{
     application::composition::{self, Application},
-    modules::{
-        configuration, monitoring, notifications,
-        sites::{self, CreateSite, Protocol, SiteStore},
-    },
+    modules::sites::{CreateSite, Protocol, SiteStore},
     shared::{
         diagnostics::Diagnostics,
         persistence::{test_support::environment, Database},
@@ -21,18 +18,7 @@ impl Fixture {
     pub(crate) fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let env = environment(directory.path(), "com.relaypulse.app.dev");
-        let database = Arc::new(
-            Database::open(
-                env.paths(),
-                &[
-                    configuration::SCHEMA,
-                    notifications::SCHEMA,
-                    sites::SCHEMA,
-                    monitoring::SCHEMA,
-                ],
-            )
-            .unwrap(),
-        );
+        let database = Arc::new(Database::open(env.paths(), composition::BASELINE).unwrap());
         let store = SiteStore::new(database.clone());
         let diagnostics = Arc::new(Diagnostics::new(&env));
         let app = composition::compose(env, diagnostics).unwrap();

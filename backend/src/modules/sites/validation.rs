@@ -2,7 +2,7 @@ use super::*;
 use reqwest::Url;
 use std::collections::HashSet;
 
-pub(crate) fn name(value: &str) -> Result<String> {
+pub fn name(value: &str) -> Result<String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(invalid("name", "名称不能为空。"));
@@ -10,17 +10,17 @@ pub(crate) fn name(value: &str) -> Result<String> {
     Ok(value.into())
 }
 
-pub(crate) fn base_url(value: &str) -> Result<Url> {
+pub fn base_url(value: &str) -> Result<Url> {
     crate::shared::model_client::base_url(value).map_err(Into::into)
 }
-pub(crate) fn endpoint(base: &str, value: &str, custom: bool) -> Result<Url> {
+pub fn endpoint(base: &str, value: &str, custom: bool) -> Result<Url> {
     crate::shared::model_client::endpoint(base, value, custom).map_err(Into::into)
 }
-pub(crate) fn credential(value: &str) -> Result<()> {
+pub fn credential(value: &str) -> Result<()> {
     crate::shared::model_client::credential(value).map_err(Into::into)
 }
 
-pub(crate) fn connection(value: &Connection, base: &str) -> Result<()> {
+pub fn connection(value: &Connection, base: &str) -> Result<()> {
     endpoint(base, &value.models_path, false)?;
     endpoint(base, &value.probe_path, false)?;
     for (number, max, field) in [
@@ -55,23 +55,23 @@ pub(crate) fn connection(value: &Connection, base: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn policy(value: &ProbePolicy, _protocol: Protocol) -> Result<()> {
+pub fn policy(value: &ProbePolicy, _protocol: Protocol) -> Result<()> {
     if value.version != 2 {
         return Err(invalid("policy", "请求参数配置版本无效。"));
     }
     parameters(&value.parameters)
 }
-pub(crate) fn custom(value: &CustomRequest, base: &str) -> Result<()> {
+pub fn custom(value: &CustomRequest, base: &str) -> Result<()> {
     if value.version != 2 {
         return Err(invalid("customRequest", "请求参数配置版本无效。"));
     }
     endpoint(base, &value.endpoint, true)?;
     parameters(&value.parameters)
 }
-pub(crate) fn parameters(values: &[Parameter]) -> Result<()> {
+pub fn parameters(values: &[Parameter]) -> Result<()> {
     crate::shared::model_client::parameters(values).map_err(Into::into)
 }
-pub(crate) fn names_match(models: &[Model], supplied: &[String]) -> Result<()> {
+pub fn names_match(models: &[Model], supplied: &[String]) -> Result<()> {
     let names: HashSet<_> = supplied.iter().map(String::as_str).collect();
     if names.len() != supplied.len()
         || names.len() != models.len()

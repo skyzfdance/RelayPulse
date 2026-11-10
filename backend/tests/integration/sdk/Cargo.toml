@@ -1,0 +1,22 @@
+[package]
+name = "relaypulse-sdk-consumer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+relaypulse-runtime = { path = "../../../crates/runtime", version = "0.1" }
+relaypulse-storage = { path = "../../../crates/storage", version = "0.1" }
+relaypulse-model-client = { path = "../../../crates/model-client", version = "0.1" }
+relaypulse-diagnostics = { path = "../../../crates/diagnostics", version = "0.1" }
+relaypulse-operations = { path = "../../../crates/operations", version = "0.1" }
+relaypulse-notifications = { path = "../../../crates/notifications", version = "0.1" }
+tempfile = "3"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "sdk_contract"
+path = "contracts.rs"

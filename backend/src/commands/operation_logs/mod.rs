@@ -2,9 +2,7 @@
 mod args;
 use crate::{
     commands::error::CommandError,
-    modules::operation_logs::{
-        OperationLogDetail, OperationLogError, OperationLogPage, OperationLogs,
-    },
+    modules::operation_logs::{OperationLogError, OperationLogs},
     startup::StartupState,
 };
 use std::sync::Arc;
@@ -19,17 +17,23 @@ fn service(state: &StartupState) -> Result<Arc<OperationLogs>, CommandError> {
 pub(in crate::commands) async fn get_operation_logs(
     state: State<'_, StartupState>,
     request: Request<'_>,
-) -> Result<OperationLogPage, CommandError> {
+) -> Result<serde_json::Value, CommandError> {
     let query = args::query(request)?;
-    service(&state)?.query(query).await.map_err(Into::into)
+    let page = service(&state)?.query(query).await?;
+    Ok(crate::application::operation_history::wire(
+        serde_json::to_value(page).expect("history DTO"),
+    ))
 }
 #[tauri::command]
 pub(in crate::commands) async fn get_operation_log_detail(
     state: State<'_, StartupState>,
     request: Request<'_>,
-) -> Result<OperationLogDetail, CommandError> {
+) -> Result<serde_json::Value, CommandError> {
     let id = args::log_id(request)?;
-    service(&state)?.detail(id).await.map_err(Into::into)
+    let detail = service(&state)?.detail(id).await?;
+    Ok(crate::application::operation_history::wire(
+        serde_json::to_value(detail).expect("history DTO"),
+    ))
 }
 #[tauri::command]
 pub(in crate::commands) async fn report_operation_read_failure(
@@ -39,7 +43,11 @@ pub(in crate::commands) async fn report_operation_read_failure(
     let input = args::read_failure(request)?;
     let service = service(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
-        service.report_read_failure(input.target, input.kind)
+        crate::application::operation_history::report_read_failure(
+            &service,
+            input.target,
+            input.kind,
+        )
     })
     .await
     .map_err(|_| CommandError::from(OperationLogError::Unavailable))?;

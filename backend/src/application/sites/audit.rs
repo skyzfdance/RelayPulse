@@ -1,5 +1,6 @@
 //! Capture configuration while it still exists; successful mutations are recorded before projection.
 use super::{Operation, Sites};
+use crate::application::action_definitions::actions as OperationAction;
 use crate::modules::{
     operation_logs::*,
     sites::{CommitObserver, CredentialAction, Site, SiteCommit, SiteError, TaskError},
@@ -12,7 +13,7 @@ pub(crate) enum SiteBoundaryFailure {
 }
 #[derive(Clone)]
 pub(super) struct Audit {
-    action: OperationAction,
+    action: relaypulse_operations::ActionDefinition,
     object: String,
     before: Value,
     requested: Value,
@@ -23,7 +24,7 @@ pub(super) struct Audit {
 impl Sites {
     pub(crate) fn record_boundary_failure(
         &self,
-        action: OperationAction,
+        action: relaypulse_operations::ActionDefinition,
         failure: SiteBoundaryFailure,
     ) {
         let reason = match failure {
@@ -269,9 +270,9 @@ impl Audit {
             OperationResult::Failure,
             self.object.clone(),
             "草稿测试未通过",
-            OperationLogContent::ProbeFailure {
-                reason: "草稿请求未通过；草稿测试不创建正式探测记录。".into(),
-            },
+            crate::modules::monitoring::operation_history::failure(
+                "草稿请求未通过；草稿测试不创建正式探测记录。",
+            ),
         ));
         self.recorded = true;
     }

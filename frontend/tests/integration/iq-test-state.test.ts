@@ -26,8 +26,7 @@ const input = {
 };
 const startInput = {
   questionIds: ['iq-question-1', 'iq-question-2'],
-  timeoutSeconds: 120,
-  timeoutRetryMax: 5,
+  retryMax: 0,
 };
 async function readyParticipant() {
   const item = await taskApi.createIqParticipant(input);
@@ -100,6 +99,21 @@ describe('IQ 浏览器契约与状态生命周期', () => {
     const finished = await historyApi.fetchIqRun(run.id);
     expect(finished.status).toBe('completed');
     expect(finished.participants[0]).toEqual(before);
+  });
+  it('请求报错按次数重试，重试期间保持运行，耗尽后保留全部尝试', async () => {
+    window.history.replaceState({}, '', '/iq-test/task?iqScenario=run-error');
+    await readyParticipant();
+    const run = await taskApi.startIqRun({ questionIds: ['iq-question-1'], retryMax: 2 });
+    for (let tick = 0; tick < 3; tick++) advanceIqRun();
+    const retrying = await historyApi.fetchIqRun(run.id);
+    expect(retrying.status).toBe('running');
+    expect(retrying.entries[0]).toMatchObject({ status: 'running', attempt: 2 });
+    for (let tick = 0; tick < 4; tick++) advanceIqRun();
+    const finished = await historyApi.fetchIqRun(run.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.entries[0]).toMatchObject({ status: 'error', attempt: 3 });
+    const output = await historyApi.fetchIqEntryOutput(finished.entries[0].id);
+    expect(output.attempts.map((attempt) => attempt.status)).toEqual(['error', 'error', 'error']);
   });
   it('题目在start时固化，之后编辑和删除不影响运行', async () => {
     await readyParticipant();
@@ -217,7 +231,7 @@ describe('IQ 浏览器契约与状态生命周期', () => {
     await expect(historyApi.openIqRawFile(aborted.entries[2].id)).rejects.toThrow('未发起调用');
     expect(aborted.summary.progressPercent).toBe(100);
   });
-  it('超时重试不含首次，沿用快照，全部失败仍完成且只提醒整场一次', async () => {
+  it('正式调用不做本地超时重试，完成后清空草稿并保留历史快照', async () => {
     await readyParticipant();
     window.history.replaceState({}, '', '/?iqScenario=timeout');
     const run = await taskApi.startIqRun({ ...startInput, questionIds: ['iq-question-1'] });
@@ -227,8 +241,9 @@ describe('IQ 浏览器契约与状态生命周期', () => {
     for (let i = 0; i < 12; i++) advanceIqRun();
     const finished = await historyApi.fetchIqRun(run.id);
     expect(finished.status).toBe('completed');
-    expect(finished.entries[0].status).toBe('timeout');
-    expect(finished.entries[0].attempt).toBe(6);
+    expect(finished.entries[0].status).toBe('completed');
+    expect(finished.entries[0].attempt).toBe(1);
+    expect((await snapshotApi.fetchIqSnapshot()).participants).toEqual([]);
     expect(mockIqSystemNotificationRequests).toEqual([
       expect.objectContaining({
         ruleId: 'iq.run_completed',
@@ -360,18 +375,6 @@ describe('IQ 浏览器契约与状态生命周期', () => {
     query.resolve(checkingSnapshot);
     await pending;
     expect(store.participants[0].precheck.status).toBe('available');
-  });
-  it.each([null, 59, 301, 120.5])('拒绝超时非法值 %s', async (timeoutSeconds) => {
-    await readyParticipant();
-    await expect(
-      taskApi.startIqRun({ ...startInput, timeoutSeconds: timeoutSeconds as number }),
-    ).rejects.toThrow('超时必须');
-  });
-  it.each([null, 4, 21, 5.5])('拒绝重试非法值 %s', async (timeoutRetryMax) => {
-    await readyParticipant();
-    await expect(
-      taskApi.startIqRun({ ...startInput, timeoutRetryMax: timeoutRetryMax as number }),
-    ).rejects.toThrow('超时重试必须');
   });
   it('store切页后保留当前运行并接收完成，静默预检不写操作记录', async () => {
     const store = useIqTestStore();

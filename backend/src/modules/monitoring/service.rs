@@ -1,3 +1,4 @@
+use super::actions as OperationAction;
 use super::{
     activity::{ProbeActivity, ProbeTask},
     health::{self, HealthState},
@@ -9,8 +10,7 @@ use crate::{
     modules::{
         configuration::ConfigurationService,
         operation_logs::{
-            OperationAction, OperationEvent, OperationLogContent, OperationLogs, OperationResult,
-            OperationSource,
+            OperationEvent, OperationLogContent, OperationLogs, OperationResult, OperationSource,
         },
         sites::{Site, SiteError, SiteService, TaskError},
     },
@@ -30,7 +30,7 @@ use std::{
     },
 };
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum MonitoringError {
+pub enum MonitoringError {
     #[error(transparent)]
     Site(#[from] SiteError),
     #[error("正式监测记录不可用。以下操作未确认完成。")]
@@ -50,7 +50,7 @@ impl DiagnosticFailure for MonitoringError {
     }
 }
 type Result<T> = std::result::Result<T, MonitoringError>;
-pub(crate) struct Monitoring {
+pub struct Monitoring {
     pub(super) sites: Arc<SiteService>,
     client: Arc<ModelClient>,
     pub(super) storage: MonitoringStore,
@@ -66,7 +66,7 @@ pub(crate) struct Monitoring {
     pub(super) operation_logs: Option<Arc<OperationLogs>>,
 }
 impl Monitoring {
-    pub(crate) fn new(
+    pub fn new(
         sites: Arc<SiteService>,
         client: Arc<ModelClient>,
         database: Arc<Database>,
@@ -91,40 +91,40 @@ impl Monitoring {
             operation_logs: None,
         }
     }
-    pub(crate) fn with_operation_logs(mut self, logs: Arc<OperationLogs>) -> Self {
+    pub fn with_operation_logs(mut self, logs: Arc<OperationLogs>) -> Self {
         self.operation_logs = Some(logs);
         self
     }
     /// 宿主在启动调度器前连接一次；模块独立运行时不依赖系统通知。
-    pub(crate) fn set_health_observer(
+    pub fn set_health_observer(
         &self,
         observer: Arc<dyn HealthObserver>,
     ) -> std::result::Result<(), Arc<dyn HealthObserver>> {
         self.health_observer.set(observer)
     }
-    pub(crate) fn activity(&self) -> ProbeActivity {
+    pub fn activity(&self) -> ProbeActivity {
         self.activity
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
     }
-    pub(crate) fn cancellation(&self) -> Cancellation {
+    pub fn cancellation(&self) -> Cancellation {
         self.sites.cancellation()
     }
-    pub(crate) fn close(&self) {
+    pub fn close(&self) {
         self.sites.close();
         if let Some(captures) = &self.captures {
             captures.close();
         }
     }
-    pub(crate) async fn drained(&self) {
+    pub async fn drained(&self) {
         self.sites.drained().await;
         self.storage.drained().await;
         if let Some(captures) = &self.captures {
             captures.drained().await;
         }
     }
-    pub(crate) fn claim_scheduler(&self) -> std::result::Result<(), TaskError> {
+    pub fn claim_scheduler(&self) -> std::result::Result<(), TaskError> {
         if *self.cancellation().subscribe().borrow() {
             return Err(TaskError::Closing);
         }
@@ -133,7 +133,7 @@ impl Monitoring {
             .map(|_| ())
             .map_err(|_| TaskError::Busy)
     }
-    pub(crate) fn scheduler_failed(&self) {
+    pub fn scheduler_failed(&self) {
         self.scheduler_blocked("正式监测调度器意外停止。");
         let _ = self
             .diagnostics
@@ -150,16 +150,14 @@ impl Monitoring {
                 OperationResult::Blocked,
                 "自动探测调度器",
                 "自动探测暂时受阻。",
-                OperationLogContent::ProbeFailure {
-                    reason: reason.into(),
-                },
+                super::operation_history::failure(reason),
             ));
         }
     }
     pub(super) fn settings_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.general.subscribe()
     }
-    pub(crate) async fn automatic_enabled(&self) -> Result<bool> {
+    pub async fn automatic_enabled(&self) -> Result<bool> {
         let general = self.general.clone();
         let result = self
             .diagnostics
@@ -180,10 +178,7 @@ impl Monitoring {
         }
         result
     }
-    pub(crate) async fn states(
-        &self,
-        model_ids: Vec<String>,
-    ) -> Result<HashMap<String, HealthState>> {
+    pub async fn states(&self, model_ids: Vec<String>) -> Result<HashMap<String, HealthState>> {
         let storage = self.storage.clone();
         self.storage
             .blocking(move || storage.states(&model_ids))
@@ -191,7 +186,16 @@ impl Monitoring {
             .map_err(|_| MonitoringError::Worker)?
             .map_err(|_| MonitoringError::Storage)
     }
-    pub(crate) async fn run(&self, site_id: String, model_id: Option<String>) -> Result<Site> {
+    /// 供 application 的展示适配器在已有阻塞 worker 中读取；不执行请求或写入。
+    pub fn health_snapshot_blocking(
+        &self,
+        model_ids: &[String],
+    ) -> Result<HashMap<String, HealthState>> {
+        self.storage
+            .states(model_ids)
+            .map_err(|_| MonitoringError::Storage)
+    }
+    pub async fn run(&self, site_id: String, model_id: Option<String>) -> Result<Site> {
         self.run_guarded(site_id, model_id, false).await
     }
     async fn run_guarded(
@@ -452,7 +456,7 @@ impl Monitoring {
         }
         Ok(scope.site().clone())
     }
-    pub(crate) async fn cleanup_records(&self) {
+    pub async fn cleanup_records(&self) {
         self.cleanup_records_from_source(OperationSource::User)
             .await;
     }

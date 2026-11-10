@@ -1,10 +1,7 @@
 //! 启动阶段失败必须阻止就绪，且不创建错误环境资源或覆盖已有数据。
 use super::support::{connection, defaults, ready, DEV};
 use crate::{
-    shared::{
-        environment::EnvironmentContext,
-        persistence::{test_support::environment, PersistenceError},
-    },
+    shared::persistence::{test_support::environment, PersistenceError},
     startup::{initialize, StartupError, StartupState},
 };
 use rusqlite::Connection;
@@ -13,7 +10,11 @@ use std::fs;
 #[test]
 fn environment_failure_creates_no_resources() {
     let temp = tempfile::tempdir().unwrap();
-    let invalid = EnvironmentContext::resolve("unknown", temp.path(), &temp.path().join("unknown"));
+    let invalid = crate::application::environment::resolve(
+        "unknown",
+        temp.path(),
+        &temp.path().join("unknown"),
+    );
     assert!(matches!(
         initialize(invalid).0,
         StartupState::Blocked(StartupError::Environment(_))

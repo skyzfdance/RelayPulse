@@ -112,12 +112,12 @@ describe('模型自定义探针参数与预览', () => {
     );
   });
 
-  it('同源端点支持根路径、基址相对路径和绝对地址', async () => {
+  it('路径端点保留基址前缀，完整的同源地址保持原样', async () => {
     state.sites[0].baseUrl = 'https://api.openai.com/v1/';
     const site = state.sites[0];
     for (const [endpoint, resolved] of [
       ['images/generations', 'https://api.openai.com/v1/images/generations'],
-      ['/images/generations', 'https://api.openai.com/images/generations'],
+      ['/images/generations', 'https://api.openai.com/v1/images/generations'],
       ['https://api.openai.com/custom', 'https://api.openai.com/custom'],
     ]) {
       expect(
@@ -128,6 +128,21 @@ describe('模型自定义探针参数与预览', () => {
         }).endpoint,
       ).toBe(resolved);
     }
+  });
+
+  it.each([
+    ['https://api.openai.com/v1', 'responses'],
+    ['https://api.openai.com/v1', '/responses'],
+    ['https://api.openai.com/v1/', 'responses'],
+    ['https://api.openai.com/v1/', '/responses'],
+  ])('基址 %s 与端点 %s 拼接为完整请求地址', (baseUrl, endpoint) => {
+    expect(
+      buildCustomProbePreview(baseUrl, 'model', {
+        version: 2,
+        endpoint,
+        parameters: [],
+      }).endpoint,
+    ).toBe('https://api.openai.com/v1/responses');
   });
 
   it('空端点、首尾空格、跨域和无效协议同时阻止预览与保存', async () => {

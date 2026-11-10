@@ -10,3 +10,7 @@ mod writer;
 pub(in crate::modules::monitoring) use reader::CapturedRecord;
 use writer::write_event;
 pub(in crate::modules::monitoring) use writer::CaptureStore;
+
+pub use reader::verify_capture_history;
+
+pub use reader::inspect_capture_formats;

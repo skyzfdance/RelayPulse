@@ -67,8 +67,7 @@ async function completedIqRun() {
   await iqTaskApi.runIqPrecheck(participant.snapshotId);
   const run = await iqTaskApi.startIqRun({
     questionIds: ['iq-question-1'],
-    timeoutSeconds: 120,
-    timeoutRetryMax: 5,
+    retryMax: 0,
   });
   for (let tick = 0; tick < run.participants.length * 2 + 1; tick++) advanceIqRun();
   return run;

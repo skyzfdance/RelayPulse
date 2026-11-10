@@ -74,17 +74,16 @@ fn package_contains_only_typed_events_and_explicit_unavailable_probe_summary() {
     fs::write(directory.join("relaypulse.log"), secret).unwrap();
     let bytes = diagnostics.package().unwrap();
     let package: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(package["appVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(package["appName"], "FixtureHost");
+    assert_eq!(package["appVersion"], "99.7.3");
+    assert_ne!(package["appVersion"], env!("CARGO_PKG_VERSION"));
     assert_eq!(package["environment"], "development");
     assert_eq!(
         package["startup"],
         json!({"status":"failed", "error":"persistence"})
     );
     assert_eq!(package["logStatistics"]["fileCount"], 2);
-    assert_eq!(
-        package["probeSummary"],
-        json!({"available":false,"reason":"probe_summary_not_implemented"})
-    );
+    assert!(package.get("probeSummary").is_none());
     let text = String::from_utf8(bytes).unwrap();
     for secret in [
         "SECRET",

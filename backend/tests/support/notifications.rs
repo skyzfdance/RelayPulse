@@ -5,15 +5,12 @@ pub(super) const FAILED: &str = "probe.model_failed";
 pub(super) const RECOVERED: &str = "probe.model_recovered";
 
 pub(super) fn service(root: &std::path::Path) -> (NotificationService, Arc<Database>) {
-    let database = Arc::new(
-        Database::open(
-            environment(root, DEV).paths(),
-            &[configuration::SCHEMA, SCHEMA],
-        )
-        .unwrap(),
-    );
+    let database = Arc::new(Database::open(environment(root, DEV).paths(), &[SCHEMA]).unwrap());
     (
-        NotificationService::new(SqliteNotificationStore::new(database.clone())),
+        NotificationService::new(
+            SqliteNotificationStore::new(database.clone()),
+            crate::notification_test_definitions::catalog(),
+        ),
         database,
     )
 }

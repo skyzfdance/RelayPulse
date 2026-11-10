@@ -1,4 +1,5 @@
 //! 小面板用例：组合公开查询，复用正式探测，不持有 SQL 或健康规则。
+use crate::application::action_definitions::actions as OperationAction;
 mod projection;
 mod types;
 
@@ -7,8 +8,8 @@ use crate::{
         configuration::{ConfigurationError, ConfigurationService},
         monitoring::{Monitoring, MonitoringError},
         operation_logs::{
-            OperationAction, OperationEvent, OperationLogContent, OperationLogs, OperationRecorder,
-            OperationResult, OperationSource,
+            OperationEvent, OperationLogContent, OperationLogs, OperationRecorder, OperationResult,
+            OperationSource,
         },
         sites::{SiteError, SiteService},
     },
@@ -185,9 +186,7 @@ impl Panel {
             result,
             "面板或托盘探测",
             "手动探测未能开始。",
-            OperationLogContent::ProbeFailure {
-                reason: reason.into(),
-            },
+            crate::modules::monitoring::operation_history::failure(reason),
         ));
     }
 

@@ -11,12 +11,14 @@ const emit = defineEmits<{ view: [] }>();
   <div class="min-w-0 py-1">
     <button
       type="button"
-      class="question-preview block w-full cursor-pointer border-0 bg-transparent p-0 text-left text-sm leading-5.5 whitespace-pre-wrap wrap-anywhere hover:text-rp-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rp-primary"
+      class="question-preview block w-full cursor-pointer border-0 bg-transparent p-0 text-left text-sm leading-5.5 hover:text-rp-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rp-primary"
       :class="{ 'text-rp-tertiary': !props.question.enabled }"
       :aria-label="`查看题目 ${question.content}`"
       @click.stop="emit('view')"
     >
-      {{ question.content }}
+      <span class="block truncate">
+        {{ question.content }}
+      </span>
     </button>
     <div class="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs leading-5">
       <button
@@ -35,12 +37,3 @@ const emit = defineEmits<{ view: [] }>();
     </div>
   </div>
 </template>
-
-<style scoped>
-.question-preview {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-</style>

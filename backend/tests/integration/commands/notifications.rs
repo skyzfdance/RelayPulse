@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    commands::register, modules::notifications::tests::FakePlatform,
+    commands::register, notification_host::FakePlatform,
     shared::persistence::test_support::environment, startup,
 };
 use serde_json::{json, Value};
@@ -57,7 +57,12 @@ fn all_nine_commands_route_through_real_registration_and_persist() {
     assert_eq!(original["authorization"], "not_requested");
     assert_eq!(original["notificationsEnabled"], false);
     assert_eq!(
-        original["rules"][0],
+        *original["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["id"] == "probe.model_failed")
+            .unwrap(),
         json!({"id":"probe.model_failed", "title":"模型探测故障", "subTitle":"模型达到稳定故障判定时发送系统通知", "status":true, "templateType":"default", "channel":"系统通知"})
     );
     assert_eq!(
@@ -68,7 +73,12 @@ fn all_nine_commands_route_through_real_registration_and_persist() {
     *platform.permission.lock().unwrap() = NotificationPermission::Granted;
     let mut input = original;
     input["notificationsEnabled"] = json!(true);
-    input["rules"][0]["status"] = json!(false);
+    input["rules"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|rule| rule["id"] == "probe.model_failed")
+        .unwrap()["status"] = json!(false);
     input["authorization"] = json!("denied");
     let saved = invoke(
         &window,
@@ -77,7 +87,15 @@ fn all_nine_commands_route_through_real_registration_and_persist() {
     )
     .unwrap();
     assert_eq!(saved["authorization"], "granted");
-    assert_eq!(saved["rules"][0]["status"], false);
+    assert_eq!(
+        saved["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["id"] == "probe.model_failed")
+            .unwrap()["status"],
+        false
+    );
     let detail = invoke(
         &window,
         "get_notification_template",
@@ -158,8 +176,14 @@ fn all_nine_commands_route_through_real_registration_and_persist() {
     );
     let reopened = invoke(&window, "get_notification_settings", json!({})).unwrap();
     assert_eq!(reopened["notificationsEnabled"], true);
-    assert_eq!(reopened["rules"][0]["status"], false);
-    assert_eq!(reopened["rules"][0]["templateType"], "custom");
+    let failed = reopened["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|rule| rule["id"] == "probe.model_failed")
+        .unwrap();
+    assert_eq!(failed["status"], false);
+    assert_eq!(failed["templateType"], "custom");
 }
 
 fn assert_error(error: &Value, code: &str) {

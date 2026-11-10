@@ -265,13 +265,13 @@ async fn panel_and_tray_refreshes_keep_user_origin_including_preflight_blocked_r
             end_date: None,
             source: vec![],
             result: vec![],
-            actions: vec![crate::modules::operation_logs::OperationActionGroup::Probe],
+            actions: vec![String::from("probe")],
             page: 1,
             page_size: 100,
         })
         .await
         .unwrap();
-    let page = serde_json::to_value(page).unwrap();
+    let page = crate::application::operation_history::wire(serde_json::to_value(page).unwrap());
     let events = page["items"].as_array().unwrap();
     assert_eq!(events.len(), 3);
     assert_eq!(
@@ -329,7 +329,7 @@ async fn panel_final_read_failure_keeps_probe_success_and_only_explicit_refresh_
         })
         .await
         .unwrap();
-    let page = serde_json::to_value(page).unwrap();
+    let page = crate::application::operation_history::wire(serde_json::to_value(page).unwrap());
     let events = page["items"].as_array().unwrap();
     assert_eq!(
         events

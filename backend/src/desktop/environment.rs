@@ -2,12 +2,12 @@
 
 use tauri::{AppHandle, Manager};
 
-use crate::shared::environment::{AppEnvironment, EnvironmentContext, EnvironmentError};
+use crate::shared::environment::{EnvironmentContext, EnvironmentError};
 
 pub(super) fn resolve(app: &AppHandle) -> Result<EnvironmentContext, EnvironmentError> {
     let identifier = &app.config().identifier;
     // 身份不合法时，不继续解析或检查数据目录。
-    AppEnvironment::from_identifier(identifier)?;
+    crate::application::environment::identify(identifier)?;
     let system_data_root = app
         .path()
         .data_dir()
@@ -16,5 +16,5 @@ pub(super) fn resolve(app: &AppHandle) -> Result<EnvironmentContext, Environment
         .path()
         .app_data_dir()
         .map_err(|_| EnvironmentError::SystemDataDirectoryUnavailable("application data"))?;
-    EnvironmentContext::resolve(identifier, &system_data_root, &app_data_root)
+    crate::application::environment::resolve(identifier, &system_data_root, &app_data_root)
 }

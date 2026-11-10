@@ -1,12 +1,15 @@
 use super::*;
 
 fn context(model: &str) -> NotificationContext<'_> {
-    NotificationContext {
-        source: crate::modules::operation_logs::OperationSource::System,
+    crate::notification_test_definitions::context(
         model,
-        endpoint: "api.example.com",
-        finished_at_ms: 1_792_972_800_000,
-    }
+        "api.example.com",
+        1_700_000_000_000,
+        NotificationAction {
+            target: "probe_records".into(),
+            parameters: Default::default(),
+        },
+    )
 }
 
 #[test]
@@ -64,7 +67,13 @@ fn automatic_notifications_honor_current_switches_and_permission_without_request
     assert_eq!(sent[1].0, "✅ model 已恢复");
     assert_eq!(
         *platform.actions.lock().unwrap(),
-        vec![Some(NotificationAction::OpenProbeRecords); 2]
+        vec![
+            Some(NotificationAction {
+                target: "probe_records".into(),
+                parameters: Default::default()
+            });
+            2
+        ]
     );
 }
 

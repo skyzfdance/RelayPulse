@@ -1,8 +1,8 @@
 //! 协调诊断公开能力与业务操作记录；文件事实归 shared，宿主动作由命令层适配。
+use crate::application::action_definitions::actions as OperationAction;
 use crate::{
     modules::operation_logs::{
-        OperationAction, OperationEvent, OperationLogContent, OperationLogs, OperationResult,
-        OperationSource,
+        OperationEvent, OperationLogContent, OperationLogs, OperationResult, OperationSource,
     },
     shared::diagnostics::{Diagnostics, DiagnosticsError, LogStatistics},
 };
@@ -122,7 +122,7 @@ fn failure(activity: &str) -> OperationLogContent {
 
 fn record<T>(
     logs: Option<&OperationLogs>,
-    action: OperationAction,
+    action: relaypulse_operations::ActionDefinition,
     result: &Result<T>,
     content: OperationLogContent,
 ) {

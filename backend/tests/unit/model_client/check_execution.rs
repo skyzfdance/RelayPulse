@@ -38,7 +38,11 @@ async fn streams_measure_real_first_content_not_headers_or_role_and_inject_crede
                 .then(|| value.trim())
         })
         .expect("default User-Agent is sent");
-    assert!(user_agent.starts_with(concat!("RelayPulse/", env!("CARGO_PKG_VERSION"), " (")));
+    assert!(user_agent.starts_with(concat!(
+        "relaypulse-model-client/",
+        env!("CARGO_PKG_VERSION"),
+        " ("
+    )));
     assert!(user_agent.ends_with(')'));
     let (system, architecture) = user_agent
         .split_once(" (")

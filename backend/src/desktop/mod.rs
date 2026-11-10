@@ -3,6 +3,7 @@
 pub(crate) mod diagnostics;
 pub(crate) mod directories;
 mod environment;
+mod iq_test;
 pub(crate) mod main_window;
 mod notifications;
 pub(crate) mod panel;
@@ -18,7 +19,9 @@ use std::sync::{
 use tauri::Manager;
 struct Background {
     lifecycle: Arc<crate::application::lifecycle::Lifecycle>,
+    operation_logs: Arc<crate::modules::operation_logs::OperationLogs>,
     panel_events: Arc<panel::PanelEvents>,
+    iq_events: Arc<iq_test::IqEvents>,
     tray: Arc<tray::TrayRuntime>,
     notifications: Arc<notifications::SystemNotifications>,
     stopping: AtomicBool,
@@ -76,6 +79,18 @@ pub(crate) fn run() {
             // 宿主持有服务及连接；失败保留阶段错误，命令返回明确的不可用原因。
             if let StartupState::Ready(application) = &state {
                 application
+                    .iq_test
+                    .set_completion_observer(Arc::new(
+                        crate::application::notifications::IqCompletionNotifications::new(
+                            application.notifications.clone(),
+                            notifications.clone(),
+                            application.operation_logs.clone(),
+                        ),
+                    ))
+                    .map_err(|_| {
+                        std::io::Error::other("IQ completion notifications already connected")
+                    })?;
+                application
                     .monitoring
                     .set_health_observer(Arc::new(
                         crate::application::notifications::HealthNotifications::new(
@@ -83,6 +98,7 @@ pub(crate) fn run() {
                             app.state::<crate::modules::notifications::NotificationPlatformState>()
                                 .0
                                 .clone(),
+                            application.operation_logs.clone(),
                         ),
                     ))
                     .map_err(|_| std::io::Error::other("health notifications already connected"))?;
@@ -96,10 +112,17 @@ pub(crate) fn run() {
                 ));
                 let lifecycle = tauri::async_runtime::block_on(async {
                     crate::application::lifecycle::Lifecycle::start(application.monitoring.clone())
-                })?;
+                })?
+                .with_iq_test(application.iq_test.clone());
+                let iq_events = Arc::new(iq_test::IqEvents::start(
+                    app.handle().clone(),
+                    &application.iq_test,
+                ));
                 app.manage(Background {
                     lifecycle: Arc::new(lifecycle),
+                    operation_logs: application.operation_logs.clone(),
                     panel_events,
+                    iq_events,
                     tray,
                     notifications,
                     stopping: AtomicBool::new(false),
@@ -126,7 +149,9 @@ pub(crate) fn run() {
                 api.prevent_exit();
                 if !background.stopping.swap(true, Ordering::SeqCst) {
                     let lifecycle = background.lifecycle.clone();
+                    let operation_logs = background.operation_logs.clone();
                     let panel_events = background.panel_events.clone();
+                    let iq_events = background.iq_events.clone();
                     let tray = background.tray.clone();
                     let notifications = background.notifications.clone();
                     let stopped = background.stopped.clone();
@@ -137,6 +162,9 @@ pub(crate) fn run() {
                         lifecycle.stop().await;
                         notifications.stop().await;
                         panel_events.stop().await;
+                        iq_events.stop().await;
+                        operation_logs.close();
+                        operation_logs.drained().await;
                         stopped.store(true, Ordering::SeqCst);
                         handle.exit(code.unwrap_or(0));
                     });

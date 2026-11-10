@@ -6,19 +6,28 @@ use crate::{
 use serde_json::json;
 
 #[tokio::test]
-async fn blocked_database_preserves_bounded_marker_and_replays_once_after_repair() {
+async fn blocked_configuration_preserves_bounded_marker_and_replays_once_after_repair() {
     let temp = tempfile::tempdir().unwrap();
     let env = environment(temp.path(), "com.relaypulse.app.dev");
     let root = env.paths().data_root().to_owned();
     std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("relaypulse.sqlite3"), b"broken db").unwrap();
+    let db = crate::shared::persistence::Database::open(
+        env.paths(),
+        crate::application::composition::BASELINE,
+    )
+    .unwrap();
+    db.with_connection(|c| c.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE general_settings SET theme='broken'; PRAGMA ignore_check_constraints=OFF;")).unwrap();
+    drop(db);
     assert!(matches!(initialize(Ok(env)).0, StartupState::Blocked(_)));
     let path = marker(&root);
     let data = std::fs::read(&path).unwrap();
     assert!(data.len() < 1024);
     let pending: Pending = serde_json::from_slice(&data).unwrap();
-    assert!(matches!(pending.stage, StartupFailureStage::Persistence));
-    std::fs::remove_file(root.join("relaypulse.sqlite3")).unwrap();
+    assert!(matches!(pending.stage, StartupFailureStage::Configuration));
+    let c = rusqlite::Connection::open(root.join("relaypulse.sqlite3")).unwrap();
+    c.execute("UPDATE general_settings SET theme='system'", [])
+        .unwrap();
+    drop(c);
     let StartupState::Ready(app) =
         initialize(Ok(environment(temp.path(), "com.relaypulse.app.dev"))).0
     else {
@@ -45,4 +54,21 @@ fn invalid_or_unwritable_marker_does_not_change_startup_result() {
     std::fs::create_dir_all(env.paths().data_root()).unwrap();
     std::fs::write(marker(env.paths().data_root()), vec![0; 2048]).unwrap();
     assert!(matches!(initialize(Ok(env)).0, StartupState::Ready(_)));
+}
+
+#[test]
+fn unknown_database_format_is_rejected_without_creating_logs_or_markers() {
+    let temp = tempfile::tempdir().unwrap();
+    let env = environment(temp.path(), "com.relaypulse.app.dev");
+    let root = env.paths().data_root().to_owned();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("relaypulse.sqlite3"), b"broken db").unwrap();
+    let (state, diagnostics) = initialize(Ok(env));
+    assert!(matches!(state, StartupState::Blocked(_)));
+    assert!(diagnostics.0.is_none());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read(root.join("relaypulse.sqlite3")).unwrap(),
+        b"broken db"
+    );
 }

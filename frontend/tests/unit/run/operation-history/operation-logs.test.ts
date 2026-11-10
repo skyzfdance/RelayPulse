@@ -98,11 +98,11 @@ describe('operation history query and mock contract', () => {
     expect(changes.items.every((log) => log.actionGroup === 'update')).toBe(true);
   });
 
-  it('normalizes former event filters to the grouped action without duplicates', () => {
+  it('preserves open action identifiers without a business whitelist', () => {
     expect(
       parseOperationLogQuery({ actions: ['automatic_probe,manual_probe', 'site_reordered'] })
         .actions,
-    ).toEqual(['probe', 'update']);
+    ).toEqual(['automatic_probe', 'manual_probe', 'site_reordered']);
   });
 
   it('returns explicit detail behavior and reads larger content on demand', async () => {

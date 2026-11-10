@@ -268,7 +268,15 @@ fn complete_initial_schema_preserves_records_and_settings_on_reopen() {
 fn retention_only_removes_probe_history_and_keeps_current_state_and_other_business_data() {
     let tmp = tempfile::tempdir().unwrap();
     let env = environment(tmp.path(), "com.relaypulse.app.dev");
-    let db = Arc::new(Database::open(env.paths(), &SCHEMAS).unwrap());
+    let schemas = [
+        SCHEMAS.as_slice(),
+        &[Migration {
+            name: "test_other_business",
+            sql: "CREATE TABLE iq_history_sentinel (id TEXT PRIMARY KEY);",
+        }],
+    ]
+    .concat();
+    let db = Arc::new(Database::open(env.paths(), &schemas).unwrap());
     let config = SiteStore::new(db.clone());
     let id = site(&config);
     let record = completed(&config, &id, 1_000_000_000);
@@ -281,7 +289,8 @@ fn retention_only_removes_probe_history_and_keeps_current_state_and_other_busine
         ..Default::default()
     };
     storage.complete(&record, &state, 30).unwrap();
-    db.with_connection(|c|c.execute_batch("CREATE TABLE iq_history_sentinel (id TEXT PRIMARY KEY); INSERT INTO iq_history_sentinel VALUES ('keep');")).unwrap();
+    db.with_connection(|c| c.execute_batch("INSERT INTO iq_history_sentinel VALUES ('keep');"))
+        .unwrap();
     storage.records().prune(record.finished_at_ms + 1).unwrap();
     assert!(storage.records().retained_ids().unwrap().is_empty());
     assert_eq!(
@@ -306,7 +315,7 @@ fn retention_only_removes_probe_history_and_keeps_current_state_and_other_busine
     drop(config);
     drop(storage);
     drop(db);
-    let db = Arc::new(Database::open(env.paths(), &SCHEMAS).unwrap());
+    let db = Arc::new(Database::open(env.paths(), &schemas).unwrap());
     assert_eq!(
         MonitoringStore::new(db)
             .states(std::slice::from_ref(&record.context.model_id))

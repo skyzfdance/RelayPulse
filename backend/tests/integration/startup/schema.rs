@@ -19,6 +19,9 @@ fn creates_only_migrated_modules_and_named_schema_history() {
         tables,
         [
             "general_settings",
+            "iq_entries",
+            "iq_questions",
+            "iq_runs",
             "notification_rules",
             "notification_settings",
             "operation_logs",
@@ -87,6 +90,7 @@ fn creates_only_migrated_modules_and_named_schema_history() {
             "site_configuration",
             "site_probe_records",
             "operation_history",
+            "iq_test",
         ]
     );
     let record_columns = connection

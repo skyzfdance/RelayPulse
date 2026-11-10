@@ -1,0 +1,21 @@
+[package]
+name = "relaypulse-storage"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tempfile = "3"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+thiserror = "2"
+relaypulse-runtime = { version = "0.1", path = "../runtime" }
+
+[dev-dependencies]
+relaypulse-runtime = { version = "0.1",path="../runtime"}
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
+
+[features]
+test-support = []

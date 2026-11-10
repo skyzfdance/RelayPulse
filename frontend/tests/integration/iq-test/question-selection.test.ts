@@ -352,7 +352,7 @@ describe('IQ 测试题目分页选择', () => {
     await button.trigger('click');
     await flushPromises();
     expect(start).toHaveBeenCalledTimes(1);
-    expect(start.mock.calls[0]![0]).toMatchObject({ timeoutSeconds: 120, timeoutRetryMax: 5 });
+    expect(start.mock.calls[0]![0]).toEqual({ questionIds: expect.any(Array), retryMax: 5 });
     expect(start.mock.calls[0]![0].questionIds.slice().sort()).toEqual([
       'selection-question-1',
       'selection-question-11',

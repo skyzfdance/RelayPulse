@@ -1,8 +1,7 @@
+use crate::application::operation_history::{ReadFailureKind, ReadFailureTarget};
 use crate::{
     commands::error::CommandError,
-    modules::operation_logs::{
-        OperationLogError, OperationLogQuery, ReadFailureKind, ReadFailureTarget,
-    },
+    modules::operation_logs::{OperationLogError, OperationLogQuery},
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{Map, Value};

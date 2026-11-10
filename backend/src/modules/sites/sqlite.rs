@@ -5,16 +5,16 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::{collections::HashSet, sync::Arc};
 use zeroize::Zeroizing;
 
-pub(crate) const SCHEMA: Migration = Migration {
+pub const SCHEMA: Migration = Migration {
     name: "site_configuration",
     sql: include_str!("sites.sql"),
 };
 #[derive(Clone)]
-pub(crate) struct SiteStore {
+pub struct SiteStore {
     database: Arc<Database>,
 }
 impl SiteStore {
-    pub(crate) fn new(database: Arc<Database>) -> Self {
+    pub fn new(database: Arc<Database>) -> Self {
         Self { database }
     }
     fn read<T>(&self, action: impl FnOnce(&SqlConnection) -> Result<T>) -> Result<T> {
@@ -32,7 +32,7 @@ impl SiteStore {
             }
         })?
     }
-    pub(crate) fn list(&self) -> Result<Vec<Site>> {
+    pub fn list(&self) -> Result<Vec<Site>> {
         self.read(|c| {
             let ids = c
                 .prepare("SELECT id FROM sites ORDER BY priority, id")?
@@ -41,10 +41,20 @@ impl SiteStore {
             ids.iter().map(|id| load(c, id)).collect()
         })
     }
-    pub(crate) fn get(&self, id: &str) -> Result<Site> {
+    pub fn get(&self, id: &str) -> Result<Site> {
         self.read(|c| load(c, id))
     }
-    pub(crate) fn execution_snapshot(&self, id: &str) -> Result<ExecutionSnapshot> {
+    pub fn execution_snapshot(&self, id: &str) -> Result<ExecutionSnapshot> {
+        self.connection_snapshot(id, true)
+    }
+    pub(super) fn iq_connection_snapshot(&self, id: &str) -> Result<ExecutionSnapshot> {
+        self.connection_snapshot(id, false)
+    }
+    fn connection_snapshot(
+        &self,
+        id: &str,
+        credential_required: bool,
+    ) -> Result<ExecutionSnapshot> {
         self.read(|c| {
             let site = load(c, id)?;
             let secret = c
@@ -53,8 +63,12 @@ impl SiteStore {
                     [id],
                     |r| r.get::<_, String>(0),
                 )
-                .optional()?
-                .ok_or(SiteConfigError::MissingCredential)?;
+                .optional()?;
+            let secret = match secret {
+                Some(secret) => secret,
+                None if !credential_required => String::new(),
+                None => return Err(SiteConfigError::MissingCredential),
+            };
             let target = crate::shared::model_client::RequestTarget {
                 protocol: site.protocol,
                 base_url: site.base_url.clone(),
@@ -65,7 +79,7 @@ impl SiteStore {
         })
     }
     #[cfg(test)]
-    pub(crate) fn create(&self, input: &CreateSite, models: &[String]) -> Result<String> {
+    pub fn create(&self, input: &CreateSite, models: &[String]) -> Result<String> {
         self.create_committed(input, models).map(|site| site.id)
     }
     pub(super) fn create_committed(&self, input: &CreateSite, models: &[String]) -> Result<Site> {
@@ -86,7 +100,7 @@ impl SiteStore {
             load(tx, &id)
         })
     }
-    pub(crate) fn save_basic(&self, id: &str, draft: &SiteDraft) -> Result<Site> {
+    pub fn save_basic(&self, id: &str, draft: &SiteDraft) -> Result<Site> {
         let name = validation::name(&draft.name)?;
         let url = validation::base_url(&draft.base_url)?.to_string();
         if draft.credential_action == CredentialAction::Replace {
@@ -113,7 +127,7 @@ impl SiteStore {
             load(tx, id)
         })
     }
-    pub(crate) fn save_connection(&self, id: &str, value: &Connection) -> Result<Site> {
+    pub fn save_connection(&self, id: &str, value: &Connection) -> Result<Site> {
         self.write(|tx| {
             let site = load(tx, id)?;
             validation::connection(value, &site.base_url)?;
@@ -124,7 +138,7 @@ impl SiteStore {
             load(tx, id)
         })
     }
-    pub(crate) fn save_policy(
+    pub fn save_policy(
         &self,
         id: &str,
         model_id: Option<&str>,
@@ -172,7 +186,7 @@ impl SiteStore {
             load(tx, id)
         })
     }
-    pub(crate) fn set_enabled(&self, id: &str, enabled: bool) -> Result<Site> {
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> Result<Site> {
         self.write(|tx| {
             load(tx, id)?;
             tx.execute(
@@ -182,7 +196,7 @@ impl SiteStore {
             load(tx, id)
         })
     }
-    pub(crate) fn add_model(&self, id: &str, name: &str) -> Result<Site> {
+    pub fn add_model(&self, id: &str, name: &str) -> Result<Site> {
         let name = validation::name(name)?;
         self.write(|tx| {
             let site = load(tx, id)?;
@@ -199,7 +213,7 @@ impl SiteStore {
             load(tx, id)
         })
     }
-    pub(crate) fn delete_model(&self, id: &str, model_id: &str) -> Result<Site> {
+    pub fn delete_model(&self, id: &str, model_id: &str) -> Result<Site> {
         self.write(|tx| {
             require_model(&load(tx, id)?, model_id)?;
             tx.execute(
@@ -210,12 +224,7 @@ impl SiteStore {
             load(tx, id)
         })
     }
-    pub(crate) fn set_model_enabled(
-        &self,
-        id: &str,
-        model_id: &str,
-        enabled: bool,
-    ) -> Result<Site> {
+    pub fn set_model_enabled(&self, id: &str, model_id: &str, enabled: bool) -> Result<Site> {
         self.write(|tx| {
             require_model(&load(tx, id)?, model_id)?;
             tx.execute(
@@ -227,7 +236,7 @@ impl SiteStore {
         })
     }
     #[cfg(test)]
-    pub(crate) fn delete(&self, id: &str) -> Result<()> {
+    pub fn delete(&self, id: &str) -> Result<()> {
         self.delete_committed(id).map(|_| ())
     }
     pub(super) fn delete_committed(&self, id: &str) -> Result<Site> {
@@ -241,7 +250,7 @@ impl SiteStore {
             Ok(site)
         })
     }
-    pub(crate) fn reorder(&self, ids: &[String]) -> Result<()> {
+    pub fn reorder(&self, ids: &[String]) -> Result<()> {
         self.write(|tx| {
             let actual = tx
                 .prepare("SELECT id FROM sites")?
@@ -263,7 +272,7 @@ impl SiteStore {
         })
     }
     #[cfg(test)]
-    pub(crate) fn apply_sync(&self, id: &str, revision: i64, input: &ApplySync) -> Result<()> {
+    pub fn apply_sync(&self, id: &str, revision: i64, input: &ApplySync) -> Result<()> {
         self.apply_sync_committed(id, revision, input).map(|_| ())
     }
     pub(super) fn apply_sync_committed(
@@ -313,7 +322,7 @@ impl SiteStore {
         })
     }
 }
-pub(crate) fn require_model<'a>(site: &'a Site, id: &str) -> Result<&'a Model> {
+pub fn require_model<'a>(site: &'a Site, id: &str) -> Result<&'a Model> {
     site.models
         .iter()
         .find(|m| m.id == id)

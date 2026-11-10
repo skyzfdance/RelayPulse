@@ -97,16 +97,13 @@ export function buildIqParameters(
 export function iqStartError(
   questionIds: string[],
   participants: { modelName: string; precheck: { status: string } }[],
-  timeout: number | null,
   retries: number | null,
 ) {
   if (!questionIds.length) return '请先选择题目';
   if (!participants.length) return '请添加参与者';
   const blocked = participants.find((p) => p.precheck.status !== 'available');
   if (blocked) return `${blocked.modelName} 预检未通过`;
-  if (timeout === null || !Number.isInteger(timeout) || timeout < 60 || timeout > 300)
-    return '超时须为 60–300 秒整数';
-  if (retries === null || !Number.isInteger(retries) || retries < 5 || retries > 20)
-    return '重试须为 5–20 次整数';
+  if (retries === null || !Number.isInteger(retries) || retries < 0 || retries > 20)
+    return '重试次数须为 0–20 的整数';
   return undefined;
 }

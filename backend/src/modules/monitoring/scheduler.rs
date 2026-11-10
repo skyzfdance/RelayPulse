@@ -3,7 +3,7 @@ use super::Monitoring;
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::{collections::HashSet, sync::Arc, time::Duration};
 impl Monitoring {
-    pub(crate) async fn schedule(self: Arc<Self>) {
+    pub async fn schedule(self: Arc<Self>) {
         let cancellation = self.cancellation();
         let mut interval = tokio::time::interval(Duration::from_millis(250));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

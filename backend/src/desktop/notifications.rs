@@ -5,7 +5,7 @@ use crate::modules::notifications::{
 
 pub(super) struct SystemNotifications {
     #[cfg(target_os = "macos")]
-    open_records: std::sync::Arc<dyn Fn() + Send + Sync>,
+    open_action: std::sync::Arc<dyn Fn(NotificationAction) + Send + Sync>,
     #[cfg(target_os = "macos")]
     responses: std::sync::Mutex<Option<tokio::task::JoinSet<()>>>,
 }
@@ -14,12 +14,21 @@ impl SystemNotifications {
     pub(super) fn new<R: tauri::Runtime>(_app: tauri::AppHandle<R>) -> Self {
         Self {
             #[cfg(target_os = "macos")]
-            open_records: std::sync::Arc::new(move || {
+            open_action: std::sync::Arc::new(move |action| {
                 let app = _app.clone();
                 if _app
                     .run_on_main_thread(move || {
-                        if super::main_window::records(&app).is_err() {
-                            eprintln!("[notifications] open probe records failed");
+                        let result = match action.target.as_str() {
+                            "probe_records" => super::main_window::records(&app),
+                            "iq_run" => {
+                                let run_id =
+                                    action.parameters.get("runId").cloned().unwrap_or_default();
+                                super::main_window::iq_history(&app, &run_id)
+                            }
+                            _ => return,
+                        };
+                        if result.is_err() {
+                            eprintln!("[notifications] open notification target failed");
                         }
                     })
                     .is_err()
@@ -35,6 +44,7 @@ impl SystemNotifications {
     #[cfg(target_os = "macos")]
     fn watch_response(
         &self,
+        action: NotificationAction,
         response: impl std::future::Future<
                 Output = Result<
                     mac_usernotifications::NotificationResponse,
@@ -51,14 +61,14 @@ impl SystemNotifications {
             return;
         };
         while responses.try_join_next().is_some() {}
-        let open_records = self.open_records.clone();
+        let open_action = self.open_action.clone();
         responses.spawn_on(
             async move {
                 match response.await {
                     Ok(response)
                         if response.is_default_action() && response.close_reason.is_none() =>
                     {
-                        open_records();
+                        open_action(action);
                     }
                     Ok(_) => {}
                     Err(_) => eprintln!("[notifications] receive click response failed"),
@@ -135,12 +145,12 @@ impl NotificationPlatform for SystemNotifications {
             None => mac_usernotifications::blocking::send(notification)
                 .map(|_| ())
                 .map_err(|error| native_error("send", error)),
-            Some(NotificationAction::OpenProbeRecords) => {
+            Some(action) => {
                 // 只等待系统接受请求；交互异步等待，不占用探测 worker 或主线程。
                 // Tauri 驱动主线程 RunLoop，不使用库对 is_waiting 的瞬时检查。
                 let handle = mac_usernotifications::block_on(notification.send())
                     .map_err(|error| native_error("send", error))?;
-                self.watch_response(handle.response());
+                self.watch_response(action, handle.response());
                 Ok(())
             }
         }

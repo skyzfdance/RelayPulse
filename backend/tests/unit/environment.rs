@@ -1,12 +1,15 @@
 use std::{fs, path::Path};
 
 use super::{AppEnvironment, EnvironmentContext, EnvironmentError};
+#[allow(dead_code)]
+#[path = "../support/environment.rs"]
+mod fixture;
 
 const DEV: &str = "com.relaypulse.app.dev";
 const PROD: &str = "com.relaypulse.app";
 
 fn resolve(identifier: &str, base: &Path) -> Result<EnvironmentContext, EnvironmentError> {
-    EnvironmentContext::resolve(identifier, base, &base.join(identifier))
+    fixture::resolve(identifier, base, &base.join(identifier))
 }
 
 #[test]
@@ -49,7 +52,7 @@ fn rejects_cross_environment_path_pairs() {
     let temp = tempfile::tempdir().unwrap();
     for (identifier, other) in [(DEV, PROD), (PROD, DEV)] {
         assert!(matches!(
-            EnvironmentContext::resolve(identifier, temp.path(), &temp.path().join(other)),
+            fixture::resolve(identifier, temp.path(), &temp.path().join(other)),
             Err(EnvironmentError::DataDirectoryMismatch),
         ));
     }
@@ -70,7 +73,7 @@ fn rejects_relative_paths_and_parent_traversal() {
     ));
     let escaped_app = temp.path().join(PROD).join("..").join(DEV);
     assert!(matches!(
-        EnvironmentContext::resolve(DEV, temp.path(), &escaped_app),
+        fixture::resolve(DEV, temp.path(), &escaped_app),
         Err(EnvironmentError::DataDirectoryMismatch)
     ));
 }
@@ -131,28 +134,6 @@ fn a_file_in_the_parent_path_is_not_treated_as_a_missing_directory() {
     fs::write(&base, b"preserve parent").unwrap();
     assert!(resolve(DEV, &base).is_err());
     assert_eq!(fs::read(base).unwrap(), b"preserve parent");
-}
-
-#[test]
-fn configured_identities_match_the_runtime_policy() {
-    let dev: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tauri.conf.json"
-    )))
-    .unwrap();
-    let production: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tauri.production.conf.json"
-    )))
-    .unwrap();
-    assert_eq!(
-        AppEnvironment::from_identifier(dev["identifier"].as_str().unwrap()).unwrap(),
-        AppEnvironment::Development
-    );
-    assert_eq!(
-        AppEnvironment::from_identifier(production["identifier"].as_str().unwrap()).unwrap(),
-        AppEnvironment::Production
-    );
 }
 
 #[cfg(unix)]
@@ -223,5 +204,17 @@ mod unix {
             Err(EnvironmentError::DataDirectoryInspectionFailed { .. })
         ));
         assert!(!missing.exists());
+    }
+}
+
+#[test]
+fn application_metadata_rejects_header_injection_and_empty_identity() {
+    for (name, version) in [
+        ("", "1"),
+        ("Host\r\nX-Injected: true", "1"),
+        ("Host", "1\n"),
+        ("Host", ""),
+    ] {
+        assert!(super::ApplicationInfo::new(name, version).is_err());
     }
 }

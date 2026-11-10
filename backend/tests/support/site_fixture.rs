@@ -36,7 +36,7 @@ impl Fixture {
             ConfigurationService::new(SqliteSettingsStore::new(database.clone()))
                 .with_operation_logs(operation_logs.clone()),
         );
-        let client = Arc::new(ModelClient::default());
+        let client = Arc::new(ModelClient::new(env.application()));
         let store = SiteStore::new(database.clone());
         let sites = Arc::new(SiteService::new(
             database.clone(),

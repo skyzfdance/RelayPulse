@@ -1,14 +1,8 @@
 import type {
-  OperationAction,
   OperationActionGroup,
   OperationLogQuery,
   OperationResult,
   OperationSource,
-} from '@/types/domain/operation-logs';
-
-import {
-  operationActionGroupByAction,
-  operationActionGroupLabels,
 } from '@/types/domain/operation-logs';
 
 export const DEFAULT_OPERATION_QUERY: OperationLogQuery = {
@@ -23,8 +17,6 @@ export const DEFAULT_OPERATION_QUERY: OperationLogQuery = {
 
 const sources: OperationSource[] = ['system', 'user'];
 const results: OperationResult[] = ['success', 'failure', 'cancelled', 'blocked'];
-const actionGroups = Object.keys(operationActionGroupLabels) as OperationActionGroup[];
-const rawActions = Object.keys(operationActionGroupByAction) as OperationAction[];
 
 function calendarDate(value: unknown): string | null {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -49,16 +41,16 @@ function selectedValues<T extends string>(value: unknown, allowed: readonly T[])
 }
 
 function selectedActionGroups(value: unknown): OperationActionGroup[] {
-  const values = selectedValues(value, [...actionGroups, ...rawActions]);
+  const entries = (Array.isArray(value) ? value : [value]).flatMap((entry) =>
+    typeof entry === 'string' ? entry.split(',') : [],
+  );
   return [
     ...new Set(
-      values.map((entry) =>
-        actionGroups.includes(entry as OperationActionGroup)
-          ? (entry as OperationActionGroup)
-          : operationActionGroupByAction[entry as OperationAction],
+      entries.filter(
+        (v): v is string => typeof v === 'string' && /^[a-zA-Z0-9_.-]{1,200}$/.test(v),
       ),
     ),
-  ];
+  ].slice(0, 100);
 }
 
 export function parseOperationLogQuery(query: Record<string, unknown>): OperationLogQuery {

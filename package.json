@@ -1,7 +1,7 @@
 {
   "name": "relaypulse",
   "private": true,
-  "version": "2.0.1",
+  "version": "3.0.0",
   "type": "module",
   "packageManager": "pnpm@9.10.0",
   "scripts": {
@@ -13,11 +13,11 @@
     "build:assets:dev": "pnpm --dir frontend build:dev",
     "build:assets:production": "pnpm --dir frontend build:production",
     "preview:web": "pnpm --dir frontend preview",
-    "check:all": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:frontend && pnpm test:backend && pnpm test:desktop-scripts && pnpm test:e2e",
+    "check:all": "pnpm check:architecture && pnpm check:sdk && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:frontend && pnpm test:backend && pnpm test:desktop-scripts && pnpm test:e2e",
     "lint": "pnpm lint:frontend && pnpm lint:scripts && pnpm lint:backend",
     "lint:frontend": "pnpm --dir frontend lint",
     "lint:scripts": "eslint scripts --config scripts/eslint.config.js --max-warnings 0",
-    "lint:backend": "cd backend && cargo clippy --all-targets --all-features -- -D warnings",
+    "lint:backend": "cd backend && cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "lint:fix": "pnpm --dir frontend lint:fix && eslint scripts --config scripts/eslint.config.js --fix --max-warnings 0",
     "format": "pnpm --dir frontend format && pnpm format:backend",
     "format:backend": "cd backend && cargo fmt --all",
@@ -26,11 +26,13 @@
     "typecheck": "pnpm --dir frontend typecheck",
     "test:frontend": "pnpm --dir frontend test",
     "test:frontend:watch": "pnpm --dir frontend test:watch",
-    "test:backend": "cd backend && cargo test --all-features",
+    "test:backend": "cd backend && cargo test --workspace --all-features",
     "test:desktop-scripts": "node --test scripts/tests/*.test.mjs",
     "test:e2e": "pnpm --dir frontend test:e2e",
     "info:desktop": "node scripts/tauri.mjs info",
-    "tauri": "node scripts/tauri.mjs"
+    "tauri": "node scripts/tauri.mjs",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "check:sdk": "node scripts/check-sdk-api.mjs && cargo test --manifest-path backend/tests/integration/sdk/Cargo.toml --target-dir backend/target/sdk-consumer"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

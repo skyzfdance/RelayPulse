@@ -1,7 +1,8 @@
 //! 通过真实组装验证业务事件投影、敏感字段隔离和诊断降级。
+use crate::notification_host::FakePlatform;
 use crate::{
     modules::notifications::{
-        tests::FakePlatform, NotificationPermission, TemplateMode, TemplateUpdate, TestNotification,
+        NotificationPermission, TemplateMode, TemplateUpdate, TestNotification,
     },
     shared::persistence::test_support::environment,
     startup::{initialize, StartupState},

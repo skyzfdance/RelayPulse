@@ -5,7 +5,7 @@ use crate::shared::{
     persistence::PersistenceError,
 };
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum SiteError {
+pub enum SiteError {
     #[error(transparent)]
     Config(#[from] SiteConfigError),
     #[error(transparent)]

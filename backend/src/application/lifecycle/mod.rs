@@ -6,6 +6,7 @@ use tokio::task::JoinHandle;
 pub(crate) struct Lifecycle {
     monitoring: Arc<Monitoring>,
     task: Mutex<Option<JoinHandle<()>>>,
+    iq_test: Option<Arc<crate::modules::iq_test::IqTest>>,
 }
 impl Lifecycle {
     pub(crate) fn start(
@@ -25,9 +26,17 @@ impl Lifecycle {
         Ok(Self {
             task: Mutex::new(Some(task)),
             monitoring,
+            iq_test: None,
         })
     }
+    pub(crate) fn with_iq_test(mut self, iq_test: Arc<crate::modules::iq_test::IqTest>) -> Self {
+        self.iq_test = Some(iq_test);
+        self
+    }
     pub(crate) async fn stop(&self) {
+        if let Some(iq_test) = &self.iq_test {
+            iq_test.close();
+        }
         self.monitoring.close();
         let task = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(task) = task {
@@ -36,10 +45,16 @@ impl Lifecycle {
             }
         }
         self.monitoring.drained().await;
+        if let Some(iq_test) = &self.iq_test {
+            iq_test.stop().await;
+        }
     }
 }
 impl Drop for Lifecycle {
     fn drop(&mut self) {
+        if let Some(iq_test) = &self.iq_test {
+            iq_test.close();
+        }
         self.monitoring.close();
         if let Some(task) = self
             .task

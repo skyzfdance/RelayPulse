@@ -101,7 +101,10 @@ async fn queries_and_details_keep_frozen_names_policy_thresholds_request_and_pro
         .unwrap()
         .iter()
         .any(|h| h["name"] == "user-agent"
-            && h["value"].as_str().unwrap().starts_with("RelayPulse/")));
+            && h["value"]
+                .as_str()
+                .unwrap()
+                .starts_with("FixtureHost/99.7.3 (")));
     let response_before = response(&f, &record).await;
     assert_eq!(before["result"], "slow");
     assert_eq!(before["slowThresholds"]["durationMs"], 1000);

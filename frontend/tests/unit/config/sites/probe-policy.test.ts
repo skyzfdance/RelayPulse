@@ -41,7 +41,6 @@ describe('探针参数预览与保存契约', () => {
         model: '<模型名称>',
         input: '只回复 OK',
         stream: true,
-        max_output_tokens: 8,
         reasoning: { effort: 'low' },
       },
     ],

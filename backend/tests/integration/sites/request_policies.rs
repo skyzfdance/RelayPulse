@@ -70,7 +70,7 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
         ),
         (
             Protocol::OpenaiResponses,
-            json!({"model":"remote","input":"只回复 OK","stream":true,"max_output_tokens":8,"reasoning":{"effort":"low"}}),
+            json!({"model":"remote","input":"只回复 OK","stream":true,"reasoning":{"effort":"low"}}),
         ),
         (
             Protocol::Anthropic,

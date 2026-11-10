@@ -1,13 +1,12 @@
 //! 通知 IPC 协议边界。平台及业务错误在本目录转换，公共 error.rs 不依赖业务。
+use crate::application::action_definitions::actions as OperationAction;
+use crate::application::notifications::audit;
 mod boundary;
 mod error;
 
 use super::error::CommandError;
-use crate::{
-    modules::{notifications::*, operation_logs::OperationAction},
-    startup::StartupState,
-};
-use boundary::{parse, platform_call, service};
+use crate::{modules::notifications::*, startup::StartupState};
+use boundary::{logs, parse, platform_call, service};
 use serde::Deserialize;
 use tauri::{ipc::Request, AppHandle, Runtime, State};
 
@@ -42,7 +41,7 @@ pub(super) async fn get_notification_settings<R: Runtime>(
         &state,
         &app,
         OperationAction::PageLoadFailed,
-        |service, platform| service.load(platform),
+        |service, logs, platform| audit::load(service, logs, platform),
     )
     .await
 }
@@ -63,7 +62,7 @@ pub(super) async fn update_notification_settings<R: Runtime>(
         &state,
         &app,
         OperationAction::NotificationSettingsUpdated,
-        move |service, platform| service.save(args.settings, platform),
+        move |service, logs, platform| audit::save(service, logs, args.settings, platform),
     )
     .await
 }
@@ -77,7 +76,7 @@ pub(super) async fn request_notification_permission<R: Runtime>(
         &state,
         &app,
         OperationAction::NotificationPermissionRequested,
-        |service, platform| service.request_permission(platform),
+        |service, logs, platform| audit::request_permission(service, logs, platform),
     )
     .await
 }
@@ -98,7 +97,7 @@ pub(super) async fn send_test_notification<R: Runtime>(
         &state,
         &app,
         OperationAction::TestNotification,
-        move |service, platform| service.send_test(args.template, platform),
+        move |service, logs, platform| audit::send_test(service, logs, args.template, platform),
     )
     .await
 }
@@ -112,7 +111,7 @@ pub(super) async fn open_notification_settings<R: Runtime>(
         &state,
         &app,
         OperationAction::DetailReadFailed,
-        |service, platform| service.open_settings(platform),
+        |service, logs, platform| audit::open_settings(service, logs, platform),
     )
     .await
 }
@@ -123,7 +122,7 @@ pub(super) fn get_notification_template(
     request: Request<'_>,
 ) -> Result<TemplateDetail, CommandError> {
     let args: TemplateArgs = parse(request, "id", &state, OperationAction::DetailReadFailed)?;
-    service(&state)?.template(&args.id).map_err(Into::into)
+    audit::template(service(&state)?, logs(&state)?, &args.id).map_err(Into::into)
 }
 
 #[tauri::command]
@@ -137,9 +136,7 @@ pub(super) fn update_notification_template(
         &state,
         OperationAction::NotificationTemplateUpdated,
     )?;
-    service(&state)?
-        .save_template(&args.id, args.update)
-        .map_err(Into::into)
+    audit::save_template(service(&state)?, logs(&state)?, &args.id, args.update).map_err(Into::into)
 }
 
 #[tauri::command]
@@ -148,8 +145,13 @@ pub(super) fn get_notification_markers() -> Vec<NotificationMarker> {
 }
 
 #[tauri::command]
-pub(super) fn get_notification_variables() -> Vec<NotificationVariable> {
-    variables()
+pub(super) fn get_notification_variables(
+    state: tauri::State<'_, crate::startup::StartupState>,
+) -> Vec<NotificationVariable> {
+    match state.inner() {
+        crate::startup::StartupState::Ready(app) => app.notifications.variables(),
+        _ => vec![],
+    }
 }
 
 #[cfg(test)]

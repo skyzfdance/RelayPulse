@@ -7,11 +7,50 @@ import type {
   OperationLogQuery,
 } from '@/types/domain/operation-logs';
 
-import { operationActionGroupByAction } from '@/types/domain/operation-logs';
 import { RelayPulseBackendError } from '@/utils/backend-error';
 
 import { registerMockHandler } from '../registry';
 import { recordsState } from './records';
+
+const operationActionGroupByAction: Record<string, string> = {
+  iq_question_created: 'create',
+  iq_question_updated: 'update',
+  iq_question_deleted: 'delete',
+  iq_run_started: 'create',
+  iq_run_aborted: 'status_change',
+  iq_run_deleted: 'delete',
+  automatic_probe: 'probe',
+  model_failure: 'status_change',
+  model_recovered: 'status_change',
+  automatic_notification: 'notification',
+  scheduled_record_cleanup: 'cleanup',
+  scheduled_log_cleanup: 'cleanup',
+  application_ready: 'startup',
+  application_blocked: 'startup',
+  site_created: 'create',
+  site_updated: 'update',
+  site_deleted: 'delete',
+  site_reordered: 'update',
+  site_status_changed: 'update',
+  model_created: 'create',
+  model_deleted: 'delete',
+  model_status_changed: 'update',
+  models_synchronized: 'sync',
+  probe_config_saved: 'update',
+  test_draft_saved: 'update',
+  manual_probe: 'probe',
+  general_settings_updated: 'update',
+  notification_settings_updated: 'update',
+  notification_template_updated: 'update',
+  test_notification: 'notification',
+  notification_permission_requested: 'authorization',
+  record_deleted: 'delete',
+  records_cleared: 'cleanup',
+  logs_cleared: 'cleanup',
+  diagnostics_exported: 'export',
+  page_load_failed: 'read',
+  detail_read_failed: 'read',
+};
 
 interface Fixture extends Omit<
   OperationLogListItem,

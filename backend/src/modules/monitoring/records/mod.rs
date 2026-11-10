@@ -13,9 +13,13 @@ mod sqlite;
 mod tests;
 mod types;
 
-pub(crate) use dto::*;
-pub(crate) use error::RecordError;
-pub(crate) use query::{ProbeRecordsQuery, TokenStatsQuery};
-pub(crate) use service::ProbeRecordOperation;
+pub use dto::*;
+pub use error::RecordError;
+pub use query::{ProbeRecordsQuery, TokenStatsQuery};
+pub use service::ProbeRecordOperation;
 pub(super) use sqlite::{insert, prune, RecordStore};
 pub(super) use types::{CompletedRecord, RecordContext};
+
+pub use capture::verify_capture_history;
+
+pub use capture::inspect_capture_formats;

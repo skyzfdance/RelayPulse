@@ -1,10 +1,9 @@
 use super::*;
+use crate::notification_host::FakePlatform;
 use crate::{
     modules::{
         monitoring::Health,
-        notifications::{
-            tests::FakePlatform, NotificationPermission, TemplateMode, TemplateUpdate,
-        },
+        notifications::{NotificationPermission, TemplateMode, TemplateUpdate},
     },
     panel_test_support::Fixture,
     shared::model_client::test_support::{Response, Server},
@@ -25,6 +24,7 @@ fn connect(f: &Fixture) -> Arc<FakePlatform> {
         .set_health_observer(Arc::new(HealthNotifications::new(
             f.app.notifications.clone(),
             platform.clone(),
+            f.app.operation_logs.clone(),
         )))
         .is_ok());
     platform
@@ -95,7 +95,7 @@ async fn committed_health_edges_notify_once_after_failure_and_recovery_threshold
             end_date: None,
             source: vec![],
             result: vec![],
-            actions: vec![crate::modules::operation_logs::OperationActionGroup::StatusChange],
+            actions: vec![String::from("status_change")],
             page: 1,
             page_size: 100,
         })

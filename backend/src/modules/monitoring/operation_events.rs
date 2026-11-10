@@ -1,9 +1,10 @@
 //! 一次正式任务的审计租约；最后一个提交 worker 释放后才写入完整关联。
+use super::actions as OperationAction;
 use super::{HealthChange, HealthTransition, MonitoringError};
 use crate::modules::{
     operation_logs::{
-        DetailBehavior, OperationAction, OperationEvent, OperationLogContent, OperationLogs,
-        OperationResult, OperationSource, RecordAvailability, SnapshotField,
+        OperationEvent, OperationLogContent, OperationLogs, OperationResult, OperationSource,
+        SnapshotField,
     },
     sites::{SiteError, TaskError},
 };
@@ -115,16 +116,14 @@ impl Drop for ProbeOperation {
             outcome,
             state.object.clone(),
             summary,
-            OperationLogContent::ProbeFailure {
-                reason: reason.clone(),
-            },
+            super::operation_history::failure(reason.clone()),
         );
         event.explanation = reason;
         if !state.record_ids.is_empty() {
-            event.detail_behavior = DetailBehavior::ProbeRecords {
-                record_ids: std::mem::take(&mut state.record_ids),
-                availability: RecordAvailability::Available,
-            };
+            event.detail_behavior = super::operation_history::records(
+                std::mem::take(&mut state.record_ids),
+                "available",
+            );
         }
         // 同步 best effort；没有 detached task，不改变探测结果，也不递归记账。
         logs.record_best_effort(event);
@@ -160,7 +159,7 @@ pub(super) fn health_event(logs: &OperationLogs, change: &HealthChange, site: &s
 }
 pub(super) fn cleanup_event(
     logs: &OperationLogs,
-    action: OperationAction,
+    action: relaypulse_operations::ActionDefinition,
     source: OperationSource,
     count: u64,
     target: &str,

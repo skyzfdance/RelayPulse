@@ -1,12 +1,10 @@
 //! 站点命令处理：解析请求、取得应用服务、调用用例并转换错误。
 use super::args::*;
+use crate::application::action_definitions::actions as OperationAction;
 use crate::{
     application::sites::{Operation, Reply, SiteBoundaryFailure, Sites},
     commands::error::CommandError,
-    modules::{
-        operation_logs::OperationAction,
-        sites::{self, ApplySync, ProtocolOption},
-    },
+    modules::sites::{self, ApplySync, ProtocolOption},
     startup::StartupState,
 };
 use serde::de::DeserializeOwned;
@@ -30,7 +28,7 @@ fn service(state: &StartupState) -> Result<&Sites, CommandError> {
 fn parse<T: DeserializeOwned>(
     request: Request<'_>,
     state: &StartupState,
-    action: OperationAction,
+    action: relaypulse_operations::ActionDefinition,
 ) -> Result<T, CommandError> {
     let result = (|| {
         let InvokeBody::Json(value) = request.body() else {

@@ -7,17 +7,17 @@ use rusqlite::{
 };
 
 /// 组装层登记模块的建表步骤；shared 只接收 SQL，不反向依赖业务模块。
-pub(crate) const SCHEMA: Migration = Migration {
+pub const SCHEMA: Migration = Migration {
     name: "configuration",
     sql: include_str!("configuration.sql"),
 };
 
-pub(crate) struct SqliteSettingsStore {
+pub struct SqliteSettingsStore {
     database: std::sync::Arc<Database>,
 }
 
 impl SqliteSettingsStore {
-    pub(crate) fn new(database: impl Into<std::sync::Arc<Database>>) -> Self {
+    pub fn new(database: impl Into<std::sync::Arc<Database>>) -> Self {
         Self {
             database: database.into(),
         }

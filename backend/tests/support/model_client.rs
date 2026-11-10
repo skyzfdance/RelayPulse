@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 #[derive(Clone)]
-pub(crate) struct Response {
+pub struct Response {
     pub status: u16,
     pub header_delay: Duration,
     pub content_type: &'static str,
@@ -19,10 +19,10 @@ pub(crate) struct Response {
     pub headers: Vec<(&'static str, String)>,
 }
 impl Response {
-    pub(crate) fn json(value: serde_json::Value) -> Self {
+    pub fn json(value: serde_json::Value) -> Self {
         Self::raw(200, "application/json", value.to_string())
     }
-    pub(crate) fn raw(status: u16, content_type: &'static str, body: impl Into<String>) -> Self {
+    pub fn raw(status: u16, content_type: &'static str, body: impl Into<String>) -> Self {
         Self {
             status,
             header_delay: Duration::ZERO,
@@ -31,11 +31,11 @@ impl Response {
             headers: vec![],
         }
     }
-    pub(crate) fn delayed(mut self, delay: Duration) -> Self {
+    pub fn delayed(mut self, delay: Duration) -> Self {
         self.parts[0].0 = delay;
         self
     }
-    pub(crate) fn sse(events: &[(&str, u64)]) -> Self {
+    pub fn sse(events: &[(&str, u64)]) -> Self {
         Self {
             status: 200,
             header_delay: Duration::ZERO,
@@ -49,18 +49,18 @@ impl Response {
     }
 }
 #[derive(Clone, Debug)]
-pub(crate) struct Request {
+pub struct Request {
     pub head: String,
     pub body: Vec<u8>,
 }
-pub(crate) struct Server {
+pub struct Server {
     pub url: String,
     requests: Arc<Mutex<Vec<Request>>>,
     stopping: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Server {
-    pub(crate) fn new(responses: Vec<Response>) -> Self {
+    pub fn new(responses: Vec<Response>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -98,10 +98,10 @@ impl Server {
             worker: Some(worker),
         }
     }
-    pub(crate) fn requests(&self) -> Vec<Request> {
+    pub fn requests(&self) -> Vec<Request> {
         self.requests.lock().unwrap().clone()
     }
-    pub(crate) async fn wait_requests(&self, count: usize) {
+    pub async fn wait_requests(&self, count: usize) {
         tokio::time::timeout(Duration::from_secs(3), async {
             while self.requests().len() < count {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -201,7 +201,7 @@ fn serve(
     }
 }
 
-pub(crate) fn target(url: &str, protocol: super::Protocol) -> super::RequestTarget {
+pub fn target(url: &str, protocol: super::Protocol) -> super::RequestTarget {
     super::RequestTarget {
         protocol,
         base_url: url.into(),
@@ -209,7 +209,7 @@ pub(crate) fn target(url: &str, protocol: super::Protocol) -> super::RequestTarg
         secret: zeroize::Zeroizing::new("local-test-secret".into()),
     }
 }
-pub(crate) fn request(url: &str, protocol: super::Protocol) -> super::CheckRequest {
+pub fn request(url: &str, protocol: super::Protocol) -> super::CheckRequest {
     use super::*;
     let mut parameters = vec![Parameter::model()];
     if protocol != Protocol::CustomHttp {
@@ -252,7 +252,7 @@ pub(crate) fn request(url: &str, protocol: super::Protocol) -> super::CheckReque
     }
 }
 
-pub(crate) async fn check(
+pub async fn check(
     client: &super::ModelClient,
     request: &super::CheckRequest,
 ) -> super::CheckResult {
@@ -266,4 +266,24 @@ pub(crate) async fn check(
         )
         .await
         .unwrap()
+}
+
+pub fn success(protocol: super::Protocol) -> Response {
+    match protocol {
+        super::Protocol::OpenaiResponses => Response::sse(&[
+            ("data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n",0),
+            ("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":8,\"total_tokens\":12}}}\n\n",0),
+        ]),
+        super::Protocol::Anthropic => Response::sse(&[
+            ("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4}}}\n\n",0),
+            ("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n",0),
+            ("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",0),
+            ("data: {\"type\":\"message_stop\"}\n\n",0),
+        ]),
+        _ => Response::sse(&[
+            ("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n",0),
+            ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":8,\"total_tokens\":12}}\n\n",0),
+            ("data: [DONE]\n\n",0),
+        ]),
+    }
 }

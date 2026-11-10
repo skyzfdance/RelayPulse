@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 impl ProbePolicy {
-    pub(crate) fn for_protocol(protocol: Protocol) -> Self {
+    pub fn for_protocol(protocol: Protocol) -> Self {
         Self {
             version: 2,
             parameters: flatten(default_body(protocol, "只回复 OK", 8)),
@@ -42,6 +42,10 @@ pub(super) fn decode_policy(text: &str, protocol: Protocol) -> Result<ProbePolic
     let legacy: LegacyPolicy =
         serde_json::from_value(value).map_err(|_| SiteConfigError::Storage)?;
     let mut body = default_body(protocol, &legacy.prompt, legacy.max_tokens);
+    // 保留旧配置显式保存的额度；新建默认探针不再提供此参数。
+    if protocol == Protocol::OpenaiResponses {
+        body["max_output_tokens"] = json!(legacy.max_tokens);
+    }
     append_legacy(&mut body, &legacy.parameters)?;
     Ok(ProbePolicy {
         version: 2,
@@ -70,7 +74,7 @@ fn default_body(protocol: Protocol, prompt: &str, max_tokens: u16) -> Value {
             json!({"model":"", "messages":[{"role":"user","content":prompt}], "stream":true, "max_tokens":max_tokens, "reasoning_effort":"low"})
         }
         Protocol::OpenaiResponses => {
-            json!({"model":"", "input":prompt, "stream":true, "max_output_tokens":max_tokens, "reasoning":{"effort":"low"}})
+            json!({"model":"", "input":prompt, "stream":true, "reasoning":{"effort":"low"}})
         }
         Protocol::Anthropic => {
             json!({"model":"", "messages":[{"role":"user","content":prompt}], "stream":true, "max_tokens":max_tokens})

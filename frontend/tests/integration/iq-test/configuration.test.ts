@@ -1,7 +1,7 @@
 import type { IqParticipant } from '@/types/domain/iq-test';
 
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils';
-import AntdvNext, { Button, Drawer, Select } from 'antdv-next';
+import AntdvNext, { Button, Drawer, InputNumber, Select } from 'antdv-next';
 import { createPinia, disposePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router';
@@ -86,6 +86,27 @@ async function choose(page: TestPage, label: string, value: string) {
 }
 
 describe('IQ 配置页与参与者抽屉', () => {
+  it('添加后预检等待期间显示旋转图标，返回结果后恢复可用状态', async () => {
+    const pending = deferred<IqParticipant>();
+    vi.spyOn(taskApi, 'runIqPrecheck').mockReturnValueOnce(pending.promise);
+    const page = await setup();
+    const drawer = await openDrawer(page);
+    await choose(page, '参与者模型', 'site-1/model-0-0');
+    await drawer.get('.ant-drawer-footer .ant-btn-primary').trigger('click');
+    await flushPromises();
+    const participant = page.store.participants[0]!;
+    const row = page.wrapper.get(`tr[data-row-key="${participant.id}"]`);
+    expect(row.text()).toContain('检测中');
+    expect(row.find('.animate-spin').exists()).toBe(true);
+    pending.resolve({
+      ...participant,
+      precheck: { status: 'available', message: '', checkedAtMs: Date.now() },
+    });
+    await flushPromises();
+    expect(row.text()).toContain('可用');
+    expect(row.find('.animate-spin').exists()).toBe(false);
+  });
+
   it('预览区域常驻，参数无效时提示修正，恢复有效后展示独立 IQ 参数', async () => {
     const site = sitesState.sites[0]!;
     site.policy = chatPolicy('站点探针内容', 8, { temperature: 0.9 });
@@ -187,14 +208,17 @@ describe('IQ 配置页与参与者抽屉', () => {
     expect(current.precheck.status).toBe('available');
     expect(precheck).toHaveBeenCalledTimes(2);
     expect(button(page, '开始测试').attributes('disabled')).toBeUndefined();
+    expect(page.wrapper.findComponent(InputNumber).props('value')).toBe(5);
+    expect(page.wrapper.find('[aria-label="超时秒数"]').exists()).toBe(false);
+    page.wrapper.findComponent(InputNumber).vm.$emit('update:value', 2);
+    await flushPromises();
     // 窄化冻结 mock 推进与展示计时，不冻结 Antdv 的交互和动画定时器。
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     await button(page, '开始测试').trigger('click');
     await flushPromises();
     expect(start).toHaveBeenCalledExactlyOnceWith({
       questionIds: ['iq-question-1'],
-      timeoutSeconds: 120,
-      timeoutRetryMax: 5,
+      retryMax: 2,
     });
     const run = page.store.activeRun!;
     expect(run.participants[0]!.snapshotId).toBe(current.snapshotId);

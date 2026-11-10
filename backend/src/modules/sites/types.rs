@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-pub(crate) use crate::shared::model_client::{Parameter, ParameterType, Protocol, RequestHeader};
+pub use crate::shared::model_client::{Parameter, ParameterType, Protocol, RequestHeader};
 
 #[derive(Clone, Serialize)]
-pub(crate) struct ProtocolOption {
+pub struct ProtocolOption {
     pub value: Protocol,
     pub label: &'static str,
 }
 
-pub(crate) fn protocols() -> Vec<ProtocolOption> {
+pub fn protocols() -> Vec<ProtocolOption> {
     [
         (Protocol::OpenaiCompatible, "OpenAI 兼容协议"),
         (Protocol::OpenaiResponses, "OpenAI Responses"),
@@ -22,7 +22,7 @@ pub(crate) fn protocols() -> Vec<ProtocolOption> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Connection {
+pub struct Connection {
     pub models_path: String,
     pub probe_path: String,
     pub interval_seconds: u32,
@@ -33,7 +33,7 @@ pub(crate) struct Connection {
     pub headers: Vec<RequestHeader>,
 }
 impl Connection {
-    pub(crate) fn for_protocol(protocol: Protocol) -> Self {
+    pub fn for_protocol(protocol: Protocol) -> Self {
         Self {
             models_path: "/v1/models".into(),
             probe_path: match protocol {
@@ -55,7 +55,7 @@ impl Connection {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ProbePolicy {
+pub struct ProbePolicy {
     #[serde(default = "parameter_schema_version")]
     pub version: u8,
     pub parameters: Vec<Parameter>,
@@ -66,7 +66,7 @@ fn parameter_schema_version() -> u8 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CustomRequest {
+pub struct CustomRequest {
     #[serde(default = "parameter_schema_version")]
     pub version: u8,
     pub endpoint: String,
@@ -76,7 +76,7 @@ pub(crate) struct CustomRequest {
 // 输入凭据既不实现 Debug，也不序列化。长期持有的网络凭据使用 Zeroizing。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CreateSite {
+pub struct CreateSite {
     pub name: String,
     pub protocol: Protocol,
     pub base_url: String,
@@ -85,13 +85,13 @@ pub(crate) struct CreateSite {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum CredentialAction {
+pub enum CredentialAction {
     Keep,
     Replace,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct SiteDraft {
+pub struct SiteDraft {
     pub name: String,
     pub protocol: Protocol,
     pub base_url: String,
@@ -101,7 +101,7 @@ pub(crate) struct SiteDraft {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Model {
+pub struct Model {
     pub id: String,
     pub name: String,
     pub enabled: bool,
@@ -112,7 +112,7 @@ pub(crate) struct Model {
 }
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Site {
+pub struct Site {
     pub id: String,
     pub name: String,
     pub protocol: Protocol,
@@ -130,19 +130,19 @@ pub(crate) struct Site {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RemovedModel {
+pub struct RemovedModel {
     pub id: String,
     pub name: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SyncChanges {
+pub struct SyncChanges {
     pub added: Vec<String>,
     pub removed: Vec<RemovedModel>,
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ApplySync {
+pub struct ApplySync {
     pub models: Vec<String>,
     pub added: Vec<String>,
     pub removed: Vec<String>,

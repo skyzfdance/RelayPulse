@@ -51,8 +51,6 @@ function viewOutput(entry: IqEntry) {
     >
       <dt class="text-rp-secondary">发起时间</dt>
       <dd class="m-0 tabular-nums">{{ formatIqTime(run.startedAtMs) }}</dd>
-      <dt class="text-rp-secondary">调用参数</dt>
-      <dd class="m-0">超时 {{ run.timeoutSeconds }} 秒 · 超时重试 {{ run.timeoutRetryMax }} 次</dd>
       <dt class="text-rp-secondary">参与者快照</dt>
       <dd class="m-0 flex min-w-0 flex-wrap gap-1.5">
         <a-tooltip

@@ -8,12 +8,12 @@ use crate::shared::model_client::{
 };
 use std::sync::Arc;
 
-pub(crate) struct ExecutionSnapshot {
+pub struct ExecutionSnapshot {
     pub site: Site,
     pub(super) target: RequestTarget,
 }
 impl ExecutionSnapshot {
-    pub(crate) fn resolve_probe_input(&self, model_id: &str) -> Result<CheckRequest> {
+    pub fn resolve_probe_input(&self, model_id: &str) -> Result<CheckRequest> {
         let model = require_model(&self.site, model_id)?;
         if let Some(custom) = &model.custom_request {
             return self.resolve_draft_input(model_id, custom);
@@ -37,7 +37,7 @@ impl ExecutionSnapshot {
             body,
         })
     }
-    pub(crate) fn resolve_draft_input(
+    pub fn resolve_draft_input(
         &self,
         model_id: &str,
         draft: &CustomRequest,
@@ -62,7 +62,7 @@ impl ExecutionSnapshot {
     }
 }
 /// 正式执行在整个请求及结果事务期间持有此作用域；内部锁不暴露给调用者。
-pub(crate) struct SiteExecutionScope {
+pub struct SiteExecutionScope {
     snapshot: ExecutionSnapshot,
     lease: Arc<Lease>,
 }
@@ -70,16 +70,16 @@ impl SiteExecutionScope {
     pub(super) fn new(snapshot: ExecutionSnapshot, lease: Arc<Lease>) -> Self {
         Self { snapshot, lease }
     }
-    pub(crate) fn site(&self) -> &Site {
+    pub fn site(&self) -> &Site {
         &self.snapshot.site
     }
-    pub(crate) fn models(&self) -> &[Model] {
+    pub fn models(&self) -> &[Model] {
         &self.snapshot.site.models
     }
-    pub(crate) fn resolve_probe_input(&self, model_id: &str) -> Result<CheckRequest> {
+    pub fn resolve_probe_input(&self, model_id: &str) -> Result<CheckRequest> {
         self.snapshot.resolve_probe_input(model_id)
     }
-    pub(crate) async fn blocking<T: Send + 'static>(
+    pub async fn blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> T + Send + 'static,
     ) -> std::result::Result<T, SiteError> {

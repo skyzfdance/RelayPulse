@@ -414,3 +414,75 @@ async fn invalid_and_incomplete_utf8_are_preserved_as_attachments_without_lossy_
             .contains('\u{fffd}'));
     }
 }
+
+#[test]
+fn history_readers_ignore_only_regular_finder_metadata_and_count_only_packages() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("captures");
+    fs::create_dir(&root).unwrap();
+    for (name, id) in [("record", "record"), ("unfinished.partial", "unfinished")] {
+        let dir = root.join(name);
+        fs::create_dir(&dir).unwrap();
+        fs::write(
+            dir.join("response.jsonl"),
+            format!("{{\"event\":\"record_created\",\"recordId\":\"{id}\",\"formatVersion\":2}}\n{{\"event\":\"request_started\",\"method\":\"POST\"}}\n"),
+        )
+        .unwrap();
+    }
+    let metadata = vec![0xa5; 6148];
+    fs::write(root.join(".DS_Store"), &metadata).unwrap();
+    inspect_capture_formats(&root).unwrap();
+    assert_eq!(verify_capture_history(&root).unwrap(), 2);
+    assert_eq!(fs::read(root.join(".DS_Store")).unwrap(), metadata);
+}
+
+#[test]
+fn history_readers_reject_other_files_and_finder_metadata_directories() {
+    for name in ["unknown.txt", ".hidden", ".ds_store", ".DS_Store.backup"] {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(name);
+        fs::write(&file, b"retained").unwrap();
+        assert!(inspect_capture_formats(temp.path()).is_err(), "{name}");
+        assert!(verify_capture_history(temp.path()).is_err(), "{name}");
+        assert_eq!(fs::read(file).unwrap(), b"retained");
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join(".DS_Store");
+    fs::create_dir(&dir).unwrap();
+    fs::write(
+        dir.join("response.jsonl"),
+        "{\"event\":\"request_started\"}\n",
+    )
+    .unwrap();
+    assert!(inspect_capture_formats(temp.path()).is_err());
+    assert!(verify_capture_history(temp.path()).is_err());
+    assert!(dir.join("response.jsonl").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn history_readers_reject_linked_finder_metadata_without_following_or_removing_it() {
+    for hard_link in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("captures");
+        fs::create_dir(&root).unwrap();
+        let target = temp.path().join("metadata");
+        fs::write(&target, b"retained outside capture root").unwrap();
+        let link = root.join(".DS_Store");
+        if hard_link {
+            fs::hard_link(&target, &link).unwrap();
+        } else {
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+        }
+        assert!(inspect_capture_formats(&root).is_err());
+        assert!(verify_capture_history(&root).is_err());
+        assert_eq!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            !hard_link
+        );
+        assert_eq!(fs::read(target).unwrap(), b"retained outside capture root");
+    }
+}

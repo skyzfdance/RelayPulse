@@ -1,8 +1,5 @@
 use super::*;
-use crate::{
-    modules::configuration,
-    shared::persistence::{test_support::environment, Database},
-};
+use crate::shared::persistence::{test_support::environment, Database};
 use std::sync::{Arc, Mutex};
 
 mod automatic;
@@ -14,6 +11,4 @@ mod validation;
 mod support;
 
 pub(crate) use support::FakePlatform;
-use support::{custom, service, DEV, FAILED, RECOVERED};
-
-mod operation_history;
+use support::{custom, service, FAILED, RECOVERED};

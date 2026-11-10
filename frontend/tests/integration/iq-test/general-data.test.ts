@@ -95,8 +95,7 @@ describe('IQ 回放证据手动保留', () => {
     await taskApi.runIqPrecheck(participant.snapshotId);
     const input = {
       questionIds: ['iq-question-1'],
-      timeoutSeconds: 120,
-      timeoutRetryMax: 5,
+      retryMax: 0,
     };
     const oldRun = await taskApi.startIqRun(input);
     for (let tick = 0; tick < 3; tick++) advanceIqRun();
@@ -119,6 +118,12 @@ describe('IQ 回放证据手动保留', () => {
       { content: '后续修改的题面', referenceAnswer: '后续答案', enabled: true },
       'iq-question-1',
     );
+    const nextParticipant = await taskApi.createIqParticipant({
+      modelKey: 'site-1/model-0-0',
+      preset: 'high',
+      parameters: { reasoning_effort: 'high' },
+    });
+    await taskApi.runIqPrecheck(nextParticipant.snapshotId);
     const nextRun = await taskApi.startIqRun(input);
     for (let tick = 0; tick < 3; tick++) advanceIqRun();
     const nextEvidence = await historyApi.fetchIqRun(nextRun.id);

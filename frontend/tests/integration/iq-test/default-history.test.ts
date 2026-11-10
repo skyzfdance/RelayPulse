@@ -160,8 +160,7 @@ describe('IQ 默认历史夹具', () => {
     await taskApi.runIqPrecheck(participant.snapshotId);
     const run = await taskApi.startIqRun({
       questionIds: ['iq-question-1'],
-      timeoutSeconds: 120,
-      timeoutRetryMax: 5,
+      retryMax: 0,
     });
 
     expect(run.status).toBe('running');

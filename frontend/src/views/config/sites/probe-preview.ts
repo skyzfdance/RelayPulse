@@ -15,7 +15,6 @@ export function defaultProbePolicy(protocol: SiteProtocol): ProbePolicy {
     Object.assign(body, {
       input: '只回复 OK',
       stream: true,
-      max_output_tokens: 8,
       reasoning: { effort: 'low' },
     });
   else if (protocol === 'openai-compatible' || protocol === 'anthropic')

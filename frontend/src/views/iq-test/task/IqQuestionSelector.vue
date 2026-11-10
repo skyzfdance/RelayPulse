@@ -90,7 +90,7 @@ const showTotal = (total: number) => `共 ${total} 道`;
       :row-selection="rowSelection"
       :pagination="false"
       :loading="loading"
-      :scroll="{ y: 360 }"
+      :scroll="{ y: 200 }"
       size="small"
       row-key="id"
       table-layout="fixed"
@@ -139,11 +139,11 @@ const showTotal = (total: number) => `共 ${total} 道`;
 
 <style scoped>
 .iq-question-table :deep(.ant-table-body) {
-  height: 360px;
+  height: 200px;
 }
 
 .iq-question-table :deep(.ant-table-placeholder > td) {
-  height: 360px;
+  height: 200px;
   padding-block: 0;
   vertical-align: middle;
 }

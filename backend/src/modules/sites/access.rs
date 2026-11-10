@@ -6,7 +6,7 @@ use std::{
 use tokio::sync::watch;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TaskError {
+pub enum TaskError {
     #[error("该站点正在执行其他任务，请稍后重试。")]
     Busy,
     #[error("应用正在退出，任务已取消。")]
@@ -30,7 +30,7 @@ impl State {
         self.sites.len() + self.switches.len() + usize::from(self.global)
     }
 }
-pub(crate) struct SiteAccess {
+pub struct SiteAccess {
     state: Mutex<State>,
     closing: Cancellation,
     count: watch::Sender<usize>,
@@ -97,16 +97,16 @@ impl SiteAccess {
             kind,
         }))
     }
-    pub(crate) fn cancellation(&self) -> Cancellation {
+    pub fn cancellation(&self) -> Cancellation {
         self.closing.clone()
     }
-    pub(crate) fn close(&self) {
+    pub fn close(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.closing = true;
         }
         self.closing.cancel();
     }
-    pub(crate) async fn drained(&self) {
+    pub async fn drained(&self) {
         let mut count = self.count.subscribe();
         while *count.borrow_and_update() != 0 {
             if count.changed().await.is_err() {

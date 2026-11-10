@@ -181,7 +181,7 @@ fn parameter_types_paths_and_frontend_validation_boundaries() {
         validation::endpoint("https://example.test/v1", "/images", true)
             .unwrap()
             .as_str(),
-        "https://example.test/images"
+        "https://example.test/v1/images"
     );
     for endpoint in ["//evil.test/x", "http://example.test/x", "/x\ty"] {
         assert!(validation::endpoint("https://example.test/v1", endpoint, true).is_err());
@@ -189,14 +189,23 @@ fn parameter_types_paths_and_frontend_validation_boundaries() {
 }
 
 #[test]
-fn schema_extension_preserves_existing_settings_and_isolates_environments() {
+fn complete_baseline_preserves_existing_settings_and_isolates_environments() {
     use crate::modules::{configuration, monitoring, notifications};
     let temp = tempfile::tempdir().unwrap();
     let env = environment(temp.path(), "com.relaypulse.app.dev");
     let old = Arc::new(
-        Database::open(env.paths(), &[configuration::SCHEMA, notifications::SCHEMA]).unwrap(),
+        Database::open(
+            env.paths(),
+            &[
+                configuration::SCHEMA,
+                notifications::SCHEMA,
+                SCHEMA,
+                monitoring::SCHEMA,
+            ],
+        )
+        .unwrap(),
     );
-    old.with_connection(|c|c.execute_batch("UPDATE general_settings SET history_retention_days=77; UPDATE notification_settings SET enabled=1; UPDATE notification_rules SET status=0 WHERE id='probe.model_failed';")).unwrap();
+    old.with_connection(|c|c.execute_batch("UPDATE general_settings SET history_retention_days=77; UPDATE notification_settings SET enabled=1; INSERT INTO notification_rules VALUES ('probe.model_failed',0,NULL);")).unwrap();
     drop(old);
     let migrations = [
         configuration::SCHEMA,
@@ -276,8 +285,12 @@ fn failed_site_schema_extension_rolls_back_new_tables_without_erasing_existing_d
         &[configuration::SCHEMA, notifications::SCHEMA, SCHEMA]
     )
     .is_err());
-    let db = Database::open(env.paths(), &[configuration::SCHEMA, notifications::SCHEMA]).unwrap();
-    db.with_connection(|c| {
+    let db = rusqlite::Connection::open_with_flags(
+        env.paths().data_root().join("relaypulse.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    (|c: &rusqlite::Connection| -> rusqlite::Result<()> {
         assert_eq!(
             c.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))?,
@@ -305,7 +318,7 @@ fn failed_site_schema_extension_rolls_back_new_tables_without_erasing_existing_d
             91
         );
         Ok(())
-    })
+    })(&db)
     .unwrap();
 }
 

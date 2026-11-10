@@ -14,14 +14,11 @@ import IqQuestionSelector from '@/views/iq-test/task/IqQuestionSelector.vue';
 
 const store = useIqTestStore();
 const selected = ref<string[]>([]);
-const timeout = ref<number | null>(120);
 const retries = ref<number | null>(5);
 const drawer = ref(false);
 const starting = ref(false);
 const aborting = ref(false);
-const startError = computed(() =>
-  iqStartError(selected.value, store.participants, timeout.value, retries.value),
-);
+const startError = computed(() => iqStartError(selected.value, store.participants, retries.value));
 const columns: TableProps<IqParticipant>['columns'] = [
   { title: '模型 / 站点', key: 'model' },
   { title: '推理强度', dataIndex: 'preset', key: 'preset', width: 130 },
@@ -62,8 +59,7 @@ async function start() {
   try {
     await store.start({
       questionIds: [...selected.value],
-      timeoutSeconds: timeout.value!,
-      timeoutRetryMax: retries.value!,
+      retryMax: retries.value!,
     });
   } catch {
     /* API 提供错误反馈。 */
@@ -158,7 +154,7 @@ async function remove(id: string) {
             row-key="id"
             size="small"
             :pagination="false"
-            :scroll="{ x: 430 }"
+            :scroll="{ x: 430, y: 260 }"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'model'"
@@ -172,9 +168,12 @@ async function remove(id: string) {
               >
               <template v-else-if="column.key === 'precheck'"
                 ><a-tooltip :title="record.precheck.message || '当前执行快照预检'"
-                  ><a-tag :color="precheckColors[record.precheck.status]">{{
-                    precheckLabels[record.precheck.status]
-                  }}</a-tag></a-tooltip
+                  ><a-tag :color="precheckColors[record.precheck.status]">
+                    <template v-if="record.precheck.status === 'checking'" #icon
+                      ><AppIcon name="LoadingOutlined" class="animate-spin"
+                    /></template>
+                    {{ precheckLabels[record.precheck.status] }}
+                  </a-tag></a-tooltip
                 ></template
               >
               <template v-else-if="column.key === 'action'"
@@ -211,41 +210,26 @@ async function remove(id: string) {
         </a-card>
       </div>
       <a-card title="调用参数" size="small">
-        <div class="flex flex-wrap gap-x-8 gap-y-3">
-          <label class="flex items-center gap-2"
-            ><span>超时秒数</span
-            ><a-input-number
-              v-model:value="timeout"
-              aria-label="超时秒数"
-              :min="60"
-              :max="300"
-              :status="
-                timeout === null || !Number.isInteger(timeout) || timeout < 60 || timeout > 300
-                  ? 'error'
-                  : undefined
-              "
-            /><span class="text-xs text-rp-tertiary">连续无有效输出</span></label
-          >
-          <label class="flex items-center gap-2"
-            ><span>超时重试</span
-            ><a-input-number
-              v-model:value="retries"
-              aria-label="超时重试"
-              :min="5"
-              :max="20"
-              :status="
-                retries === null || !Number.isInteger(retries) || retries < 5 || retries > 20
-                  ? 'error'
-                  : undefined
-              "
-            /><span class="text-xs text-rp-tertiary">次，不含首次，仅超时触发</span></label
-          >
-        </div>
+        <label class="flex flex-wrap items-center gap-2">
+          <span>失败重试</span>
+          <a-input-number
+            v-model:value="retries"
+            aria-label="失败重试"
+            :min="0"
+            :max="20"
+            :step="1"
+            :status="
+              retries === null || !Number.isInteger(retries) || retries < 0 || retries > 20
+                ? 'error'
+                : undefined
+            "
+          />
+          <span class="text-xs text-rp-tertiary">次，不含首次；仅请求报错时重试</span>
+        </label>
       </a-card>
       <div class="mt-6">
         <div class="flex flex-wrap items-center gap-3">
-          <a-tooltip
-            title="请选择题目、添加参与者并确保每份快照预检可用；超时须为60–300秒整数，重试须为5–20次整数。"
+          <a-tooltip title="请选择题目、添加参与者并确保每份快照预检可用。"
             ><span
               ><a-button
                 type="primary"

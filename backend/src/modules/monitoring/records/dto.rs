@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum ProbeResult {
+pub enum ProbeResult {
     Success,
     Slow,
     Failure,
@@ -11,7 +11,7 @@ pub(crate) enum ProbeResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RecordSummary {
+pub struct RecordSummary {
     pub id: String,
     pub site_name: String,
     pub model_name: String,
@@ -23,20 +23,20 @@ pub(crate) struct RecordSummary {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordListItem {
+pub struct ProbeRecordListItem {
     #[serde(flatten)]
     pub summary: RecordSummary,
     pub total_tokens: Option<u64>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordAssociationLookup {
+pub struct ProbeRecordAssociationLookup {
     pub items: Vec<ProbeRecordListItem>,
     pub missing_ids: Vec<String>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RecordsPage<T> {
+pub struct RecordsPage<T> {
     pub items: Vec<T>,
     pub total: u64,
     pub page: u64,
@@ -44,7 +44,7 @@ pub(crate) struct RecordsPage<T> {
 }
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TokenStatsSummary {
+pub struct TokenStatsSummary {
     pub probe_count: u64,
     pub reported_count: u64,
     pub total_reported_count: u64,
@@ -55,7 +55,7 @@ pub(crate) struct TokenStatsSummary {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SiteTokenStats {
+pub struct SiteTokenStats {
     pub site_id: String,
     pub site_name: String,
     #[serde(flatten)]
@@ -63,42 +63,42 @@ pub(crate) struct SiteTokenStats {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TokenStatsPage {
+pub struct TokenStatsPage {
     #[serde(flatten)]
     pub records: RecordsPage<SiteTokenStats>,
     pub summary: TokenStatsSummary,
 }
 #[derive(Debug, Serialize)]
-pub(crate) struct ProbeRecordOptions {
+pub struct ProbeRecordOptions {
     pub sites: Vec<RecordSiteOption>,
     pub models: Vec<RecordModelOption>,
 }
 #[derive(Debug, Serialize)]
-pub(crate) struct RecordSiteOption {
+pub struct RecordSiteOption {
     pub id: String,
     pub name: String,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RecordModelOption {
+pub struct RecordModelOption {
     pub name: String,
     pub site_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct RecordHeader {
+pub struct RecordHeader {
     pub name: String,
     pub value: String,
 }
 #[derive(Clone, Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordRequestSummary {
+pub struct ProbeRecordRequestSummary {
     pub method: Option<String>,
     pub body_bytes: Option<u64>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordRequestContent {
+pub struct ProbeRecordRequestContent {
     #[serde(flatten)]
     pub summary: ProbeRecordRequestSummary,
     pub headers: Option<Vec<RecordHeader>>,
@@ -106,33 +106,33 @@ pub(crate) struct ProbeRecordRequestContent {
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordResponseSummary {
+pub struct ProbeRecordResponseSummary {
     pub state: &'static str,
     pub kind: Option<&'static str>,
     pub received_bytes: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordResponseChunk {
+pub struct ProbeRecordResponseChunk {
     pub index: u64,
     pub elapsed_ms: Option<u64>,
     pub bytes: Option<u64>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordErrorResponse {
+pub struct ProbeRecordErrorResponse {
     pub body: Option<String>,
     pub body_complete: Option<bool>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordLogFile {
+pub struct ProbeRecordLogFile {
     pub path: String,
     pub can_open_directory: bool,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordResponseContent {
+pub struct ProbeRecordResponseContent {
     #[serde(flatten)]
     pub summary: ProbeRecordResponseSummary,
     pub headers: Option<Vec<RecordHeader>>,
@@ -143,7 +143,7 @@ pub(crate) struct ProbeRecordResponseContent {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordRequestInfo {
+pub struct ProbeRecordRequestInfo {
     pub endpoint: Option<String>,
     pub strategy_label: Option<String>,
     pub http_status: Option<u16>,
@@ -151,25 +151,25 @@ pub(crate) struct ProbeRecordRequestInfo {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordSlowThresholds {
+pub struct ProbeRecordSlowThresholds {
     pub first_token_ms: Option<u64>,
     pub duration_ms: Option<u64>,
 }
 #[derive(Debug, Serialize)]
-pub(crate) struct ProbeRecordSlowCheck {
+pub struct ProbeRecordSlowCheck {
     pub comparison: Option<&'static str>,
     pub triggered: bool,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordSlowEvaluation {
+pub struct ProbeRecordSlowEvaluation {
     pub status: &'static str,
     pub first_token: ProbeRecordSlowCheck,
     pub duration: ProbeRecordSlowCheck,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ProbeRecordDetail {
+pub struct ProbeRecordDetail {
     #[serde(flatten)]
     pub summary: RecordSummary,
     pub usage: Option<crate::shared::model_client::TokenUsage>,
@@ -181,6 +181,6 @@ pub(crate) struct ProbeRecordDetail {
     pub response_summary: ProbeRecordResponseSummary,
 }
 #[derive(Debug, Serialize)]
-pub(crate) struct OpenProbeRecordLogResult {
+pub struct OpenProbeRecordLogResult {
     pub message: &'static str,
 }

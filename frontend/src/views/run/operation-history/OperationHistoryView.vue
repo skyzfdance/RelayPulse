@@ -38,10 +38,11 @@ const resultOptions = [
   { label: '已取消', value: 'cancelled' },
   { label: '受阻', value: 'blocked' },
 ];
-const actionOptions = Object.entries(operationActionGroupLabels).map(([value, label]) => ({
-  label,
-  value: value as OperationActionGroup,
-}));
+const actionOptions = computed(() =>
+  [
+    ...new Set([...Object.keys(operationActionGroupLabels), ...(data.value?.actionGroups ?? [])]),
+  ].map((value) => ({ label: operationActionGroupLabels[value] ?? value, value })),
+);
 const datePresets = [
   { days: 7, label: '最近一周' },
   { days: 15, label: '最近15天' },
@@ -195,7 +196,7 @@ const resultColor: Record<OperationResult, string> = {
 };
 const sourceLabel: Record<OperationSource, string> = { system: '系统', user: '用户' };
 const labelSource = (source: OperationSource) => sourceLabel[source];
-const labelAction = (action: OperationActionGroup) => operationActionGroupLabels[action];
+const labelAction = (action: OperationActionGroup) => operationActionGroupLabels[action] ?? action;
 const labelResult = (result: OperationResult) => resultLabel[result];
 const colorResult = (result: OperationResult) => resultColor[result];
 const linksToProbeRecords = (item: OperationLogListItem) =>

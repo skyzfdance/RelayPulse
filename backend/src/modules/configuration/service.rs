@@ -1,3 +1,4 @@
+use super::actions as OperationAction;
 use super::{GeneralSettings, SettingsStore, StorageError};
 use crate::modules::operation_logs::*;
 use crate::shared::diagnostics::{DiagnosticFailure, Diagnostics, Failure, Recorder};
@@ -6,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ConfigurationError {
+pub enum ConfigurationError {
     #[error("invalid configuration input for {field}")]
     InvalidInput { field: &'static str },
     #[error("configuration storage failed: {0}")]
@@ -22,11 +23,11 @@ impl DiagnosticFailure for ConfigurationError {
     }
 }
 
-pub(crate) enum ConfigurationBoundaryFailure {
+pub enum ConfigurationBoundaryFailure {
     InvalidRequest,
 }
 
-pub(crate) struct ConfigurationService {
+pub struct ConfigurationService {
     diagnostics: Recorder,
     operation_logs: OperationRecorder,
     mutation: std::sync::Mutex<()>,
@@ -36,7 +37,7 @@ pub(crate) struct ConfigurationService {
 }
 
 impl ConfigurationService {
-    pub(crate) fn new(store: impl SettingsStore + 'static) -> Self {
+    pub fn new(store: impl SettingsStore + 'static) -> Self {
         Self {
             store: Box::new(store),
             diagnostics: Recorder::default(),
@@ -47,16 +48,16 @@ impl ConfigurationService {
         }
     }
 
-    pub(crate) fn with_diagnostics(mut self, diagnostics: Arc<Diagnostics>) -> Self {
+    pub fn with_diagnostics(mut self, diagnostics: Arc<Diagnostics>) -> Self {
         self.diagnostics = Recorder::new(diagnostics);
         self
     }
 
-    pub(crate) fn with_operation_logs(mut self, logs: Arc<OperationLogs>) -> Self {
+    pub fn with_operation_logs(mut self, logs: Arc<OperationLogs>) -> Self {
         self.operation_logs = OperationRecorder::new(logs);
         self
     }
-    pub(crate) fn record_boundary_failure(&self, failure: ConfigurationBoundaryFailure) {
+    pub fn record_boundary_failure(&self, failure: ConfigurationBoundaryFailure) {
         let reason = match failure {
             ConfigurationBoundaryFailure::InvalidRequest => "设置字段缺失、类型错误或含未知字段。",
         };
@@ -73,7 +74,7 @@ impl ConfigurationService {
             },
         ));
     }
-    pub(crate) fn record_read_failure(&self) {
+    pub fn record_read_failure(&self) {
         self.operation_logs.record_best_effort(OperationEvent::new(
             OperationAction::PageLoadFailed,
             OperationSource::User,
@@ -87,12 +88,12 @@ impl ConfigurationService {
             },
         ));
     }
-    pub(crate) fn with_changes(mut self, changes: Arc<StateChanges>) -> Self {
+    pub fn with_changes(mut self, changes: Arc<StateChanges>) -> Self {
         self.changes = changes;
         self
     }
 
-    pub(crate) fn load(&self) -> Result<GeneralSettings, ConfigurationError> {
+    pub fn load(&self) -> Result<GeneralSettings, ConfigurationError> {
         self.diagnostics.observe("configuration_load", || {
             let settings = self.store.load().map_err(ConfigurationError::Storage)?;
             // 非法的已有设置应阻止就绪，不以默认值覆盖。
@@ -102,14 +103,11 @@ impl ConfigurationService {
     }
 
     /// 仅通知保存成功，不缓存设置；消费者收到通知后读取已提交的数据。
-    pub(crate) fn subscribe(&self) -> watch::Receiver<()> {
+    pub fn subscribe(&self) -> watch::Receiver<()> {
         self.saved.subscribe()
     }
 
-    pub(crate) fn save(
-        &self,
-        settings: GeneralSettings,
-    ) -> Result<GeneralSettings, ConfigurationError> {
+    pub fn save(&self, settings: GeneralSettings) -> Result<GeneralSettings, ConfigurationError> {
         let _mutation = self.mutation.lock().unwrap_or_else(|e| e.into_inner());
         let before = self.store.load().ok();
         let result = self.diagnostics.observe("configuration_save", || {

@@ -31,7 +31,7 @@ const scenario = () => new URLSearchParams(window.location.search).get('iqScenar
 const terminal = (entry: IqEntry) => entry.status !== 'pending' && entry.status !== 'running';
 const precheckCount = new Map<string, number>();
 const snapshotAvailability = new Map<string, boolean>();
-const runScenarios = new Map<string, string | null>();
+const runScenarios = new Map<string, { scenario: string | null; retryMax: number }>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let questionTicks = 0;
 
@@ -340,8 +340,6 @@ function createHistoricalRun(definition: (typeof historicalRunDefinitions)[numbe
         ),
       ),
     ),
-    timeoutSeconds: 120,
-    timeoutRetryMax: 5,
     startedAtMs: definition.startedAtMs,
     finishedAtMs: definition.startedAtMs + definition.durationMs,
     summary: {} as IqRun['summary'],
@@ -532,24 +530,21 @@ export function advanceIqRun() {
   for (const entry of run.entries.filter(
     (entry) => entry.questionIndex === current && entry.status === 'running',
   )) {
-    if (runScenario === 'timeout' && entry.participantIndex === 0) {
-      if (questionTicks % 2 === 0) {
-        if (entry.attempt <= run.timeoutRetryMax) {
-          entry.attempt += 1;
-          entry.errorCode = 'retrying_timeout';
-          entry.errorMessage = `模拟无输出超时，正在进行第 ${entry.attempt - 1} 次重试`;
-        } else finishEntry(entry, 'timeout');
-      }
-    } else if (questionTicks >= 3 + entry.participantIndex * 2)
-      finishEntry(
-        entry,
-        runScenario === 'run-error' && entry.participantIndex === 0 ? 'error' : 'completed',
-      );
+    if (questionTicks >= 3 + entry.participantIndex * 2 + (entry.attempt - 1) * 2) {
+      const failed = runScenario?.scenario === 'run-error' && entry.participantIndex === 0;
+      if (failed && entry.attempt <= (runScenario?.retryMax ?? 0)) {
+        entry.attempt += 1;
+        entry.startedAtMs = Date.now();
+        entry.errorCode = 'retrying_request';
+        entry.errorMessage = `请求失败，正在第 ${entry.attempt - 1} / ${runScenario!.retryMax} 次重试`;
+      } else finishEntry(entry, failed ? 'error' : 'completed');
+    }
   }
   if (run.entries.filter((entry) => entry.questionIndex === current).every(terminal)) {
     if (current + 1 < run.questions.length) startQuestion(run, current + 1);
     else {
       run.status = 'completed';
+      iqState.participants = [];
       run.finishedAtMs = Date.now();
       if (timer) clearInterval(timer);
       timer = null;
@@ -788,6 +783,8 @@ registerMockHandler('start_iq_run', (args) => {
   assertAvailable(true);
   assertIdle();
   const { input } = args as { input: IqStartInput };
+  if (!Number.isInteger(input.retryMax) || input.retryMax < 0 || input.retryMax > 20)
+    validation('重试次数须为 0–20 的整数');
   if (!input.questionIds.length || new Set(input.questionIds).size !== input.questionIds.length)
     validation('请至少选择一道有效题目');
   const selected = input.questionIds.map(question);
@@ -797,18 +794,6 @@ registerMockHandler('start_iq_run', (args) => {
     iqState.participants.some((item) => item.precheck.status !== 'available')
   )
     validation('每位参与者的当前快照均须预检可用');
-  if (
-    !Number.isInteger(input.timeoutSeconds) ||
-    input.timeoutSeconds < 60 ||
-    input.timeoutSeconds > 300
-  )
-    validation('超时必须为 60–300 秒的整数');
-  if (
-    !Number.isInteger(input.timeoutRetryMax) ||
-    input.timeoutRetryMax < 5 ||
-    input.timeoutRetryMax > 20
-  )
-    validation('超时重试必须为 5–20 次的整数');
   const runId = id();
   const run: IqRun = {
     id: runId,
@@ -816,8 +801,6 @@ registerMockHandler('start_iq_run', (args) => {
     questions: clone(selected),
     participants: clone(iqState.participants),
     entries: [],
-    timeoutSeconds: input.timeoutSeconds,
-    timeoutRetryMax: input.timeoutRetryMax,
     startedAtMs: Date.now(),
     finishedAtMs: null,
     summary: {} as IqRun['summary'],
@@ -842,7 +825,7 @@ registerMockHandler('start_iq_run', (args) => {
     })),
   );
   startQuestion(run, 0);
-  runScenarios.set(run.id, scenario());
+  runScenarios.set(run.id, { scenario: scenario(), retryMax: input.retryMax });
   summarize(run);
   iqState.runs.unshift(run);
   timer = setInterval(advanceIqRun, 1000);
@@ -869,6 +852,7 @@ registerMockHandler('abort_iq_run', () => {
     }
   }
   run.status = 'aborted';
+  iqState.participants = [];
   run.finishedAtMs = Date.now();
   summarize(run);
   appendMockIqOperation('iq_run_aborted', '中止 IQ 测试', run.id);
@@ -893,7 +877,56 @@ registerMockHandler('delete_iq_runs', (args) => {
 });
 registerMockHandler('open_iq_raw_stream', (args) => {
   assertAvailable();
-  const { entryId } = args as { entryId: string };
+  const { entryId, attempt } = args as { entryId: string; attempt?: number };
   const entry = iqState.runs.flatMap((run) => run.entries).find((item) => item.id === entryId);
   if (!entry || !entry.hasRawStream || !terminal(entry)) validation('未发起调用，暂无原始流文件');
+  if (
+    attempt !== undefined &&
+    (!Number.isInteger(attempt) || attempt < 1 || attempt > entry.attempt)
+  )
+    validation('尝试次数不存在');
+});
+
+registerMockHandler('get_iq_entry_output', (args) => {
+  assertAvailable();
+  const { entryId, attempt } = args as { entryId: string; attempt?: number };
+  const entry = iqState.runs.flatMap((run) => run.entries).find((item) => item.id === entryId);
+  if (!entry || !terminal(entry)) validation('该调用不存在或尚未结束');
+  if (
+    attempt !== undefined &&
+    (!Number.isInteger(attempt) || attempt < 1 || attempt > entry.attempt)
+  )
+    validation('尝试次数不存在');
+  const selected = entry.attempt ? (attempt ?? entry.attempt) : null;
+  const previousStatus =
+    runScenarios.get(entry.runId)?.scenario === 'run-error' ? 'error' : 'timeout';
+  return {
+    entryId,
+    attempt: selected,
+    attempts: Array.from({ length: entry.attempt }, (_, index) => ({
+      attempt: index + 1,
+      status: index + 1 === entry.attempt ? entry.status : previousStatus,
+      startedAtMs: entry.startedAtMs,
+      finishedAtMs: entry.finishedAtMs,
+      firstTokenMs: entry.firstTokenMs,
+      totalTimeMs: entry.totalTimeMs,
+      statusCode: 200,
+      errorCode: entry.errorCode,
+      bodyComplete: entry.status === 'completed',
+      streamBytes: 200,
+      usage: { inputTokens: entry.inputTokens, outputTokens: entry.outputTokens },
+    })),
+    parts:
+      entry.status === 'completed'
+        ? [
+            {
+              kind: 'text',
+              text: '## 模拟回答\n\n这是浏览器演示数据。实际桌面回放读取本地保存的原始输出。',
+            },
+          ]
+        : [],
+    encryptedReasoning: false,
+    parsingComplete: true,
+    rawResponse: null,
+  };
 });

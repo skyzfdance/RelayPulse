@@ -1,5 +1,6 @@
 use super::*;
 use crate::shared::persistence::{test_support::environment, Database};
+use crate::test_actions::actions as OperationAction;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -24,7 +25,7 @@ fn event(
     at: i64,
     source: OperationSource,
     result: OperationResult,
-    action: OperationAction,
+    action: relaypulse_operations::ActionDefinition,
 ) -> OperationEvent {
     let mut event = OperationEvent::new(
         action,
@@ -131,11 +132,11 @@ async fn filters_count_before_pagination_stable_order_and_page_clamping() {
     assert_eq!(last.items.len(), 5);
     let mut q = query();
     q.source = vec![OperationSource::User, OperationSource::System];
-    q.actions = vec![OperationActionGroup::Update];
+    q.actions = vec![String::from("update")];
     q.result = vec![OperationResult::Failure, OperationResult::Cancelled];
     let filtered = logs.query(q).await.unwrap();
     assert_eq!(filtered.total, 5);
-    assert_eq!(filtered.items[0].action_group, OperationActionGroup::Update);
+    assert_eq!(filtered.items[0].action_group, String::from("update"));
     let mut q = query();
     q.result = vec![OperationResult::Blocked];
     q.page = 99;
@@ -274,9 +275,16 @@ fn failures_are_isolated_no_recursive_writes_and_database_is_released() {
 async fn front_end_failure_bridge_keeps_independent_attempts_and_only_records_user_failures() {
     let temp = tempfile::tempdir().unwrap();
     let (_, logs) = setup(temp.path());
-    logs.report_read_failure(ReadFailureTarget::Route, ReadFailureKind::Page);
-    logs.report_read_failure(ReadFailureTarget::Route, ReadFailureKind::Page);
-    logs.report_read_failure(ReadFailureTarget::SiteDetail, ReadFailureKind::Detail);
+    for n in 0..3 {
+        logs.record(event(
+            &format!("failure-{n}"),
+            n,
+            OperationSource::User,
+            OperationResult::Failure,
+            OperationAction::PageLoadFailed,
+        ))
+        .unwrap();
+    }
     let page = logs.query(query()).await.unwrap();
     assert_eq!(page.total, 3);
     assert!(page.items.iter().all(
@@ -375,11 +383,12 @@ fn content_discriminants_and_fields_match_the_frontend_contract() {
             vec!["kind", "activity", "target", "reason"],
         ),
         (
-            OperationLogContent::ProbeFailure {
-                reason: "no records".into(),
+            OperationLogContent::Presentation {
+                format: "fixture.report".into(),
+                fields: vec![],
             },
-            "probe_failure",
-            vec!["kind", "reason"],
+            "presentation",
+            vec!["kind", "format", "fields"],
         ),
     ];
     for (content, kind, mut keys) in variants {
@@ -400,44 +409,16 @@ fn content_discriminants_and_fields_match_the_frontend_contract() {
     }
 }
 #[test]
-fn appending_operation_history_preserves_an_existing_user_database() {
-    use crate::modules::{configuration, monitoring, notifications, sites};
+fn baseline_extension_requires_explicit_conversion() {
     let temp = tempfile::tempdir().unwrap();
     let env = environment(temp.path(), "com.relaypulse.app.dev");
-    let existing = [
-        configuration::SCHEMA,
-        notifications::SCHEMA,
-        sites::SCHEMA,
-        monitoring::SCHEMA,
-    ];
-    let database = Database::open(env.paths(), &existing).unwrap();
-    database.with_connection(|c|{c.execute("UPDATE general_settings SET history_retention_days=90,theme='dark' WHERE singleton=1",[])?;Ok(())}).unwrap();
-    drop(database);
-    let database = Database::open(
-        env.paths(),
-        &[existing[0], existing[1], existing[2], existing[3], SCHEMA],
-    )
-    .unwrap();
-    assert_eq!(
-        database
-            .with_connection(|c| c.query_row(
-                "SELECT history_retention_days,theme FROM general_settings WHERE singleton=1",
-                [],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-            ))
-            .unwrap(),
-        (90, "dark".into())
-    );
-    assert_eq!(
-        database
-            .with_connection(|c| c.query_row(
-                "SELECT name FROM schema_migrations WHERE position=4",
-                [],
-                |r| r.get::<_, String>(0)
-            ))
-            .unwrap(),
-        "operation_history"
-    );
+    drop(Database::open(env.paths(), &[SCHEMA]).unwrap());
+    let extra = crate::shared::persistence::Migration {
+        name: "unknown",
+        sql: "CREATE TABLE extra(id TEXT);",
+    };
+    assert!(Database::open(env.paths(), &[SCHEMA, extra]).is_err());
+    drop(Database::open(env.paths(), &[SCHEMA]).unwrap());
 }
 #[cfg(unix)]
 #[tokio::test]

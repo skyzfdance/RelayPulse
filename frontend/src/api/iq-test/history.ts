@@ -1,4 +1,4 @@
-import type { IqHistoryFilterOption, IqRun } from '@/types/domain/iq-test';
+import type { IqEntryOutput, IqHistoryFilterOption, IqRun } from '@/types/domain/iq-test';
 
 import { callBackend } from '../call-backend';
 
@@ -27,10 +27,19 @@ export function deleteIqRuns(ids: string[]): Promise<void> {
   );
 }
 
-export function openIqRawFile(entryId: string): Promise<void> {
+export function openIqRawFile(entryId: string, attempt?: number): Promise<void> {
   return callBackend<void>(
     'open_iq_raw_stream',
-    { entryId },
+    { entryId, ...(attempt === undefined ? {} : { attempt }) },
     { successFeedback: 'none', failFeedback: 'message' },
+  );
+}
+
+/** 正文按需读取，使用保存的逐次证据，不重新请求模型。 */
+export function fetchIqEntryOutput(entryId: string, attempt?: number): Promise<IqEntryOutput> {
+  return callBackend<IqEntryOutput>(
+    'get_iq_entry_output',
+    { entryId, ...(attempt === undefined ? {} : { attempt }) },
+    { successFeedback: 'none', failFeedback: 'none' },
   );
 }

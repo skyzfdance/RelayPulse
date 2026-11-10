@@ -13,14 +13,24 @@ mod sqlite_tests;
 #[path = "../../../tests/unit/monitoring/health.rs"]
 mod tests;
 mod transitions;
-pub(crate) use activity::ProbeActivity;
-pub(crate) use health::{next_due_at, summarize, Health, HealthState};
-pub(crate) use records::{
+pub use activity::ProbeActivity;
+pub use health::{next_due_at, summarize, Health, HealthState};
+pub use records::{
     OpenProbeRecordLogResult, ProbeRecordAssociationLookup, ProbeRecordDetail, ProbeRecordListItem,
     ProbeRecordOperation, ProbeRecordOptions, ProbeRecordRequestContent,
     ProbeRecordResponseContent, ProbeRecordsQuery, RecordError, RecordsPage, TokenStatsPage,
     TokenStatsQuery,
 };
-pub(crate) use service::{Monitoring, MonitoringError};
-pub(crate) use sqlite::SCHEMA;
-pub(crate) use transitions::{HealthChange, HealthObserver, HealthTransition};
+pub use service::{Monitoring, MonitoringError};
+pub use sqlite::SCHEMA;
+pub use transitions::{HealthChange, HealthObserver, HealthTransition};
+
+pub mod notification_definitions;
+
+mod actions;
+
+pub use records::verify_capture_history;
+
+pub use records::inspect_capture_formats;
+
+pub mod operation_history;

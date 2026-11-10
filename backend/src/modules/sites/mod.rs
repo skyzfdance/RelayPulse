@@ -2,6 +2,7 @@
 mod access;
 mod error;
 mod inputs;
+mod iq_access;
 mod policy;
 mod service;
 mod sqlite;
@@ -15,22 +16,23 @@ use crate::shared::{
     diagnostics::{DiagnosticFailure, Failure},
     persistence::PersistenceError,
 };
-pub(crate) use access::{SiteAccess, TaskError};
-pub(crate) use error::SiteError;
-pub(crate) use inputs::{ExecutionSnapshot, SiteExecutionScope};
-pub(crate) use service::{CommitObserver, SiteCommit, SiteMutation, SiteService};
+pub use access::{SiteAccess, TaskError};
+pub use error::SiteError;
+pub use inputs::{ExecutionSnapshot, SiteExecutionScope};
+pub use iq_access::{IqConnectionSnapshot, IqCredentialAccess, IqModelSource};
+pub use service::{CommitObserver, SiteCommit, SiteMutation, SiteService};
 use sqlite::require_model;
 // 以下两种导入只会编译其中一种：测试时向整个 crate 开放 SiteStore，供其他模块的测试准备数据；
 // 非测试构建仅在 sites 内部使用，外部通过 SiteService 操作，避免绕过任务互斥和同步协调。
 #[cfg(test)]
-pub(crate) use sqlite::SiteStore;
+pub use sqlite::SiteStore;
 #[cfg(not(test))]
 use sqlite::SiteStore;
-pub(crate) use sqlite::SCHEMA;
-pub(crate) use types::*;
+pub use sqlite::SCHEMA;
+pub use types::*;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum SiteConfigError {
+pub enum SiteConfigError {
     #[error("{message}")]
     Invalid {
         field: &'static str,
@@ -65,8 +67,8 @@ impl DiagnosticFailure for SiteConfigError {
         }
     }
 }
-pub(crate) type Result<T> = std::result::Result<T, SiteConfigError>;
-pub(crate) fn invalid(field: &'static str, message: &'static str) -> SiteConfigError {
+pub type Result<T> = std::result::Result<T, SiteConfigError>;
+pub fn invalid(field: &'static str, message: &'static str) -> SiteConfigError {
     SiteConfigError::Invalid { field, message }
 }
 

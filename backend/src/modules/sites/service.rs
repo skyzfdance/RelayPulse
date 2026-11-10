@@ -11,7 +11,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 use zeroize::Zeroizing;
 type ServiceResult<T> = std::result::Result<T, SiteError>;
 
-pub(crate) enum SiteMutation {
+pub enum SiteMutation {
     Basic(SiteDraft),
     Connection(Connection),
     Enabled(bool),
@@ -20,22 +20,22 @@ pub(crate) enum SiteMutation {
     ModelEnabled(String, bool),
     Policy(Option<String>, Option<ProbePolicy>, Option<CustomRequest>),
 }
-pub(crate) enum SiteCommit {
+pub enum SiteCommit {
     Created(Box<Site>),
     Changed(Box<(Site, Site)>),
     Deleted(Box<Site>),
     Reordered(Vec<Site>, Vec<Site>),
 }
-pub(crate) type CommitObserver = Box<dyn FnOnce(SiteCommit) + Send + 'static>;
-pub(crate) struct SiteService {
-    store: SiteStore,
+pub type CommitObserver = Box<dyn FnOnce(SiteCommit) + Send + 'static>;
+pub struct SiteService {
+    pub(super) store: SiteStore,
     client: Arc<ModelClient>,
     access: Arc<SiteAccess>,
     pending: SyncChecks,
     changes: Arc<StateChanges>,
 }
 impl SiteService {
-    pub(crate) fn new(
+    pub fn new(
         database: Arc<crate::shared::persistence::Database>,
         client: Arc<ModelClient>,
         access: Arc<SiteAccess>,
@@ -48,24 +48,24 @@ impl SiteService {
             changes: Arc::default(),
         }
     }
-    pub(crate) fn with_changes(mut self, changes: Arc<StateChanges>) -> Self {
+    pub fn with_changes(mut self, changes: Arc<StateChanges>) -> Self {
         self.changes = changes;
         self
     }
-    pub(crate) fn changes(&self) -> Arc<StateChanges> {
+    pub fn changes(&self) -> Arc<StateChanges> {
         self.changes.clone()
     }
-    pub(crate) fn check_ready(&self) -> ServiceResult<()> {
+    pub fn check_ready(&self) -> ServiceResult<()> {
         self.store.list()?;
         Ok(())
     }
-    pub(crate) fn cancellation(&self) -> Cancellation {
+    pub fn cancellation(&self) -> Cancellation {
         self.access.cancellation()
     }
-    pub(crate) fn close(&self) {
+    pub fn close(&self) {
         self.access.close();
     }
-    pub(crate) async fn drained(&self) {
+    pub async fn drained(&self) {
         self.access.drained().await;
     }
     async fn db<T: Send + 'static>(
@@ -98,29 +98,23 @@ impl SiteService {
         result
     }
 
-    pub(crate) async fn list(&self) -> ServiceResult<Vec<Site>> {
+    pub async fn list(&self) -> ServiceResult<Vec<Site>> {
         let store = self.store.clone();
         self.db(move || store.list()).await
     }
-    pub(crate) async fn get(&self, id: String) -> ServiceResult<Site> {
+    pub async fn get(&self, id: String) -> ServiceResult<Site> {
         let store = self.store.clone();
         self.db(move || store.get(&id)).await
     }
-    pub(crate) async fn execution_snapshot(
-        &self,
-        site_id: String,
-    ) -> ServiceResult<ExecutionSnapshot> {
+    pub async fn execution_snapshot(&self, site_id: String) -> ServiceResult<ExecutionSnapshot> {
         let store = self.store.clone();
         self.db(move || store.execution_snapshot(&site_id)).await
     }
-    pub(crate) async fn begin_execution(
-        &self,
-        site_id: String,
-    ) -> ServiceResult<SiteExecutionScope> {
+    pub async fn begin_execution(&self, site_id: String) -> ServiceResult<SiteExecutionScope> {
         let lease = self.access.acquire(Some(&site_id))?;
         self.execution_scope(site_id, lease).await
     }
-    pub(crate) async fn begin_scheduled_execution(
+    pub async fn begin_scheduled_execution(
         &self,
         site_id: String,
     ) -> ServiceResult<SiteExecutionScope> {
@@ -139,7 +133,7 @@ impl SiteService {
             .map_err(|_| SiteError::Worker)??;
         Ok(SiteExecutionScope::new(snapshot, lease))
     }
-    pub(crate) async fn create(
+    pub async fn create(
         &self,
         input: CreateSite,
         observed: CommitObserver,
@@ -176,10 +170,10 @@ impl SiteService {
         .await
     }
     #[cfg(test)]
-    pub(crate) async fn mutate(&self, id: String, change: SiteMutation) -> ServiceResult<Site> {
+    pub async fn mutate(&self, id: String, change: SiteMutation) -> ServiceResult<Site> {
         self.mutate_observed(id, change, Box::new(|_| {})).await
     }
-    pub(crate) async fn mutate_observed(
+    pub async fn mutate_observed(
         &self,
         id: String,
         change: SiteMutation,
@@ -228,7 +222,7 @@ impl SiteService {
         })
         .await
     }
-    pub(crate) async fn delete(&self, id: String, observed: CommitObserver) -> ServiceResult<()> {
+    pub async fn delete(&self, id: String, observed: CommitObserver) -> ServiceResult<()> {
         self.with_access(Some(id.clone()), |lease| async move {
             let store = self.store.clone();
             let target = id.clone();
@@ -247,11 +241,7 @@ impl SiteService {
         })
         .await
     }
-    pub(crate) async fn reorder(
-        &self,
-        ids: Vec<String>,
-        observed: CommitObserver,
-    ) -> ServiceResult<()> {
+    pub async fn reorder(&self, ids: Vec<String>, observed: CommitObserver) -> ServiceResult<()> {
         self.with_access(None, |lease| async move {
             let store = self.store.clone();
             let changes = self.changes.clone();
@@ -273,11 +263,7 @@ impl SiteService {
         })
         .await
     }
-    pub(crate) async fn check_sync(
-        &self,
-        id: String,
-        names: Vec<String>,
-    ) -> ServiceResult<SyncChanges> {
+    pub async fn check_sync(&self, id: String, names: Vec<String>) -> ServiceResult<SyncChanges> {
         self.with_access(Some(id.clone()), |_lease| async move {
             self.pending.forget(&id)?;
             let snapshot = self.execution_snapshot(id.clone()).await?;
@@ -295,7 +281,7 @@ impl SiteService {
         })
         .await
     }
-    pub(crate) async fn apply_sync(
+    pub async fn apply_sync(
         &self,
         id: String,
         input: ApplySync,
@@ -332,7 +318,7 @@ impl SiteService {
         })
         .await
     }
-    pub(crate) async fn test_draft(
+    pub async fn test_draft(
         &self,
         id: String,
         model_id: String,

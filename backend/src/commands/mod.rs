@@ -2,6 +2,7 @@
 mod configuration;
 mod diagnostics;
 mod error;
+mod iq_test;
 mod notifications;
 mod operation_logs;
 mod panel;
@@ -10,6 +11,21 @@ mod sites;
 
 pub(crate) fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.invoke_handler(tauri::generate_handler![
+        iq_test::get_iq_test_snapshot,
+        iq_test::save_iq_question,
+        iq_test::delete_iq_question,
+        iq_test::set_iq_question_enabled,
+        iq_test::create_iq_participant_snapshot,
+        iq_test::refresh_iq_participant_snapshot,
+        iq_test::run_iq_precheck,
+        iq_test::remove_iq_participant,
+        iq_test::start_iq_run,
+        iq_test::abort_iq_run,
+        iq_test::get_iq_history_filter_options,
+        iq_test::get_iq_run_details,
+        iq_test::get_iq_entry_output,
+        iq_test::delete_iq_runs,
+        iq_test::open_iq_raw_stream,
         operation_logs::get_operation_logs,
         operation_logs::get_operation_log_detail,
         operation_logs::report_operation_read_failure,

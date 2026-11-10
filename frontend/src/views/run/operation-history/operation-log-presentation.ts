@@ -135,12 +135,25 @@ const fields: Record<Context, Record<string, FieldDescription>> = {
   order: { id: { label: '站点标识' }, name: { label: '站点名称' } },
 };
 
-function rootContext(action: OperationAction): Context {
-  if (action === 'general_settings_updated') return 'general';
-  if (action.startsWith('notification_')) return 'notification';
-  if (action === 'model_deleted') return 'model';
-  return 'site';
-}
+// 仅给既有配置事件解释历史路径；其他业务直接使用其保存的标签和值。
+const rootContexts = new Map<OperationAction, Context>([
+  ['general_settings_updated', 'general'],
+  ['notification_settings_updated', 'notification'],
+  ['notification_template_updated', 'notification'],
+  ['notification_permission_requested', 'notification'],
+  ['model_deleted', 'model'],
+  ['site_created', 'site'],
+  ['site_updated', 'site'],
+  ['site_deleted', 'site'],
+  ['site_reordered', 'site'],
+  ['site_status_changed', 'site'],
+  ['model_created', 'site'],
+  ['model_status_changed', 'site'],
+  ['models_synchronized', 'site'],
+  ['probe_config_saved', 'site'],
+  ['test_draft_saved', 'site'],
+  ['manual_probe', 'site'],
+]);
 
 /** 只解释已知配置字段；参数原文、模板正文及未知字段不做猜测性翻译。 */
 function describeField(
@@ -151,7 +164,9 @@ function describeField(
   if (!path && action === 'notification_permission_requested') {
     return { label: '授权结果', values: permission };
   }
-  let context = rootContext(action);
+  const rootContext = rootContexts.get(action);
+  if (!rootContext) return { label: path };
+  let context: Context = rootContext;
   let prefix = '';
   const labels: string[] = [];
   let description: FieldDescription = { label: path };
@@ -241,7 +256,11 @@ export function presentOperationContent(
       }),
     };
   }
-  if (content.kind === 'snapshot' || content.kind === 'deletion') {
+  if (
+    content.kind === 'snapshot' ||
+    content.kind === 'deletion' ||
+    content.kind === 'presentation'
+  ) {
     for (const field of content.fields) {
       remember(field.label, field.value, 'sensitive' in field && field.sensitive);
     }
@@ -249,7 +268,10 @@ export function presentOperationContent(
     return {
       ...content,
       fields: content.fields.map((field) => {
-        const description = describeField(field.label, action, names);
+        const description =
+          content.kind === 'presentation'
+            ? { label: field.label }
+            : describeField(field.label, action, names);
         return {
           ...field,
           label: description.label,

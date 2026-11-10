@@ -25,6 +25,33 @@ fn maps_all_native_authorization_states_and_preserves_failures() {
     ));
 }
 
+#[tokio::test]
+async fn an_iq_notification_click_preserves_its_run_action() {
+    use std::sync::{Arc, Mutex};
+    let opened = Arc::new(Mutex::new(vec![]));
+    let captured = opened.clone();
+    let platform = SystemNotifications {
+        open_action: Arc::new(move |action| captured.lock().unwrap().push(action)),
+        responses: Mutex::new(Some(tokio::task::JoinSet::new())),
+    };
+    let action = NotificationAction {
+        target: "iq_run".into(),
+        parameters: std::collections::BTreeMap::from([("runId".into(), "selected-run".into())]),
+    };
+    platform.watch_response(
+        action.clone(),
+        std::future::ready(Ok(response(
+            "com.apple.UNNotificationDefaultActionIdentifier",
+            None,
+        ))),
+    );
+    let mut tasks = platform.responses.lock().unwrap().take().unwrap();
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap();
+    }
+    assert_eq!(*opened.lock().unwrap(), vec![action]);
+}
+
 fn response(
     action: &str,
     close_reason: Option<mac_usernotifications::CloseReason>,
@@ -47,7 +74,7 @@ async fn only_clicking_the_notification_body_opens_probe_records() {
     let opened = Arc::new(AtomicUsize::new(0));
     let counter = opened.clone();
     let platform = SystemNotifications {
-        open_records: Arc::new(move || {
+        open_action: Arc::new(move |_action| {
             counter.fetch_add(1, Ordering::SeqCst);
         }),
         responses: Mutex::new(Some(tokio::task::JoinSet::new())),
@@ -61,7 +88,13 @@ async fn only_clicking_the_notification_body_opens_probe_records() {
         response("", Some(CloseReason::Expired)),
         response("unrecognized-action", None),
     ] {
-        platform.watch_response(std::future::ready(Ok(response)));
+        platform.watch_response(
+            NotificationAction {
+                target: "probe_records".into(),
+                parameters: Default::default(),
+            },
+            std::future::ready(Ok(response)),
+        );
     }
     let mut tasks = platform.responses.lock().unwrap().take().unwrap();
     while let Some(result) = tasks.join_next().await {
@@ -74,11 +107,17 @@ async fn only_clicking_the_notification_body_opens_probe_records() {
 async fn exit_cancels_pending_responses_without_waiting_for_a_click() {
     use std::sync::{Arc, Mutex};
     let platform = SystemNotifications {
-        open_records: Arc::new(|| panic!("退出后不能打开窗口")),
+        open_action: Arc::new(|_action| panic!("退出后不能打开窗口")),
         responses: Mutex::new(Some(tokio::task::JoinSet::new())),
     };
     let (send, receive) = tokio::sync::oneshot::channel();
-    platform.watch_response(async move { receive.await.unwrap() });
+    platform.watch_response(
+        NotificationAction {
+            target: "probe_records".into(),
+            parameters: Default::default(),
+        },
+        async move { receive.await.unwrap() },
+    );
     tokio::time::timeout(std::time::Duration::from_secs(1), platform.stop())
         .await
         .unwrap();
@@ -89,9 +128,15 @@ async fn exit_cancels_pending_responses_without_waiting_for_a_click() {
         )))
         .is_err());
     assert!(platform.responses.lock().unwrap().is_none());
-    platform.watch_response(std::future::ready(Ok(response(
-        "com.apple.UNNotificationDefaultActionIdentifier",
-        None,
-    ))));
+    platform.watch_response(
+        NotificationAction {
+            target: "probe_records".into(),
+            parameters: Default::default(),
+        },
+        std::future::ready(Ok(response(
+            "com.apple.UNNotificationDefaultActionIdentifier",
+            None,
+        ))),
+    );
     platform.stop().await;
 }

@@ -75,9 +75,14 @@ fn new_named_step_is_recorded_and_failure_rolls_back_its_changes() {
         name: "example_notes",
         sql: "CREATE TABLE notes (value TEXT);",
     };
-    drop(Database::open(env.paths(), &[EXAMPLE, next]).unwrap());
+    assert!(Database::open(env.paths(), &[EXAMPLE, next]).is_err());
+    let changed = Migration {
+        name: EXAMPLE.name,
+        sql: "CREATE TABLE example(value INTEGER);",
+    };
+    assert!(Database::open(env.paths(), &[changed]).is_err());
     assert!(matches!(
-        Database::open(env.paths(), &[EXAMPLE]),
+        Database::open(env.paths(), &[next]),
         Err(PersistenceError::UnsupportedSchema(_))
     ));
     assert!(matches!(
@@ -163,4 +168,29 @@ fn database_hard_links_are_rejected_before_opening() {
         Err(PersistenceError::PathConflict(_))
     ));
     assert_eq!(fs::read(target).unwrap(), before);
+}
+#[test]
+fn refusing_legacy_wal_schema_does_not_create_or_change_any_source_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let c = rusqlite::Connection::open(root.join("relaypulse.sqlite3")).unwrap();
+    c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE legacy(value TEXT); INSERT INTO legacy VALUES ('retained');").unwrap();
+    let snapshot = || -> std::collections::BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (
+                    entry.file_name().to_str().unwrap().to_owned(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    };
+    let before = snapshot();
+    assert!(Database::inspect_directory(&root, &[]).is_err());
+    assert_eq!(snapshot(), before);
+    assert!(Database::open_directory(&root, &[]).is_err());
+    assert_eq!(snapshot(), before);
+    drop(c);
 }

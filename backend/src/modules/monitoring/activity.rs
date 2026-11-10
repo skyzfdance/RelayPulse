@@ -6,7 +6,7 @@ use std::{
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct ProbeProgress {
+pub struct ProbeProgress {
     pub site_id: String,
     pub model_ids: Vec<String>,
     pub completed_ids: Vec<String>,
@@ -14,13 +14,13 @@ pub(crate) struct ProbeProgress {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ProbeCompletion {
+pub struct ProbeCompletion {
     pub progress: ProbeProgress,
     pub completed_at_ms: u64,
 }
 
 #[derive(Default, Clone)]
-pub(crate) struct ProbeActivity {
+pub struct ProbeActivity {
     pub active: HashMap<u64, ProbeProgress>,
     pub recent: HashMap<String, ProbeCompletion>,
     next_id: u64,

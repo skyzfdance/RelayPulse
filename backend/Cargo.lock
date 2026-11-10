@@ -3018,17 +3018,24 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relaypulse"
-version = "2.0.1"
+version = "3.0.0"
 dependencies = [
  "flate2",
  "futures-util",
  "mac-usernotifications",
  "os_info",
+ "relaypulse-diagnostics",
+ "relaypulse-model-client",
+ "relaypulse-notifications",
+ "relaypulse-operations",
+ "relaypulse-runtime",
+ "relaypulse-storage",
  "reqwest 0.12.28",
  "rusqlite",
  "rusqlite_migration",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-nspanel",
@@ -3043,6 +3050,92 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "relaypulse-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "relaypulse-runtime",
+ "relaypulse-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "relaypulse-model-client"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "os_info",
+ "relaypulse-runtime",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "relaypulse-notifications"
+version = "0.1.0"
+dependencies = [
+ "relaypulse-diagnostics",
+ "relaypulse-storage",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "relaypulse-operations"
+version = "0.1.0"
+dependencies = [
+ "relaypulse-runtime",
+ "relaypulse-storage",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "relaypulse-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+]
+
+[[package]]
+name = "relaypulse-storage"
+version = "0.1.0"
+dependencies = [
+ "relaypulse-runtime",
+ "rusqlite",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]

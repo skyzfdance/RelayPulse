@@ -1,7 +1,7 @@
-//! 每完成一个业务边界，再在这里声明对应模块。
+//! RelayPulse 业务模块；公共能力通过独立 SDK 接入。
 pub(crate) mod configuration;
-pub(crate) mod notifications;
-pub(crate) mod sites;
-
+pub(crate) mod iq_test;
 pub(crate) mod monitoring;
-pub(crate) mod operation_logs;
+pub(crate) mod sites;
+pub(crate) use relaypulse_notifications::modules::notifications;
+pub(crate) use relaypulse_operations::modules::operation_logs;

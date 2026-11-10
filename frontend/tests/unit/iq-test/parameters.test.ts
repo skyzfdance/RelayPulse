@@ -44,19 +44,18 @@ describe('IQ 独立参数与开始门槛', () => {
       iqParameterError([{ key: 'temperature', value: 'NaN', type: 'number', enabled: true }]),
     ).toBeTruthy();
   });
-  it.each([null, 59, 301, 120.5])('超时 %s 阻止开始', (value) => {
-    expect(iqStartError(['q'], available, value, 5)).toContain('超时');
-  });
-  it.each([null, 4, 21, 5.5])('重试 %s 阻止开始', (value) => {
-    expect(iqStartError(['q'], available, 120, value)).toContain('重试');
-  });
-  it('整数边界可用，缺题/参与者/未完成预检各自阻止开始', () => {
-    expect(iqStartError(['q'], available, 60, 5)).toBeUndefined();
-    expect(iqStartError(['q'], available, 300, 20)).toBeUndefined();
-    expect(iqStartError([], available, 120, 5)).toBeTruthy();
-    expect(iqStartError(['q'], [], 120, 5)).toBeTruthy();
+  it('缺题、参与者或未完成预检阻止开始，不再提供执行时限', () => {
+    expect(iqStartError(['q'], available, 0)).toBeUndefined();
+    expect(iqStartError([], available, 5)).toBeTruthy();
+    expect(iqStartError(['q'], [], 5)).toBeTruthy();
     expect(
-      iqStartError(['q'], [{ modelName: 'A', precheck: { status: 'checking' } }], 120, 5),
+      iqStartError(['q'], [{ modelName: 'A', precheck: { status: 'checking' } }], 5),
     ).toContain('A');
+  });
+  it('重试次数为非负整数，0 表示不重试，且与等待时长无关', () => {
+    for (const retries of [0, 5, 20])
+      expect(iqStartError(['q'], available, retries)).toBeUndefined();
+    for (const retries of [null, -1, 1.5, 21, NaN])
+      expect(iqStartError(['q'], available, retries)).toContain('重试次数');
   });
 });

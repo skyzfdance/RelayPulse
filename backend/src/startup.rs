@@ -1,11 +1,9 @@
 //! 启动编排：环境校验 → 资源组装 → 通用设置、通知与站点配置校验 → 宿主交接。
+use crate::application::startup_history::{defer_startup_failure, StartupFailureStage};
 use crate::{
     application::composition::{self, Application},
     modules::{
-        configuration::ConfigurationError,
-        notifications::NotificationError,
-        operation_logs::{defer_startup_failure, StartupFailureStage},
-        sites::SiteError,
+        configuration::ConfigurationError, notifications::NotificationError, sites::SiteError,
     },
     shared::{
         diagnostics::{Diagnostics, Failure, Outcome},
@@ -28,6 +26,8 @@ pub(crate) enum StartupError {
     Notifications(#[from] NotificationError),
     #[error("site initialization blocked: {0}")]
     Sites(#[from] SiteError),
+    #[error("IQ initialization blocked: {0}")]
+    IqTest(#[from] crate::modules::iq_test::IqError),
 }
 
 pub(crate) enum StartupState {
@@ -47,15 +47,45 @@ pub(crate) fn initialize(
         Ok(environment) => environment,
         Err(error) => return (StartupState::Blocked(error.into()), DiagnosticsState(None)),
     };
+    if let Err(error) = crate::shared::persistence::Database::inspect_directory(
+        environment.paths().data_root(),
+        composition::BASELINE,
+    ) {
+        return (
+            StartupState::Blocked(StartupError::Persistence(error)),
+            DiagnosticsState(None),
+        );
+    }
+    if let Err(error) = crate::modules::iq_test::inspect_evidence_formats(
+        &environment.paths().data_root().join("iq-test"),
+    ) {
+        return (
+            StartupState::Blocked(StartupError::IqTest(error)),
+            DiagnosticsState(None),
+        );
+    }
+    if crate::modules::monitoring::inspect_capture_formats(
+        &environment.paths().data_root().join("probe-records"),
+    )
+    .is_err()
+    {
+        return (
+            StartupState::Blocked(StartupError::Persistence(
+                PersistenceError::UnsupportedSchema("unsupported or corrupt probe evidence format"),
+            )),
+            DiagnosticsState(None),
+        );
+    }
     let startup_root = environment.paths().data_root().to_owned();
     let diagnostics = composition::diagnostics(&environment);
     diagnostics.record_best_effort("startup", Outcome::Started);
     let state = match prepare(environment, diagnostics.clone()) {
         Ok(application) => {
             diagnostics.record_best_effort("startup", Outcome::Succeeded);
-            application
-                .operation_logs
-                .record_startup_ready(application.environment.paths());
+            crate::application::startup_history::record_startup_ready(
+                &application.operation_logs,
+                application.environment.paths(),
+            );
             StartupState::Ready(application)
         }
         Err((error, stage)) => {
@@ -65,6 +95,7 @@ pub(crate) fn initialize(
                 StartupError::Configuration(_) => StartupFailureStage::Configuration,
                 StartupError::Notifications(_) => StartupFailureStage::Notifications,
                 StartupError::Sites(_) => StartupFailureStage::Sites,
+                StartupError::IqTest(_) => StartupFailureStage::IqTest,
                 StartupError::Environment(_) => {
                     return (
                         StartupState::Blocked(error),
@@ -90,15 +121,19 @@ fn prepare(
     application
         .configuration
         .load()
-        .map_err(|error| (error.into(), Failure::Configuration))?;
+        .map_err(|error| (error.into(), Failure::Validation))?;
     application
         .notifications
         .check_ready()
-        .map_err(|error| (error.into(), Failure::Notifications))?;
+        .map_err(|error| (error.into(), Failure::Platform))?;
     application
         .sites
         .check_ready()
-        .map_err(|error| (error.into(), Failure::Configuration))?;
+        .map_err(|error| (error.into(), Failure::Validation))?;
+    application
+        .iq_test
+        .check_ready()
+        .map_err(|error| (error.into(), Failure::Storage))?;
     Ok(application)
 }
 

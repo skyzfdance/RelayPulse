@@ -1,7 +1,7 @@
 {
   "name": "@relaypulse/frontend",
   "private": true,
-  "version": "2.0.1",
+  "version": "3.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,9 +20,13 @@
   },
   "dependencies": {
     "@antdv-next/icons": "^1.1.2",
+    "@mdit/plugin-katex": "^1.2.0",
     "@tauri-apps/api": "^2",
     "antdv-next": "^1.6.0",
     "dayjs": "^1.11.23",
+    "dompurify": "^3.4.17",
+    "katex": "^0.19.1",
+    "markdown-it": "^15.0.3",
     "pinia": "^4.0.3",
     "sortablejs": "^1.15.7",
     "vue": "^3.5.43",
@@ -35,6 +39,8 @@
     "@playwright/test": "^1.62.0",
     "@tailwindcss/vite": "4.3.3",
     "@testing-library/jest-dom": "^7.0.0",
+    "@types/katex": "^0.16.8",
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^24",
     "@types/sortablejs": "^1.15.9",
     "@vitejs/plugin-vue": "^6.0.9",

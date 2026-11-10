@@ -94,16 +94,13 @@ export interface IqRun {
   questions: IqQuestion[];
   participants: IqParticipant[];
   entries: IqEntry[];
-  timeoutSeconds: number;
-  timeoutRetryMax: number;
   startedAtMs: number;
   finishedAtMs: number | null;
   summary: IqRunSummary;
 }
 export interface IqStartInput {
   questionIds: string[];
-  timeoutSeconds: number;
-  timeoutRetryMax: number;
+  retryMax: number;
 }
 /** IQ 独立状态通知，只携带递增版本。监听方补取快照，不传输输出正文。 */
 export interface IqStateChanged {
@@ -116,4 +113,31 @@ export interface IqSnapshot extends IqStateChanged {
   participants: IqParticipant[];
   activeRun: IqRun | null;
   runs: IqRun[];
+}
+
+export interface IqAttempt {
+  attempt: number;
+  status: IqEntryStatus;
+  startedAtMs: number | null;
+  finishedAtMs: number | null;
+  firstTokenMs: number | null;
+  totalTimeMs: number | null;
+  statusCode: number | null;
+  errorCode: string | null;
+  bodyComplete: boolean;
+  streamBytes: number;
+  usage: { inputTokens?: number | null; outputTokens?: number | null; totalTokens?: number | null };
+}
+export interface IqOutputPart {
+  kind: 'text' | 'reasoning' | 'tool';
+  text: string;
+}
+export interface IqEntryOutput {
+  entryId: string;
+  attempt: number | null;
+  attempts: IqAttempt[];
+  parts: IqOutputPart[];
+  encryptedReasoning: boolean;
+  parsingComplete: boolean;
+  rawResponse: string | null;
 }

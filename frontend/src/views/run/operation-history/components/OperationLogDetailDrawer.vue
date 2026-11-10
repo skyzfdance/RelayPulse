@@ -100,7 +100,10 @@ const isLong = (value: string) => value.length > 240;
 
         <section class="py-4" aria-label="本次事件内容">
           <h3 class="mb-3! text-sm font-semibold">本次事件</h3>
-          <div v-if="content.kind === 'snapshot'" class="space-y-3">
+          <div
+            v-if="content.kind === 'snapshot' || content.kind === 'presentation'"
+            class="space-y-3"
+          >
             <div v-for="field in content.fields" :key="field.label" class="min-w-0">
               <div class="mb-1 text-xs text-rp-tertiary">{{ field.label }}</div>
               <details v-if="!field.sensitive && isLong(field.value)" class="detail-expand">
@@ -213,7 +216,7 @@ const isLong = (value: string) => value.length > 240;
             :description="`${content.target}：${content.reason}`"
           />
           <a-alert
-            v-else
+            v-else-if="content.kind === 'probe_failure'"
             type="error"
             show-icon
             title="未生成探测记录"

@@ -1,10 +1,9 @@
 use super::CommandError;
+use crate::application::notifications::audit::{self, NotificationBoundaryFailure};
 use crate::{
     modules::notifications::{
-        NotificationBoundaryFailure, NotificationError, NotificationPlatform,
-        NotificationPlatformState, NotificationService,
+        NotificationError, NotificationPlatform, NotificationPlatformState, NotificationService,
     },
-    modules::operation_logs::OperationAction,
     startup::StartupState,
 };
 use serde::de::DeserializeOwned;
@@ -36,7 +35,7 @@ pub(super) fn parse<T: DeserializeOwned>(
     request: Request<'_>,
     field: &'static str,
     state: &StartupState,
-    action: OperationAction,
+    action: relaypulse_operations::ActionDefinition,
 ) -> Result<T, CommandError> {
     let result = (|| {
         let InvokeBody::Json(value) = request.body() else {
@@ -53,23 +52,31 @@ pub(super) fn parse<T: DeserializeOwned>(
 }
 fn record_failure(
     state: &StartupState,
-    action: OperationAction,
+    action: relaypulse_operations::ActionDefinition,
     failure: NotificationBoundaryFailure,
 ) {
     if let StartupState::Ready(app) = state {
-        app.notifications.record_boundary_failure(action, failure);
+        audit::boundary_failure(&app.operation_logs, action, failure);
     }
 }
 
 pub(super) async fn platform_call<R: Runtime, T: Send + 'static>(
     state: &StartupState,
     app: &AppHandle<R>,
-    action: OperationAction,
-    operation: impl FnOnce(&NotificationService, &dyn NotificationPlatform) -> Result<T, NotificationError>
+    action: relaypulse_operations::ActionDefinition,
+    operation: impl FnOnce(
+            &NotificationService,
+            &crate::modules::operation_logs::OperationLogs,
+            &dyn NotificationPlatform,
+        ) -> Result<T, NotificationError>
         + Send
         + 'static,
 ) -> Result<T, CommandError> {
     let service = service(state)?.clone();
+    let logs = match state {
+        StartupState::Ready(app) => app.operation_logs.clone(),
+        _ => return Err(unavailable()),
+    };
     let platform = app
         .try_state::<NotificationPlatformState>()
         .ok_or_else(|| {
@@ -83,11 +90,20 @@ pub(super) async fn platform_call<R: Runtime, T: Send + 'static>(
         .0
         .clone();
     // 系统授权可能等待用户；不阻塞 WebView 主线程或 Tokio 执行线程，也不占用数据库锁。
-    tauri::async_runtime::spawn_blocking(move || operation(&service, platform.as_ref()))
+    tauri::async_runtime::spawn_blocking(move || operation(&service, &logs, platform.as_ref()))
         .await
         .map_err(|_| {
             record_failure(state, action, NotificationBoundaryFailure::TaskFailed);
             unavailable()
         })?
         .map_err(Into::into)
+}
+
+pub(super) fn logs(
+    state: &StartupState,
+) -> Result<&crate::modules::operation_logs::OperationLogs, CommandError> {
+    match state {
+        StartupState::Ready(app) => Ok(&app.operation_logs),
+        _ => Err(unavailable()),
+    }
 }

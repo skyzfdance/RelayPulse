@@ -22,7 +22,17 @@ pub(crate) struct Application {
     pub operation_logs: std::sync::Arc<crate::modules::operation_logs::OperationLogs>,
     pub panel: std::sync::Arc<crate::application::snapshots::panel::Panel>,
     pub tray: std::sync::Arc<crate::application::snapshots::tray::Tray>,
+    pub iq_test: std::sync::Arc<crate::modules::iq_test::IqTest>,
 }
+
+pub(crate) const BASELINE: &[crate::shared::persistence::Migration] = &[
+    SCHEMA,
+    NOTIFICATIONS_SCHEMA,
+    crate::modules::sites::SCHEMA,
+    crate::modules::monitoring::SCHEMA,
+    crate::modules::operation_logs::SCHEMA,
+    crate::modules::iq_test::SCHEMA,
+];
 
 pub(crate) fn diagnostics(environment: &EnvironmentContext) -> std::sync::Arc<Diagnostics> {
     std::sync::Arc::new(Diagnostics::new(environment))
@@ -32,20 +42,23 @@ pub(crate) fn compose(
     environment: EnvironmentContext,
     diagnostics: std::sync::Arc<Diagnostics>,
 ) -> Result<Application, PersistenceError> {
-    // SQL 归业务模块，按历史顺序追加具名 schema；各业务存储共享同一连接和锁。
-    let database = std::sync::Arc::new(Database::open(
-        environment.paths(),
-        &[
-            SCHEMA,
-            NOTIFICATIONS_SCHEMA,
-            crate::modules::sites::SCHEMA,
-            crate::modules::monitoring::SCHEMA,
-            crate::modules::operation_logs::SCHEMA,
-        ],
-    )?);
-    let operation_logs = std::sync::Arc::new(crate::modules::operation_logs::OperationLogs::new(
-        database.clone(),
-    ));
+    if environment
+        .paths()
+        .data_root()
+        .join("conversion-incomplete")
+        .exists()
+    {
+        return Err(PersistenceError::UnsupportedSchema(
+            "offline conversion has not passed verification",
+        ));
+    }
+    // SQL fragments form one complete baseline; startup never upgrades an existing format.
+    let database = std::sync::Arc::new(Database::open(environment.paths(), BASELINE)?);
+    let operation_logs = std::sync::Arc::new(
+        crate::modules::operation_logs::OperationLogs::new(database.clone()).with_history_decoder(
+            std::sync::Arc::new(crate::modules::monitoring::operation_history::ProbeHistoryDecoder),
+        ),
+    );
     let changes = std::sync::Arc::new(crate::shared::state_changes::StateChanges::default());
     let configuration = std::sync::Arc::new(
         ConfigurationService::new(SqliteSettingsStore::new(database.clone()))
@@ -54,11 +67,15 @@ pub(crate) fn compose(
             .with_changes(changes.clone()),
     );
     let notifications = std::sync::Arc::new(
-        NotificationService::new(SqliteNotificationStore::new(database.clone()))
-            .with_diagnostics(diagnostics.clone())
-            .with_operation_logs(operation_logs.clone()),
+        NotificationService::new(
+            SqliteNotificationStore::new(database.clone()),
+            crate::application::notifications::catalog(),
+        )
+        .with_diagnostics(diagnostics.clone()),
     );
-    let client = std::sync::Arc::new(crate::shared::model_client::ModelClient::default());
+    let client = std::sync::Arc::new(crate::shared::model_client::ModelClient::new(
+        environment.application(),
+    ));
     let access = std::sync::Arc::new(crate::modules::sites::SiteAccess::default());
     let site_service = std::sync::Arc::new(
         crate::modules::sites::SiteService::new(database.clone(), client.clone(), access)
@@ -67,11 +84,23 @@ pub(crate) fn compose(
     let monitoring = std::sync::Arc::new(
         crate::modules::monitoring::Monitoring::new(
             site_service.clone(),
-            client,
-            database,
+            client.clone(),
+            database.clone(),
             configuration.clone(),
             diagnostics.clone(),
             Some(environment.paths().data_root().join("probe-records")),
+        )
+        .with_operation_logs(operation_logs.clone()),
+    );
+    let iq_test = std::sync::Arc::new(
+        crate::modules::iq_test::IqTest::new(
+            site_service.authorize_iq_credentials(),
+            client,
+            database,
+            environment.paths().data_root().join("iq-test"),
+            std::sync::Arc::new(
+                crate::application::snapshots::iq_test::IqCandidateHealth::new(monitoring.clone()),
+            ),
         )
         .with_operation_logs(operation_logs.clone()),
     );
@@ -99,5 +128,6 @@ pub(crate) fn compose(
         monitoring,
         panel,
         tray,
+        iq_test,
     })
 }

@@ -1,5 +1,6 @@
 use super::*;
-use crate::modules::operation_logs::{OperationAction, OperationSource};
+use crate::modules::operation_logs::OperationSource;
+use crate::test_actions::actions as OperationAction;
 async fn history(f: &Fixture) -> crate::modules::operation_logs::OperationLogPage {
     f.operation_logs.query(serde_json::from_value(json!({"startDate":null,"endDate":null,"source":[],"result":[],"actions":[],"page":1,"pageSize":100})).unwrap()).await.unwrap()
 }

@@ -99,6 +99,7 @@ impl CaptureSink for FileCapture {
     ) -> BoxFuture<'a, Result<(), CaptureError>> {
         Box::pin(async move {
             let event = match event {
+                CaptureEvent::Output { .. } => return Ok(()),
                 CaptureEvent::Started {
                     protocol,
                     method,

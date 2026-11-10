@@ -3,12 +3,12 @@ use super::{Health, HealthState};
 use crate::modules::operation_logs::OperationSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HealthTransition {
+pub enum HealthTransition {
     Failed,
     Recovered,
 }
 
-pub(crate) struct HealthChange {
+pub struct HealthChange {
     pub transition: HealthTransition,
     pub source: OperationSource,
     pub model: String,
@@ -45,6 +45,6 @@ impl HealthChange {
 }
 
 /// 在事务提交后的阻塞 worker 中调用；适配方记录发送错误，不回滚探测。
-pub(crate) trait HealthObserver: Send + Sync {
+pub trait HealthObserver: Send + Sync {
     fn changed(&self, change: &HealthChange);
 }

@@ -59,9 +59,14 @@ fn read(directory: &Path, id: &str, include_body: bool) -> Result<CapturedRecord
     let mut seen = false;
     let mut request_started = false;
     let mut fragment: Option<(Option<u64>, u64)> = None;
-    for line in BufReader::new(input).lines() {
-        let line = line?;
-        let event: Value = serde_json::from_str(&line).map_err(|_| OutputError)?;
+    let mut input = BufReader::new(input);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if input.read_line(&mut line)? == 0 {
+            break;
+        }
+        let event = decode_event(&line, id)?;
         let name = event
             .get("event")
             .and_then(Value::as_str)
@@ -71,17 +76,7 @@ fn read(directory: &Path, id: &str, include_body: bool) -> Result<CapturedRecord
             "record_created" | "request_started" | "response_started" | "request_finished"
         );
         match name {
-            "record_created" => {
-                if let Some(saved_id) = optional::<String>(&event, "recordId")? {
-                    if saved_id != id {
-                        return Err(OutputError);
-                    }
-                }
-                if optional::<u64>(&event, "formatVersion")?.is_some_and(|v| !(1..=2).contains(&v))
-                {
-                    return Err(OutputError);
-                }
-            }
+            "record_created" => {}
             "request_started" => {
                 if request_started {
                     return Err(OutputError);
@@ -277,4 +272,96 @@ fn sse(event: &Value) -> Result<String> {
         text.push('\n');
     }
     Ok(text)
+}
+
+// Finder metadata is preserved on disk but is not a capture package. Require the
+// exact name and the same isolated regular-file check used for capture files.
+fn finder_metadata(entry: &std::fs::DirEntry) -> Result<bool> {
+    if entry.file_name() != ".DS_Store" {
+        return Ok(false);
+    }
+    filesystem::regular_file(&entry.path())?.ok_or(OutputError)?;
+    Ok(true)
+}
+
+/// Read-only replay using the production JSONL parser, including partial packages.
+pub fn verify_capture_history(root: &Path) -> Result<usize> {
+    if !filesystem::directory(root, false)? {
+        return Ok(0);
+    }
+    let store = CaptureStore::new(root.to_owned());
+    let mut count = 0;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if finder_metadata(&entry)? {
+            continue;
+        }
+        if !filesystem::directory(&entry.path(), false)? {
+            return Err(OutputError);
+        }
+        let name = entry.file_name().into_string().map_err(|_| OutputError)?;
+        let id = name.strip_suffix(".partial").unwrap_or(&name);
+        store.read(id, true)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Startup only inspects the first format envelope, without scanning historical bodies.
+/// Legacy event-first packages use the same decoder as replay. Interrupted partial writers
+/// remain recoverable; complete validation belongs to replay and offline conversion.
+pub fn inspect_capture_formats(root: &Path) -> Result<()> {
+    if !filesystem::directory(root, false)? {
+        return Ok(());
+    }
+    let store = CaptureStore::new(root.to_owned());
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if finder_metadata(&entry)? {
+            continue;
+        }
+        if !filesystem::directory(&entry.path(), false)? {
+            return Err(OutputError);
+        }
+        let name = entry.file_name().into_string().map_err(|_| OutputError)?;
+        let partial = name.ends_with(".partial");
+        let id = name.strip_suffix(".partial").unwrap_or(&name);
+        store.output.inspect(id, |directory| {
+            let path = directory.join("response.jsonl");
+            if filesystem::regular_file(&path)?.is_none() {
+                return Ok(());
+            }
+            let mut line = String::new();
+            if BufReader::new(File::open(path)?).read_line(&mut line)? == 0 {
+                return Ok(());
+            }
+            match decode_event(&line, id) {
+                Ok(_) => Ok(()),
+                Err(_)
+                    if partial
+                        && !line.ends_with('\n')
+                        && serde_json::from_str::<Value>(&line).is_err() =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        })?;
+    }
+    Ok(())
+}
+
+fn decode_event(line: &str, id: &str) -> Result<Value> {
+    let event: Value = serde_json::from_str(line).map_err(|_| OutputError)?;
+    let name = event
+        .get("event")
+        .and_then(Value::as_str)
+        .ok_or(OutputError)?;
+    if name == "record_created"
+        && (optional::<String>(&event, "recordId")?.is_some_and(|saved| saved != id)
+            || optional::<u64>(&event, "formatVersion")?.is_some_and(|v| !(1..=2).contains(&v)))
+    {
+        return Err(OutputError);
+    }
+    Ok(event)
 }

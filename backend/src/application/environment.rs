@@ -7,6 +7,11 @@ use std::path::Path;
 const IDENTITIES: &[(&str, AppEnvironment)] = &[
     ("com.relaypulse.app.dev", AppEnvironment::Development),
     ("com.relaypulse.app", AppEnvironment::Production),
+    #[cfg(debug_assertions)]
+    (
+        "com.relaypulse.app.migration-test",
+        AppEnvironment::Development,
+    ),
 ];
 pub(crate) fn identify(identifier: &str) -> Result<AppEnvironment, EnvironmentError> {
     IDENTITIES

@@ -17,6 +17,18 @@ use std::sync::{
     Arc,
 };
 use tauri::Manager;
+
+pub(crate) trait RestartPlatform: Send + Sync {
+    fn restart(&self);
+}
+pub(crate) struct StartupDesktop(pub Arc<dyn RestartPlatform>);
+struct SystemRestart(tauri::AppHandle);
+impl RestartPlatform for SystemRestart {
+    fn restart(&self) {
+        self.0.request_restart();
+    }
+}
+
 struct Background {
     lifecycle: Arc<crate::application::lifecycle::Lifecycle>,
     operation_logs: Arc<crate::modules::operation_logs::OperationLogs>,
@@ -59,8 +71,18 @@ pub(crate) fn run() {
             app.manage(crate::modules::notifications::NotificationPlatformState(
                 notifications.clone(),
             ));
-            let (state, diagnostics_state) =
-                startup::initialize(environment::resolve(app.handle()));
+            let environment = environment::resolve(app.handle());
+            let data_root = environment
+                .as_ref()
+                .ok()
+                .map(|environment| environment.paths().data_root().to_owned());
+            let (state, diagnostics_state) = startup::initialize(environment);
+            app.manage(Arc::new(
+                crate::application::startup_recovery::StartupRecovery::new(data_root, &state),
+            ));
+            app.manage(StartupDesktop(Arc::new(SystemRestart(
+                app.handle().clone(),
+            ))));
             app.manage(diagnostics_state);
             app.manage(diagnostics::DiagnosticsDesktop(std::sync::Arc::new(
                 diagnostics::SystemDiagnostics(app.handle().clone()),
@@ -142,6 +164,13 @@ pub(crate) fn run() {
             }
         }
         if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+            if handle
+                .try_state::<Arc<crate::application::startup_recovery::StartupRecovery>>()
+                .is_some_and(|recovery| recovery.is_busy())
+            {
+                api.prevent_exit();
+                return;
+            }
             if let Some(background) = handle.try_state::<Background>() {
                 if background.stopped.load(Ordering::SeqCst) {
                     return;

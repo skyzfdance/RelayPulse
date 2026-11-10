@@ -41,6 +41,10 @@ mod iq_integration_tests;
 #[path = "../tests/support/notification_host.rs"]
 mod notification_host;
 
+#[cfg(test)]
+#[path = "../tests/support/legacy_data.rs"]
+mod legacy_data;
+
 /// Run the explicit RelayPulse offline conversion command without starting the desktop app.
 pub fn run_data_transfer() {
     application::data_transfer::run();

@@ -1,6 +1,6 @@
 [package]
 name = "relaypulse"
-version = "3.0.0"
+version = "3.0.1"
 default-run = "relaypulse"
 description = "RelayPulse desktop application"
 edition = "2021"
@@ -47,6 +47,7 @@ uuid = { version = "1", features = ["v4"] }
 unicode-segmentation = "1.13.3"
 zeroize = "1"
 sha2 = "0.10"
+tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-usernotifications = "0.3.1"
@@ -61,7 +62,6 @@ relaypulse-storage = { version = "0.1",path="crates/storage",features= ["test-su
 relaypulse-model-client = { version = "0.1",path="crates/model-client",features= ["test-support"] }
 
 tauri = { version = "2", features = ["test"] }
-tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 
 [workspace]

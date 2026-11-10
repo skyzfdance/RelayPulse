@@ -54,6 +54,7 @@ async function open(route: string) {
   await router.push(route);
   const wrapper = mount(App, { global: { plugins: [createPinia(), router] } });
   disposals.push(() => wrapper.unmount());
+  await vi.waitFor(() => expect(wrapper.find('[aria-label="应用启动"]').exists()).toBe(false));
   await flushPromises();
   return { router, wrapper };
 }

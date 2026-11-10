@@ -28,6 +28,23 @@ fn unknown_host_identity_is_rejected_before_directory_access() {
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn migration_rehearsal_is_isolated_from_both_real_data_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let system = temp.path().canonicalize().unwrap();
+    let identifier = "com.relaypulse.app.migration-test";
+    let rehearsal = system.join(identifier);
+    let environment = super::resolve(identifier, &system, &rehearsal).unwrap();
+    assert_eq!(environment.paths().data_root(), rehearsal);
+    for real_identifier in ["com.relaypulse.app", "com.relaypulse.app.dev"] {
+        let real = system.join(real_identifier);
+        assert!(environment.protected_roots().contains(&real));
+        assert!(super::resolve(identifier, &system, &real).is_err());
+    }
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
 #[tokio::test]
 async fn composition_uses_injected_host_version_for_real_requests_and_diagnostic_export() {
     use crate::shared::model_client::test_support::{Response, Server};

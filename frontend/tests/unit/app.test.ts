@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia } from 'pinia';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { nextTick } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 
@@ -23,6 +23,7 @@ async function mountApp() {
   });
 
   await router.isReady();
+  await vi.waitFor(() => expect(wrapper.find('[aria-label="应用启动"]').exists()).toBe(false));
   return { wrapper, router, pinia };
 }
 

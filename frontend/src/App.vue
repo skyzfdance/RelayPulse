@@ -10,6 +10,7 @@ import { useThemeStore } from '@/stores/theme';
 import FeedbackHost from '@/components/FeedbackHost.vue';
 import GlobalLoadingHost from '@/components/GlobalLoadingHost.vue';
 import OverflowTooltipHost from '@/components/OverflowTooltipHost.vue';
+import StartupGate from '@/components/StartupGate.vue';
 
 const themeStore = useThemeStore();
 provideMainWindowNavigation();
@@ -23,7 +24,9 @@ const themeConfig = computed(() => ({
 <template>
   <a-config-provider :locale="zhCN" :theme="themeConfig">
     <a-app>
-      <RouterView />
+      <StartupGate>
+        <RouterView />
+      </StartupGate>
       <!-- 全局提示与页面级 loading 的渲染宿主（单例基础设施，无业务逻辑） -->
       <FeedbackHost />
       <GlobalLoadingHost />

@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StartupError {
+    #[error("{0}")]
+    DataMigration(#[from] crate::application::startup_recovery::MigrationError),
     #[error("environment initialization blocked: {0}")]
     Environment(#[from] EnvironmentError),
     #[error("persistence initialization blocked: {0}")]
@@ -47,6 +49,11 @@ pub(crate) fn initialize(
         Ok(environment) => environment,
         Err(error) => return (StartupState::Blocked(error.into()), DiagnosticsState(None)),
     };
+    if let Err(error) =
+        crate::application::startup_recovery::restore_interrupted(environment.paths().data_root())
+    {
+        return (StartupState::Blocked(error.into()), DiagnosticsState(None));
+    }
     if let Err(error) = crate::shared::persistence::Database::inspect_directory(
         environment.paths().data_root(),
         composition::BASELINE,
@@ -91,7 +98,9 @@ pub(crate) fn initialize(
         Err((error, stage)) => {
             diagnostics.record_best_effort("startup", Outcome::Failed(stage));
             let pending_stage = match &error {
-                StartupError::Persistence(_) => StartupFailureStage::Persistence,
+                StartupError::Persistence(_) | StartupError::DataMigration(_) => {
+                    StartupFailureStage::Persistence
+                }
                 StartupError::Configuration(_) => StartupFailureStage::Configuration,
                 StartupError::Notifications(_) => StartupFailureStage::Notifications,
                 StartupError::Sites(_) => StartupFailureStage::Sites,

@@ -5,6 +5,7 @@
  * Tauri 模式直接调用后端命令，不加载此注册入口。
  */
 import './catalog';
+import './startup';
 import './config/general';
 import './config/notifications';
 import './config/sites';

@@ -42,6 +42,29 @@ pub struct Verification {
     pub iq_attempts: usize,
     pub probe_packages: usize,
 }
+
+/// Recognize a supported legacy database using a disposable copy. Even SQLite's WAL
+/// index is confined to that copy; checking the upgrade prompt never opens the source.
+pub(crate) fn inspect_source(source: &Path) -> Result<()> {
+    let copy = tempfile::tempdir()?;
+    for name in DATABASE_FILES {
+        let path = source.join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                copy_verified(&path, &copy.path().join(name))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let database = Connection::open_with_flags(
+        copy.path().join("relaypulse.sqlite3"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    supported(&database)?;
+    check_integrity(&database)
+}
+
 fn supported(source: &Connection) -> Result<()> {
     let version: i64 = source.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version == 2 {

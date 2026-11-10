@@ -8,9 +8,13 @@ mod operation_logs;
 mod panel;
 mod records;
 mod sites;
+mod startup;
 
 pub(crate) fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.invoke_handler(tauri::generate_handler![
+        startup::get_startup_status,
+        startup::migrate_startup_data,
+        startup::restart_after_data_migration,
         iq_test::get_iq_test_snapshot,
         iq_test::save_iq_question,
         iq_test::delete_iq_question,

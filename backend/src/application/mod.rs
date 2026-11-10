@@ -14,3 +14,4 @@ pub(crate) mod startup_history;
 pub(crate) mod environment;
 
 pub(crate) mod data_transfer;
+pub(crate) mod startup_recovery;

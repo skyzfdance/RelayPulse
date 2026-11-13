@@ -152,7 +152,7 @@ impl super::ModelClient {
                 }
             } else {
                 let value = serde_json::from_slice(&body).map_err(|_| ClientError::Response)?;
-                content.observe(&value, config.protocol);
+                content.observe(&value, config.protocol, false);
                 metadata.usage = content.usage.clone();
             }
             if content.success() {
@@ -195,7 +195,7 @@ fn observe_events(
             continue;
         }
         let value = serde_json::from_str(&event).map_err(|_| ClientError::Response)?;
-        if content.observe(&value, protocol) && first.is_none() {
+        if content.observe(&value, protocol, true) && first.is_none() {
             *first = Some(received_ms);
         }
     }

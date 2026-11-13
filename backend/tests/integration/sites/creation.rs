@@ -47,7 +47,7 @@ async fn creation_uses_user_endpoints_and_protocol_specific_requests() {
             let headers = request.head.to_ascii_lowercase();
             if protocol == Protocol::Anthropic {
                 assert!(headers.contains("x-api-key: creation-only-in-vault"));
-                assert!(headers.contains("anthropic-version:"));
+                assert!(!headers.contains("anthropic-version:"));
             } else {
                 assert!(headers.contains("authorization: bearer creation-only-in-vault"));
             }

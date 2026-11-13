@@ -10,6 +10,7 @@ import { resetFeedbackForTests } from '@/composables/useFeedback';
 import { seedSites, state } from '@/mocks/handlers/config/sites';
 import { useSiteDetailsStore, useSiteStore } from '@/stores/site';
 
+import { previewBody } from '../../../support/parameter-fields';
 import {
   chatPolicy,
   messagesValue,
@@ -72,7 +73,7 @@ describe('探针请求参数编辑', () => {
     ).toBe('low');
     await drawer.get(parameterValueSelector('output_config.effort')).setValue('high');
     await drawer.get(parameterValueSelector('max_tokens')).setValue('8192');
-    expect(JSON.parse(drawer.get('pre').text())).toMatchObject({
+    expect(previewBody(drawer)).toMatchObject({
       thinking: { type: 'adaptive' },
       output_config: { effort: 'high' },
       max_tokens: 8192,
@@ -83,7 +84,7 @@ describe('探针请求参数编辑', () => {
     await drawer
       .get('[data-parameter-key="output_config"] button[title="删除参数及其子参数"]')
       .trigger('click');
-    const preview = JSON.parse(drawer.get('pre').text());
+    const preview = previewBody(drawer);
     expect(preview).not.toHaveProperty('thinking');
     expect(preview).not.toHaveProperty('output_config');
     await button('保存').trigger('click');
@@ -96,11 +97,11 @@ describe('探针请求参数编辑', () => {
     });
     wrapper.unmount();
     const reopened = await mountDrawer();
-    expect(JSON.parse(reopened.drawer.get('pre').text())).toEqual(preview);
+    expect(previewBody(reopened.drawer)).toEqual(preview);
     await reopened.drawer
       .get<HTMLInputElement>('[data-parameter-key="thinking"] input[type="checkbox"]')
       .setValue(true);
-    expect(JSON.parse(reopened.drawer.get('pre').text()).thinking).toEqual({ type: 'adaptive' });
+    expect(previewBody(reopened.drawer).thinking).toEqual({ type: 'adaptive' });
   });
 
   it('基础参数统一进入表格，数字仅校验类型，预览不限制协议取值', async () => {
@@ -119,7 +120,7 @@ describe('探针请求参数编辑', () => {
     }
     for (const value of ['0', '129', '1.5']) {
       await input.setValue(value);
-      expect(JSON.parse(wrapper.get('pre').text()).max_tokens).toBe(Number(value));
+      expect(previewBody(wrapper).max_tokens).toBe(Number(value));
       expect(wrapper.text()).not.toContain('数字参数必须为有效数字');
     }
     expect(wrapper.vm.canSubmit).toBe(true);
@@ -141,20 +142,20 @@ describe('探针请求参数编辑', () => {
     expect(wrapper.get<HTMLInputElement>(parameterValueSelector('max_tokens')).element.value).toBe(
       '8',
     );
-    expect(JSON.parse(wrapper.get('pre').text())).toMatchObject({ max_tokens: 8 });
+    expect(previewBody(wrapper)).toMatchObject({ max_tokens: 8 });
   });
 
   it('新增对象路径自动补父级，校验类型值；删除后不重新注入参数', async () => {
     const { wrapper } = mountFields();
     await wrapper
-      .findAll('button')
+      .findAll('[data-request-section="body"] button')
       .find((button) => button.text().includes('添加参数'))!
       .trigger('click');
     expect(wrapper.text()).toContain('请输入参数字段');
     await expect(wrapper.vm.validate()).rejects.toBeDefined();
     await wrapper.get(parameterKeySelector('')).setValue('provider.option');
     await wrapper.get(parameterValueSelector('provider.option')).setValue('high');
-    expect(JSON.parse(wrapper.get('pre').text())).toMatchObject({ provider: { option: 'high' } });
+    expect(previewBody(wrapper)).toMatchObject({ provider: { option: 'high' } });
     expect(wrapper.find('[data-parameter-key="provider"]').exists()).toBe(true);
     wrapper.findAllComponents(Select).slice(-1)[0].vm.$emit('update:value', 'number');
     await flushPromises();
@@ -163,11 +164,11 @@ describe('探针请求参数编辑', () => {
     await wrapper
       .get('[data-parameter-key="provider"] button[title="删除参数及其子参数"]')
       .trigger('click');
-    expect(JSON.parse(wrapper.get('pre').text())).not.toHaveProperty('provider');
+    expect(previewBody(wrapper)).not.toHaveProperty('provider');
     await wrapper
       .get('[data-parameter-key="reasoning_effort"] button[title="删除参数"]')
       .trigger('click');
-    expect(JSON.parse(wrapper.get('pre').text())).not.toHaveProperty('reasoning_effort');
+    expect(previewBody(wrapper)).not.toHaveProperty('reasoning_effort');
   });
 
   it('父级停用保留子级开关，恢复后仍按原子级配置发送；支持空对象', async () => {
@@ -191,20 +192,20 @@ describe('探针请求参数编辑', () => {
       '[data-parameter-key="reasoning.effort"] input[type="checkbox"]',
     );
     await parent.setValue(false);
-    expect(JSON.parse(wrapper.get('pre').text())).not.toHaveProperty('reasoning');
+    expect(previewBody(wrapper)).not.toHaveProperty('reasoning');
     expect(child.element.checked).toBe(true);
     expect(child.element.disabled).toBe(true);
     expect(
       wrapper.get<HTMLInputElement>(parameterValueSelector('reasoning.effort')).element.value,
     ).toBe('low');
     await parent.setValue(true);
-    expect(JSON.parse(wrapper.get('pre').text()).reasoning).toEqual({ effort: 'low' });
+    expect(previewBody(wrapper).reasoning).toEqual({ effort: 'low' });
     await child.setValue(false);
-    expect(JSON.parse(wrapper.get('pre').text()).reasoning).toEqual({});
+    expect(previewBody(wrapper).reasoning).toEqual({});
     await parent.setValue(false);
     await parent.setValue(true);
     expect(child.element.checked).toBe(false);
-    expect(JSON.parse(wrapper.get('pre').text()).reasoning).toEqual({});
+    expect(previewBody(wrapper).reasoning).toEqual({});
   });
 
   it('重新输入父级字段时同步保留子级路径和值', async () => {
@@ -224,7 +225,7 @@ describe('探针请求参数编辑', () => {
     const input = wrapper.get(parameterKeySelector('reasoning'));
     await input.setValue('');
     await input.setValue('options');
-    const body = JSON.parse(wrapper.get('pre').text());
+    const body = previewBody(wrapper);
     expect(body).not.toHaveProperty('reasoning');
     expect(body.options).toEqual({ effort: 'low' });
     expect(wrapper.find('[data-parameter-key="options.effort"]').exists()).toBe(true);
@@ -237,7 +238,7 @@ describe('探针请求参数编辑', () => {
     for (const checkbox of drawer.findAll<HTMLInputElement>('input[type="checkbox"]')) {
       if (!checkbox.element.disabled) await checkbox.setValue(false);
     }
-    expect(JSON.parse(drawer.get('pre').text())).toEqual({});
+    expect(previewBody(drawer)).toEqual({});
     expect(drawer.text()).not.toContain('数字参数必须为有效数字');
     expect(button('保存').attributes('disabled')).toBeUndefined();
     await button('保存').trigger('click');
@@ -256,19 +257,17 @@ describe('探针请求参数编辑', () => {
     const calls = vi.spyOn(backend, 'callBackend');
     const before = JSON.stringify(state.sites[0]);
     const { drawer } = await mountDrawer();
-    expect(JSON.parse(drawer.get('pre').text())).toMatchObject({
+    expect(previewBody(drawer)).toMatchObject({
       model: '<模型名称>',
       messages: [{ role: 'user', content: '只回复 OK' }],
       max_tokens: 8,
     });
     await drawer.get(parameterValueSelector('messages')).setValue(messagesValue('new prompt'));
-    expect(JSON.parse(drawer.get('pre').text()).messages).toEqual([
-      { role: 'user', content: 'new prompt' },
-    ]);
+    expect(previewBody(drawer).messages).toEqual([{ role: 'user', content: 'new prompt' }]);
     await drawer.get(parameterValueSelector('max_tokens')).setValue('24');
-    expect(JSON.parse(drawer.get('pre').text()).max_tokens).toBe(24);
+    expect(previewBody(drawer).max_tokens).toBe(24);
     await drawer.get(parameterValueSelector('messages')).setValue('{');
-    expect(drawer.get('pre').text()).toBe('请先修正配置后查看预览。');
+    expect(drawer.get('[aria-label="有效请求预览"]').text()).toBe('请先修正配置后查看预览。');
     expect(calls).not.toHaveBeenCalled();
     expect(JSON.stringify(state.sites[0])).toBe(before);
   });
@@ -277,7 +276,7 @@ describe('探针请求参数编辑', () => {
     const calls = vi.spyOn(backend, 'callBackend');
     const { wrapper } = mountFields();
     await wrapper.setProps({ modelName: 'gpt-6-astra', protocol: 'openai-responses' });
-    expect(JSON.parse(wrapper.get('pre').text())).toEqual({
+    expect(previewBody(wrapper)).toEqual({
       model: 'gpt-6-astra',
       messages: [{ role: 'user', content: '只回复 OK' }],
       stream: true,
@@ -337,7 +336,7 @@ describe('探针请求参数编辑', () => {
     await drawer.get(parameterValueSelector('input')).setValue('只回复 OK');
     await drawer.get(parameterKeySelector('reasoning_effort')).setValue('reasoning.effort');
     expect(button('保存').attributes('disabled')).toBeUndefined();
-    expect(JSON.parse(drawer.get('pre').text())).toEqual({
+    expect(previewBody(drawer)).toEqual({
       model: '<模型名称>',
       input: '只回复 OK',
       stream: true,
@@ -377,9 +376,9 @@ describe('探针请求参数编辑', () => {
     await reopened.drawer
       .get<HTMLInputElement>('[data-parameter-key="reasoning"] input[type="checkbox"]')
       .setValue(true);
-    expect(JSON.parse(reopened.drawer.get('pre').text()).reasoning).toEqual({ effort: 'low' });
+    expect(previewBody(reopened.drawer).reasoning).toEqual({ effort: 'low' });
     await child.setValue(false);
-    expect(JSON.parse(reopened.drawer.get('pre').text()).reasoning).toEqual({});
+    expect(previewBody(reopened.drawer).reasoning).toEqual({});
     expect(reopened.button('保存').attributes('disabled')).toBeUndefined();
   });
 

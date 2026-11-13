@@ -16,6 +16,7 @@ import { publish } from '@/api/events';
 import { IQ_STATE_CHANGED } from '@/api/iq-test/events';
 import { RelayPulseBackendError } from '@/utils/backend-error';
 import { requestUrl } from '@/utils/request-url';
+import { siteHeadersError } from '@/views/config/sites/site-request';
 
 import {
   requestMockIqCompletionNotification,
@@ -79,6 +80,7 @@ const historicalParticipants: IqParticipant[] = [
     endpoint: 'https://api.openai.com/v1',
     createdAtMs: Date.UTC(2026, 9, 1),
     preset: 'high',
+    headers: [],
     parameters: { reasoning_effort: 'high', max_tokens: 512 },
     precheck: { status: 'available', message: '预检通过', checkedAtMs: Date.UTC(2026, 9, 1) },
   },
@@ -94,6 +96,7 @@ const historicalParticipants: IqParticipant[] = [
     endpoint: 'https://api.anthropic.com/v1',
     createdAtMs: Date.UTC(2026, 9, 1),
     preset: 'medium',
+    headers: [],
     parameters: { temperature: 0.2, max_tokens: 512 },
     precheck: { status: 'available', message: '预检通过', checkedAtMs: Date.UTC(2026, 9, 1) },
   },
@@ -109,6 +112,7 @@ const historicalParticipants: IqParticipant[] = [
     endpoint: 'https://archive.example.invalid/v1',
     createdAtMs: Date.UTC(2026, 9, 1),
     preset: 'custom',
+    headers: [],
     parameters: { reasoning_effort: 'low' },
     precheck: { status: 'available', message: '预检通过', checkedAtMs: Date.UTC(2026, 9, 1) },
   },
@@ -470,6 +474,8 @@ function validParameters(parameters: Record<string, unknown>) {
 }
 function buildParticipant(input: IqParticipantInput, participantId: string = id()): IqParticipant {
   validParameters(input.parameters);
+  const headerError = siteHeadersError(input.headers ?? []);
+  if (headerError) validation(headerError);
   const candidate = candidates().find((item) => item.modelKey === input.modelKey);
   if (!candidate) validation('源模型已删除或停用，请刷新候选模型');
   const site = sitesState.sites.find((item) => item.id === candidate.siteId)!;
@@ -489,6 +495,7 @@ function buildParticipant(input: IqParticipantInput, participantId: string = id(
     endpoint,
     createdAtMs: Date.now(),
     preset: input.preset,
+    headers: clone(input.headers ?? []),
     parameters: clone(input.parameters),
     precheck: { status: 'checking', message: '', checkedAtMs: null },
   };

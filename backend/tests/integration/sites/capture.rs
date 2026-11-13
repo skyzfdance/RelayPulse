@@ -49,6 +49,7 @@ async fn trial_skips_files_and_formal_capture_is_associated_redacted_and_not_in_
         id.clone(),
         model.clone(),
         CustomRequest {
+            headers: vec![],
             version: 2,
             endpoint: "/draft".into(),
             parameters: vec![],

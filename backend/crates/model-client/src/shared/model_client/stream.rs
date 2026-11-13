@@ -1,5 +1,5 @@
 //! 增量 SSE 解码；UTF-8 可跨网络块，空行结束事件，结束标记不可替代实际输出。
-use super::{ClientError, Protocol, TokenUsage};
+use super::{response_output::output, ClientError, OutputKind, Protocol, TokenUsage};
 use serde_json::Value;
 
 #[derive(Default)]
@@ -12,7 +12,7 @@ pub(super) struct Content {
 impl Content {
     /// 返回本事件是否包含非空思考或回答文本，供流式首 Token 计时使用。
     /// 探测成功仍要求回答正文，不能仅凭思考文本或结束事件判定。
-    pub fn observe(&mut self, value: &Value, protocol: Protocol) -> bool {
+    pub fn observe(&mut self, value: &Value, protocol: Protocol, streaming: bool) -> bool {
         self.usage.observe(value, protocol);
         let kind = value["type"].as_str().unwrap_or("");
         if value.get("error").is_some_and(|v| !v.is_null())
@@ -21,37 +21,8 @@ impl Content {
         {
             self.failed = true;
         }
-        let has_answer = match protocol {
-            Protocol::OpenaiCompatible => value["choices"].as_array().is_some_and(|choices| {
-                choices.iter().any(|c| {
-                    nonempty(&c["delta"]["content"])
-                        || nonempty(&c["message"]["content"])
-                        || nonempty(&c["text"])
-                })
-            }),
-            Protocol::OpenaiResponses => {
-                (kind == "response.output_text.delta" && nonempty(&value["delta"]))
-                    || value["output"].as_array().is_some_and(|items| {
-                        items.iter().any(|item| {
-                            item["content"].as_array().is_some_and(|cs| {
-                                cs.iter()
-                                    .any(|c| c["type"] == "output_text" && nonempty(&c["text"]))
-                            })
-                        })
-                    })
-                    || nonempty(&value["output_text"])
-            }
-            Protocol::Anthropic => {
-                (value["delta"]["type"] == "text_delta" && nonempty(&value["delta"]["text"]))
-                    || (value["content_block"]["type"] == "text"
-                        && nonempty(&value["content_block"]["text"]))
-                    || value["content"].as_array().is_some_and(|cs| {
-                        cs.iter()
-                            .any(|c| c["type"] == "text" && nonempty(&c["text"]))
-                    })
-            }
-            Protocol::CustomHttp => false,
-        };
+        let parts = output(value, protocol, streaming);
+        let has_answer = parts.iter().any(|(kind, _)| *kind == OutputKind::Text);
         self.answer_text |= has_answer;
         self.ended |= match protocol {
             Protocol::OpenaiCompatible => value["choices"]
@@ -65,45 +36,11 @@ impl Content {
             }
             Protocol::CustomHttp => false,
         };
-        has_answer || reasoning_text(value, protocol)
+        has_answer || parts.iter().any(|(kind, _)| *kind == OutputKind::Reasoning)
     }
     pub fn success(&self) -> bool {
         self.answer_text && self.ended && !self.failed
     }
-}
-fn reasoning_text(value: &Value, protocol: Protocol) -> bool {
-    match protocol {
-        Protocol::OpenaiCompatible => value["choices"].as_array().is_some_and(|choices| {
-            choices.iter().any(|choice| {
-                [&choice["delta"], &choice["message"]].iter().any(|part| {
-                    nonempty(&part["reasoning_content"])
-                        || nonempty(&part["reasoning"])
-                        || part["reasoning_details"].as_array().is_some_and(|details| {
-                            details.iter().any(|detail| match detail["type"].as_str() {
-                                Some("reasoning.text") => nonempty(&detail["text"]),
-                                Some("reasoning.summary") => nonempty(&detail["summary"]),
-                                _ => false,
-                            })
-                        })
-                })
-            })
-        }),
-        Protocol::OpenaiResponses => {
-            matches!(
-                value["type"].as_str(),
-                Some("response.reasoning_text.delta" | "response.reasoning_summary_text.delta")
-            ) && nonempty(&value["delta"])
-        }
-        Protocol::Anthropic => {
-            (value["delta"]["type"] == "thinking_delta" && nonempty(&value["delta"]["thinking"]))
-                || (value["content_block"]["type"] == "thinking"
-                    && nonempty(&value["content_block"]["thinking"]))
-        }
-        Protocol::CustomHttp => false,
-    }
-}
-fn nonempty(v: &Value) -> bool {
-    v.as_str().is_some_and(|s| !s.is_empty())
 }
 #[derive(Default)]
 pub(super) struct Sse {

@@ -47,6 +47,8 @@ pub struct IqHistoryFilterOption {
 pub struct IqParticipantInput {
     pub model_key: String,
     pub preset: String,
+    #[serde(default)]
+    pub headers: Vec<crate::shared::model_client::Parameter>,
     pub parameters: Map<String, Value>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +81,8 @@ pub struct IqParticipant {
     pub endpoint: String,
     pub created_at_ms: u64,
     pub preset: String,
+    #[serde(default)]
+    pub headers: Vec<crate::shared::model_client::Parameter>,
     pub parameters: Map<String, Value>,
     pub precheck: IqPrecheck,
 }

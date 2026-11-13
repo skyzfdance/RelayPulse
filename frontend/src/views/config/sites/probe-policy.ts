@@ -3,6 +3,8 @@ import type { CustomProbeRequest, ProbePolicy, RequestParameter } from '@/types/
 import { requestParameterValidation } from '@/utils/request-parameters';
 import { requestUrl } from '@/utils/request-url';
 
+import { siteHeadersError } from './site-request';
+
 export function parametersError(parameters: RequestParameter[]): string | null {
   return (
     requestParameterValidation(parameters)
@@ -12,7 +14,9 @@ export function parametersError(parameters: RequestParameter[]): string | null {
 }
 
 export function policyError(policy: ProbePolicy): string | null {
-  return policy.version === 2 ? parametersError(policy.parameters) : '请求参数配置版本无效';
+  return policy.version === 2
+    ? (siteHeadersError(policy.headers) ?? parametersError(policy.parameters))
+    : '请求参数配置版本无效';
 }
 
 export function resolveCustomProbeEndpoint(baseUrl: string, endpoint: string): string {

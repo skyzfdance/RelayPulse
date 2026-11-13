@@ -90,13 +90,13 @@ const columns = [
         <span v-else-if="column.key === 'name'" v-overflow-tooltip class="font-semibold">{{
           record.name
         }}</span>
-        <span v-else-if="column.key === 'policy'" v-overflow-tooltip class="text-rp-secondary">{{
-          record.customRequest ? '自定义请求' : record.policy ? '独立策略' : '继承站点默认'
-        }}</span>
+        <span v-else-if="column.key === 'policy'" v-overflow-tooltip class="text-rp-secondary">
+          <template v-if="record.customRequest">自定义策略</template>
+          <template v-else-if="record.policy">独立策略</template>
+          <template v-else>继承站点默认</template>
+        </span>
         <span v-else-if="column.key === 'firstToken'">{{
-          record.customRequest || record.firstTokenMs === null
-            ? '—'
-            : `${(record.firstTokenMs / 1000).toFixed(2)} s`
+          record.firstTokenMs === null ? '—' : `${(record.firstTokenMs / 1000).toFixed(2)} s`
         }}</span>
         <span v-else-if="column.key === 'duration'">{{
           record.durationMs === null ? '—' : `${(record.durationMs / 1000).toFixed(2)} s`

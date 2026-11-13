@@ -8,10 +8,7 @@ use crate::{
     startup::StartupState,
 };
 use serde::de::DeserializeOwned;
-use tauri::{
-    ipc::{InvokeBody, Request},
-    State,
-};
+use tauri::{ipc::Request, State};
 fn service(state: &StartupState) -> Result<&Sites, CommandError> {
     match state {
         StartupState::Ready(app) => Ok(&app.sites),
@@ -30,14 +27,15 @@ fn parse<T: DeserializeOwned>(
     state: &StartupState,
     action: relaypulse_operations::ActionDefinition,
 ) -> Result<T, CommandError> {
-    let result = (|| {
-        let InvokeBody::Json(value) = request.body() else {
-            return Err(CommandError::invalid("request", "请求必须是 JSON 对象。"));
+    let result = crate::commands::json_input::decode(request).map_err(|error| {
+        let message = match error {
+            crate::commands::json_input::DecodeError::Body => "请求必须是 JSON 对象。",
+            crate::commands::json_input::DecodeError::Fields => {
+                "站点请求字段缺失、类型错误或含未知字段。"
+            }
         };
-        serde_json::from_value(value.clone()).map_err(|_| {
-            CommandError::invalid("request", "站点请求字段缺失、类型错误或含未知字段。")
-        })
-    })();
+        CommandError::invalid("request", message)
+    });
     if result.is_err() {
         if let StartupState::Ready(app) = state {
             app.sites

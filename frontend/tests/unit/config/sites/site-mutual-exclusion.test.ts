@@ -63,11 +63,21 @@ function button(wrapper: Page, label: string) {
 }
 function overlayButton(label: string) {
   return new DOMWrapper(
-    [...document.querySelectorAll('.ant-drawer button, .ant-modal button')].find(
-      (item) => item.textContent?.replace(/\s/gu, '') === label,
-    )!,
+    [
+      ...document.querySelectorAll(
+        label === '添加参数'
+          ? '[data-request-section="body"] button'
+          : '.ant-drawer button, .ant-modal button',
+      ),
+    ].find((item) => item.textContent?.replace(/\s/gu, '') === label)!,
   );
 }
+async function enableCustomEndpoint(wrapper: Page) {
+  const toggle = wrapper.getComponent(ModelProbeSettingsDrawer).getComponent(Switch);
+  if (!toggle.props('checked')) toggle.vm.$emit('update:checked', true);
+  await flushPromises();
+}
+
 const writes = new Set([
   'sync_site_models',
   'apply_site_model_sync',
@@ -145,8 +155,12 @@ async function forceBlockedEvents(wrapper: Page) {
 async function openCustomProbe(wrapper: Page) {
   await button(wrapper, '设置模型 gpt-demo').trigger('click');
   await flushPromises();
+  await enableCustomEndpoint(wrapper);
   const drawer = new DOMWrapper(document.querySelector('.ant-drawer')!);
-  await drawer.get('[aria-label="使用自定义探针请求"]').trigger('click');
+  for (const key of ['messages', 'stream', 'max_tokens', 'reasoning_effort'])
+    await drawer
+      .get(`[data-request-section="body"] [data-parameter-key="${key}"] button[title="删除参数"]`)
+      .trigger('click');
   await drawer.get('[aria-label="自定义探测端点"]').setValue('/draft-probe');
   await overlayButton('添加参数').trigger('click');
   await drawer.get(parameterKeySelector('')).setValue('prompt');
@@ -207,6 +221,7 @@ describe('站点操作互斥（真实 Mock 处理器延迟 1 秒）', () => {
         modelId: 'model-0-0',
         request: {
           version: 2,
+          headers: [],
           endpoint: '/draft-probe',
           parameters: [
             { enabled: true, key: 'model', value: '', type: 'string', binding: 'model' },
@@ -219,13 +234,13 @@ describe('站点操作互斥（真实 Mock 处理器延迟 1 秒）', () => {
     expectLocked(wrapper);
     await forceBlockedEvents(wrapper);
     const fields = modelDrawer.getComponent(ProbePolicyFields);
-    const draft = JSON.stringify(fields.props('customRequest'));
+    const draft = JSON.stringify(fields.props());
     for (const input of fields.findAllComponents(Input)) input.vm.$emit('update:value', 'blocked');
     for (const select of fields.findAllComponents(Select))
       select.vm.$emit('update:value', 'number');
     for (const action of fields.findAllComponents(Button)) action.vm.$emit('click');
     modelDrawer.getComponent(Switch).vm.$emit('update:checked', false);
-    expect(JSON.stringify(fields.props('customRequest'))).toBe(draft);
+    expect(JSON.stringify(fields.props())).toBe(draft);
     expect(modelDrawer.getComponent(Switch).props('checked')).toBe(true);
     expect(componentButton('试探一次').props('loading')).toBe(true);
     expect(componentButton('取消').props('disabled')).toBe(true);
@@ -303,9 +318,8 @@ describe('站点操作互斥（真实 Mock 处理器延迟 1 秒）', () => {
     await flushPromises();
     const modelDrawer = wrapper.getComponent(ModelProbeSettingsDrawer);
     expect(modelDrawer.text()).not.toContain('试探一次');
-    await new DOMWrapper(document.querySelector('[aria-label="使用自定义探针请求"]')!).trigger(
-      'click',
-    );
+    await enableCustomEndpoint(wrapper);
+    await new DOMWrapper(document.querySelector('[aria-label="自定义探测端点"]')!).setValue('');
     const requests = delayWrites();
     const trial = modelDrawer.findAllComponents(Button).find((item) => item.text() === '试探一次')!;
     expect(trial.props('disabled')).toBe(true);
@@ -352,9 +366,15 @@ describe('站点操作互斥（真实 Mock 处理器延迟 1 秒）', () => {
         }[kind];
         await button(wrapper, label).trigger('click');
         await flushPromises();
+        if (kind === 'model-custom') await enableCustomEndpoint(wrapper);
         if (kind === 'model-custom') {
           const drawer = new DOMWrapper(document.querySelector('.ant-drawer')!);
-          await drawer.get('[aria-label="使用自定义探针请求"]').trigger('click');
+          for (const key of ['messages', 'stream', 'max_tokens', 'reasoning_effort'])
+            await drawer
+              .get(
+                `[data-request-section="body"] [data-parameter-key="${key}"] button[title="删除参数"]`,
+              )
+              .trigger('click');
           await drawer.get('[aria-label="自定义探测端点"]').setValue('/custom');
           await overlayButton('添加参数').trigger('click');
           await drawer.get(parameterKeySelector('')).setValue('prompt');
@@ -413,6 +433,7 @@ describe('站点操作互斥（真实 Mock 处理器延迟 1 秒）', () => {
       if (kind === 'model-custom')
         expect(state.sites[0].models[0].customRequest).toEqual({
           version: 2,
+          headers: [],
           endpoint: '/custom',
           parameters: [
             { enabled: true, key: 'model', value: '', type: 'string', binding: 'model' },
@@ -428,6 +449,7 @@ describe('站点操作互斥（真实 Mock 处理器延迟 1 秒）', () => {
       const wrapper = await mountPage();
       await button(wrapper, label).trigger('click');
       await flushPromises();
+      if (label === '设置模型 gpt-demo') await enableCustomEndpoint(wrapper);
       const requests = delayWrites();
       wrapper.getComponent(ModelList).vm.$emit('probe', 'site-1');
       await flushPromises();
@@ -455,9 +477,9 @@ describe('站点操作互斥（真实 Mock 处理器延迟 1 秒）', () => {
       expect(JSON.stringify(fields.props())).toBe(inputBefore);
       if (label === '设置模型 gpt-demo') {
         const toggle = wrapper.getComponent(ModelProbeSettingsDrawer).getComponent(Switch);
-        toggle.vm.$emit('update:checked', true);
+        toggle.vm.$emit('update:checked', false);
         await flushPromises();
-        expect(toggle.props('checked')).toBe(false);
+        expect(toggle.props('checked')).toBe(true);
       }
       await flushPromises();
       expect(requests().map(([command]) => command)).toEqual(['run_site_probe']);
@@ -501,9 +523,15 @@ describe('站点操作互斥（真实 Mock 处理器延迟 1 秒）', () => {
         }[kind];
         await button(wrapper, label).trigger('click');
         await flushPromises();
+        if (kind === 'model-custom') await enableCustomEndpoint(wrapper);
         if (kind === 'model-custom') {
           const drawer = new DOMWrapper(document.querySelector('.ant-drawer')!);
-          await drawer.get('[aria-label="使用自定义探针请求"]').trigger('click');
+          for (const key of ['messages', 'stream', 'max_tokens', 'reasoning_effort'])
+            await drawer
+              .get(
+                `[data-request-section="body"] [data-parameter-key="${key}"] button[title="删除参数"]`,
+              )
+              .trigger('click');
           await drawer.get('[aria-label="自定义探测端点"]').setValue('/custom');
           await overlayButton('添加参数').trigger('click');
           await drawer.get(parameterKeySelector('')).setValue('prompt');

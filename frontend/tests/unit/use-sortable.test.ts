@@ -44,10 +44,15 @@ it('拖拽后先恢复 DOM；业务拒绝保存时顺序不变；卸载销毁实
   const reorder = vi.fn();
   const wrapper = harness(reorder);
   await nextTick();
-  mock.options!.onStart?.({} as never);
-  mock.node!.appendChild(mock.node!.children[0]);
-  mock.options!.onEnd?.({ oldIndex: 0, newIndex: 2 } as never);
-  expect(reorder).toHaveBeenCalledWith(['b', 'c', 'a']);
+  expect(mock.options?.forceFallback).toBe(true);
+  mock.options!.onChoose?.({} as never);
+  const fallbackGhost = mock.node!.children[2].cloneNode(true) as HTMLElement;
+  fallbackGhost.classList.add('sortable-fallback');
+  mock.node!.appendChild(fallbackGhost);
+  mock.node!.insertBefore(mock.node!.children[2], mock.node!.children[0]);
+  mock.node!.removeChild(fallbackGhost);
+  mock.options!.onEnd?.({ oldIndex: 2, newIndex: 0 } as never);
+  expect(reorder).toHaveBeenCalledWith(['c', 'a', 'b']);
   expect([...mock.node!.children].map((c) => c.getAttribute('data-sort-id'))).toEqual([
     'a',
     'b',

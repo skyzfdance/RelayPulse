@@ -29,14 +29,18 @@ impl IqTest {
                 "IQ 参数展示标签须为 1–256 个字符。",
             ));
         }
-        let connection = self.source.snapshot(&input.model_key)?;
-        let sanitize = Sanitizer::new(&connection, previous);
+        let mut connection = self.source.snapshot(&input.model_key)?;
+        connection.target.headers =
+            crate::modules::sites::configured_request_headers(&input.headers)
+                .map_err(|_| invalid("input.headers", "请求头名称、值或类型无效。"))?;
+        let sanitize = Sanitizer::new(&connection, &input.headers, previous);
         let mut endpoint = crate::shared::model_client::endpoint(
             &connection.target.base_url,
             &connection.endpoint,
             false,
         )
         .map_err(|_| invalid("input.modelKey", "源连接端点无效。"))?;
+        // 展示快照沿用原有 URL 凭据脱敏；执行仍使用原始 Base URL + endpoint。
         endpoint.set_query(None);
         endpoint.set_fragment(None);
         let mut source = self
@@ -52,6 +56,10 @@ impl IqTest {
             endpoint: sanitize.text(endpoint.as_str()),
             created_at_ms: now_ms(),
             preset: sanitize.text(&input.preset),
+            headers: serde_json::from_value(
+                sanitize.value(&serde_json::to_value(&input.headers).map_err(|_| IqError::Worker)?),
+            )
+            .map_err(|_| IqError::Worker)?,
             parameters: sanitize
                 .value(&Value::Object(input.parameters.clone()))
                 .as_object()
@@ -67,6 +75,7 @@ impl IqTest {
             dto,
             connection,
             parameters: input.parameters,
+            headers: input.headers,
             sanitize,
         })
     }
@@ -89,6 +98,7 @@ impl IqTest {
                     model_key: old.dto.candidate.model_key.clone(),
                     preset: old.dto.preset.clone(),
                     parameters: old.parameters.clone(),
+                    headers: old.headers.clone(),
                 },
                 id,
                 Some(&old.sanitize),

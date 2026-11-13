@@ -260,6 +260,7 @@ async fn shutdown_cancels_prechecks_and_runs_and_drains_owned_tasks() {
     let p = reopened
         .iq_test
         .create_participant(IqParticipantInput {
+            headers: vec![],
             model_key: format!("{}/{}", site.id, site.models[0].id),
             preset: "custom".into(),
             parameters: Default::default(),

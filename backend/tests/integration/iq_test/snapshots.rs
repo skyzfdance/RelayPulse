@@ -137,6 +137,7 @@ async fn candidate_rules_and_execution_snapshots_survive_rotation_source_deletio
             Some(&site.models[0].id),
             None,
             Some(&CustomRequest {
+                headers: vec![],
                 version: 2,
                 endpoint: "/probe-template-only".into(),
                 parameters: vec![Parameter::new(
@@ -197,7 +198,7 @@ async fn candidate_rules_and_execution_snapshots_survive_rotation_source_deletio
         .head
         .starts_with("POST /frozen-endpoint?token=must-not-appear "));
     assert!(first.head.contains(&format!("Bearer {SECRET}")));
-    assert!(first.head.to_lowercase().contains("x-snapshot: original"));
+    assert!(!first.head.to_lowercase().contains("x-snapshot:"));
     let body: Value = serde_json::from_slice(&first.body).unwrap();
     assert!(body.get("max_tokens").is_none());
     assert!(body.get("probe_secret_parameter").is_none());
@@ -433,6 +434,7 @@ async fn backend_rejects_reserved_fields_unsafe_paths_and_wrong_parameter_types_
                 f.app
                     .iq_test
                     .create_participant(IqParticipantInput {
+                        headers: vec![],
                         model_key: model_key.clone(),
                         preset: "高 (high)".into(),
                         parameters: parameters.as_object().unwrap().clone()
@@ -455,5 +457,74 @@ async fn backend_rejects_reserved_fields_unsafe_paths_and_wrong_parameter_types_
         .unwrap()
         .participants
         .is_empty());
+    f.app.iq_test.stop().await;
+}
+
+#[tokio::test]
+async fn independent_headers_are_frozen_for_precheck_and_generation_and_redacted_in_history() {
+    use crate::shared::model_client::{Parameter, ParameterType};
+    let f = Fixture::new();
+    let server = Server::new(vec![success(Protocol::OpenaiCompatible); 2]);
+    let site = f.site(&server.url, Protocol::OpenaiCompatible, &["model"], false);
+    let headers = vec![
+        Parameter::new("x-iq-route", "frozen", ParameterType::String),
+        Parameter::new("x-client-token", "private-iq-token", ParameterType::String),
+        Parameter::new("x-auth", "private-x-auth", ParameterType::String),
+    ];
+    let p = f
+        .app
+        .iq_test
+        .create_participant(IqParticipantInput {
+            model_key: format!("{}/{}", site.id, site.models[0].id),
+            preset: "custom".into(),
+            headers: headers.clone(),
+            parameters: Default::default(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(p.headers[0].value, "frozen");
+    assert_eq!(p.headers[1].value, "[REDACTED]");
+    assert_eq!(p.headers[2].value, "[REDACTED]");
+    let mut policy = site.policy.clone();
+    policy.headers = vec![Parameter::new(
+        "x-iq-route",
+        "source-changed",
+        ParameterType::String,
+    )];
+    f.sites
+        .save_policy(&site.id, None, Some(&policy), None)
+        .unwrap();
+    assert_eq!(
+        f.app
+            .iq_test
+            .precheck(p.snapshot_id)
+            .await
+            .unwrap()
+            .precheck
+            .status,
+        PrecheckStatus::Available
+    );
+    let question = f.question("test frozen headers").await;
+    let run = f.start(&[question]).await;
+    let run = f.terminal(&run.id).await;
+    assert_eq!(run.status, RunStatus::Completed);
+    for request in server.requests() {
+        assert!(request.head.contains("x-iq-route: frozen"));
+        assert!(request.head.contains("x-client-token: private-iq-token"));
+        assert!(request.head.contains("x-auth: private-x-auth"));
+        assert!(!request.head.contains("source-changed"));
+    }
+    assert!(!serde_json::to_string(&run)
+        .unwrap()
+        .contains("private-iq-token"));
+    for (file, bytes) in support::files(&f.root()) {
+        if file
+            .extension()
+            .is_some_and(|ext| ext == "json" || ext == "jsonl")
+        {
+            assert!(!String::from_utf8_lossy(&bytes).contains("private-iq-token"));
+            assert!(!String::from_utf8_lossy(&bytes).contains("private-x-auth"));
+        }
+    }
     f.app.iq_test.stop().await;
 }

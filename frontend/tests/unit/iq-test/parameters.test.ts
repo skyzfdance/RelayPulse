@@ -10,6 +10,51 @@ import {
 
 const available = [{ modelName: 'model', precheck: { status: 'available' } }];
 describe('IQ 独立参数与开始门槛', () => {
+  it('所有模型共用固定档位列表，不根据协议或模型筛选选项', () => {
+    expect(iqPresets().map(({ value }) => value)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'custom',
+    ]);
+  });
+  it.each(['low', 'medium', 'high', 'xhigh', 'max'])(
+    'Anthropic 档位 %s 原值进入 effort，不换算预算或补充其他参数',
+    (effort) => {
+      expect(iqPresets()).toContainEqual({
+        value: effort,
+        label: expect.stringContaining(`(${effort})`),
+      });
+      expect(buildIqParameters('anthropic', effort, [])).toEqual({
+        output_config: { effort },
+      });
+    },
+  );
+  it('Anthropic 手写参数覆盖档位，只有显式填写预算才发送预算', () => {
+    const parameters = createRequestParameters({
+      output_config: { effort: 'vendor-effort', vendor_flag: true },
+      thinking: { type: 'enabled', budget_tokens: 12345 },
+    });
+    expect(buildIqParameters('anthropic', 'max', parameters)).toEqual({
+      output_config: { effort: 'vendor-effort', vendor_flag: true },
+      thinking: { type: 'enabled', budget_tokens: 12345 },
+    });
+    expect(buildIqParameters('anthropic', 'custom', [])).toEqual({});
+  });
+  it('自定义 HTTP 档位只作标记，不改写用户 Body', () => {
+    for (const { value } of iqPresets()) {
+      expect(buildIqParameters('custom-http', value, [])).toEqual({});
+      expect(
+        buildIqParameters(
+          'custom-http',
+          value,
+          createRequestParameters({ vendor_effort: 'manual', vendor_flag: true }),
+        ),
+      ).toEqual({ vendor_effort: 'manual', vendor_flag: true });
+    }
+  });
   it('手写嵌套参数覆盖预设并保留兄弟字段，不注入探针8-token参数', () => {
     const parameters = createRequestParameters({
       reasoning: { effort: 'low', summary: 'auto' },
@@ -21,7 +66,6 @@ describe('IQ 独立参数与开始门槛', () => {
     });
     expect(buildIqParameters('openai-compatible', 'max', [])).toEqual({ reasoning_effort: 'max' });
     expect(buildIqParameters('custom-http', 'custom', [])).toEqual({});
-    expect(iqPresets('custom-http')).toHaveLength(1);
   });
   it.each(['model', 'messages', 'messages.content', 'input', 'prompt', 'system', 'stream'])(
     '系统保留路径 %s 不可覆盖',

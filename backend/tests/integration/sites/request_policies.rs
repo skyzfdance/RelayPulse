@@ -118,10 +118,14 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
             expected
         );
     }
-    let server = Server::new(vec![
-        Response::raw(200, "text/plain", "OK"),
-        Response::raw(200, "text/plain", "OK"),
+    let response = Response::sse(&[
+        (
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n",
+            5,
+        ),
+        ("data: {\"type\":\"response.completed\"}\n\n", 0),
     ]);
+    let server = Server::new(vec![response.clone(), response]);
     let id = f
         .store
         .create(
@@ -139,6 +143,7 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
         .unwrap();
     let model = f.store.get(&id).unwrap().models[0].id.clone();
     let policy = ProbePolicy {
+        headers: vec![],
         version: 2,
         parameters: serde_json::from_value(json!([
             {"key":"model","type":"string","value":"","binding":"model"},
@@ -178,6 +183,7 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
                 Some(model.clone()),
                 None,
                 Some(CustomRequest {
+                    headers: vec![],
                     version: 2,
                     endpoint: "custom".into(),
                     parameters: vec![],
@@ -197,12 +203,124 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
         .await
         .unwrap();
     assert!(result.success);
-    assert_eq!(result.first_token_ms, None);
+    assert!(result.first_token_ms.is_some());
     assert!(server.requests()[1].head.starts_with("POST /basecustom "));
     assert_eq!(
         serde_json::from_slice::<Value>(&server.requests()[1].body).unwrap(),
         json!({})
     );
+}
+
+#[tokio::test]
+async fn independent_requests_keep_protocol_parsing_for_trial_and_formal_probes() {
+    use crate::shared::model_client::{CheckBody, Parameter, ParameterType};
+    for protocol in [
+        Protocol::OpenaiCompatible,
+        Protocol::OpenaiResponses,
+        Protocol::Anthropic,
+        Protocol::CustomHttp,
+    ] {
+        let response = match protocol {
+            Protocol::OpenaiCompatible => Response::sse(&[
+                ("data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n", 5),
+                ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", 0),
+                ("data: [DONE]\n\n", 0),
+            ]),
+            Protocol::OpenaiResponses => Response::sse(&[
+                ("data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n", 5),
+                ("data: {\"type\":\"response.completed\"}\n\n", 0),
+            ]),
+            Protocol::Anthropic => Response::sse(&[
+                ("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}}\n\n", 5),
+                ("data: {\"type\":\"message_stop\"}\n\n", 0),
+            ]),
+            Protocol::CustomHttp => Response::raw(200, "text/plain", "OK"),
+        };
+        let f = Fixture::new();
+        let server = Server::new(vec![
+            response.clone(),
+            response,
+            Response::raw(200, "text/plain", "invalid protocol response"),
+        ]);
+        let id = f
+            .store
+            .create(
+                &CreateSite {
+                    name: "independent".into(),
+                    protocol,
+                    base_url: format!("{}/usage", server.url),
+                    models_path: "/models".into(),
+                    probe_path: "/default".into(),
+                    secret: "fixture".into(),
+                    enabled: false,
+                },
+                &["remote".into()],
+            )
+            .unwrap();
+        let original = f.store.get(&id).unwrap();
+        let model = original.models[0].id.clone();
+        let custom = CustomRequest {
+            version: 2,
+            endpoint: "v1/res".into(),
+            headers: vec![Parameter::new(
+                "x-independent",
+                "visible",
+                ParameterType::String,
+            )],
+            parameters: vec![
+                Parameter::model(),
+                Parameter::new("custom", "body", ParameterType::String),
+            ],
+        };
+        let (trial, _) = f
+            .sites
+            .test_draft(id.clone(), model.clone(), custom.clone())
+            .await
+            .unwrap();
+        assert!(trial.success, "{protocol:?}");
+        assert_eq!(
+            trial.first_token_ms.is_some(),
+            protocol != Protocol::CustomHttp
+        );
+        assert_eq!(f.store.get(&id).unwrap(), original);
+        assert_eq!(f.count(), 0);
+        f.store
+            .save_policy(&id, Some(&model), None, Some(&custom))
+            .unwrap();
+        let snapshot = f.sites.execution_snapshot(id.clone()).await.unwrap();
+        let resolved = snapshot.resolve_probe_input(&model).unwrap();
+        assert_eq!(
+            matches!(resolved.body, CheckBody::Custom { .. }),
+            protocol == Protocol::CustomHttp
+        );
+        f.execute(Operation::Run(id.clone(), Some(model.clone())))
+            .await;
+        let states = f.monitoring.states(vec![model.clone()]).await.unwrap();
+        assert_eq!(
+            states[&model].first_token_ms.is_some(),
+            protocol != Protocol::CustomHttp
+        );
+        assert_eq!(f.count(), 1);
+        let (invalid, _) = f.sites.test_draft(id, model, custom).await.unwrap();
+        assert_eq!(invalid.success, protocol == Protocol::CustomHttp);
+        if protocol != Protocol::CustomHttp {
+            assert_eq!(
+                invalid.failure,
+                Some(crate::shared::model_client::CheckFailure::InvalidResponse)
+            );
+        }
+        for request in server.requests() {
+            assert!(request.head.starts_with("POST /usagev1/res "));
+            assert!(request
+                .head
+                .to_lowercase()
+                .contains("x-independent: visible"));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request.body).unwrap(),
+                json!({"model":"remote","custom":"body"})
+            );
+        }
+    }
 }
 #[tokio::test]
 async fn saved_parameter_table_controls_real_requests_inheritance_and_model_replacement() {
@@ -271,4 +389,85 @@ async fn saved_parameter_table_controls_real_requests_inheritance_and_model_repl
         serde_json::from_slice::<Value>(&server.requests()[2].body).unwrap(),
         json!({})
     );
+}
+
+#[tokio::test]
+async fn catalog_pagination_and_default_model_custom_probes_use_separate_header_tables() {
+    use crate::shared::model_client::{
+        Cancellation, ExecutionOptions, Parameter, ParameterType, RequestHeader,
+    };
+    let f = Fixture::new();
+    let server = Server::new(vec![
+        Response::json(json!({"data":[{"id":"first"}],"has_more":true,"last_id":"first"})),
+        Response::json(json!({"data":[{"id":"second"}],"has_more":false})),
+        Response::raw(200, "text/plain", "OK"),
+        Response::raw(200, "text/plain", "OK"),
+        Response::raw(200, "text/plain", "OK"),
+    ]);
+    let id = f.site(&format!("{}/usage", server.url), &["one", "two", "three"]);
+    let site = f.store.get(&id).unwrap();
+    let mut connection = site.connection.clone();
+    connection.models_path = "models".into();
+    connection.headers = vec![RequestHeader {
+        key: "x-catalog".into(),
+        value: "catalog".into(),
+    }];
+    f.store.save_connection(&id, &connection).unwrap();
+    let header = |value: &str| Parameter::new("x-probe.route", value, ParameterType::String);
+    let mut policy = site.policy.clone();
+    policy.headers = vec![header("default")];
+    let mut disabled = header("disabled");
+    disabled.key = "x-disabled".into();
+    disabled.enabled = false;
+    policy.headers.push(disabled.clone());
+    f.store.save_policy(&id, None, Some(&policy), None).unwrap();
+    policy.headers = vec![header("model")];
+    f.store
+        .save_policy(&id, Some(&site.models[1].id), Some(&policy), None)
+        .unwrap();
+    let custom = CustomRequest {
+        version: 2,
+        headers: vec![header("custom")],
+        endpoint: "custom".into(),
+        parameters: vec![],
+    };
+    f.store
+        .save_policy(&id, Some(&site.models[2].id), None, Some(&custom))
+        .unwrap();
+    f.service
+        .execute(Operation::Sync(
+            id.clone(),
+            vec!["one".into(), "two".into(), "three".into()],
+        ))
+        .await
+        .unwrap();
+    let snapshot = f.sites.execution_snapshot(id.clone()).await.unwrap();
+    assert_eq!(snapshot.site.policy.headers[1], disabled);
+    for model in &site.models {
+        ModelClient::default()
+            .check_once(
+                &snapshot.resolve_probe_input(&model.id).unwrap(),
+                ExecutionOptions::default(),
+                &Cancellation::default(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let requests = server.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(requests[0].head.starts_with("GET /usagemodels "));
+    assert!(requests[1]
+        .head
+        .starts_with("GET /usagemodels?after_id=first "));
+    for request in &requests[..2] {
+        assert!(request.head.contains("x-catalog: catalog"));
+        assert!(!request.head.contains("x-probe.route:"));
+    }
+    for (request, expected) in requests[2..].iter().zip(["default", "model", "custom"]) {
+        assert!(request.head.contains(&format!("x-probe.route: {expected}")));
+        assert!(!request.head.contains("x-catalog:"));
+        assert!(!request.head.contains("x-disabled:"));
+    }
+    assert!(requests[4].head.starts_with("POST /usagecustom "));
 }

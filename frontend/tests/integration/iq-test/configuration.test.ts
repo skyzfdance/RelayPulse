@@ -14,6 +14,7 @@ import { seedIqState } from '@/mocks/handlers/iq-test';
 import { useIqTestStore } from '@/stores/iq-test';
 
 import { deferred } from '../../support/deferred';
+import { previewBody } from '../../support/parameter-fields';
 import { chatPolicy } from '../../support/parameter-fields';
 
 import IqTestView from '@/views/iq-test/task/IqTestView.vue';
@@ -86,6 +87,138 @@ async function choose(page: TestPage, label: string, value: string) {
 }
 
 describe('IQ 配置页与参与者抽屉', () => {
+  it('跨模型与协议切换保持相同档位列表和选择，自定义 HTTP 仅保存标记与手填 Body', async () => {
+    const responsesSite = structuredClone(sitesState.sites[0]!);
+    responsesSite.id = 'site-responses';
+    responsesSite.name = 'Responses';
+    responsesSite.protocol = 'openai-responses';
+    responsesSite.connection.probePath = '/responses';
+    sitesState.sites.push(responsesSite);
+    sitesState.sites[2]!.protocol = 'custom-http';
+    const create = vi.spyOn(taskApi, 'createIqParticipant');
+    const page = await setup();
+    const drawer = await openDrawer(page);
+    await choose(page, '参与者模型', 'site-1/model-0-0');
+    await choose(page, '推理强度', 'max');
+    const select = page.wrapper
+      .findAllComponents(Select)
+      .find((item) => item.vm.$attrs['aria-label'] === '推理强度')!;
+    for (const [modelKey, reasoning] of [
+      ['site-1/model-0-1', { reasoning_effort: 'max' }],
+      ['site-2/model-1-0', { output_config: { effort: 'max' } }],
+      ['site-responses/model-0-0', { reasoning: { effort: 'max' } }],
+      ['site-3/model-2-0', {}],
+    ] as const) {
+      await choose(page, '参与者模型', modelKey);
+      expect(select.props('options')?.map(({ value }) => value)).toEqual([
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+        'custom',
+      ]);
+      expect(select.props('value')).toBe('max');
+      const { model, messages, input, stream, ...parameters } = previewBody(drawer);
+      expect(parameters).toEqual(reasoning);
+      expect(model).toBeTruthy();
+      expect(messages ?? input).toEqual([{ role: 'user', content: '<当前题目，由测试流程填入>' }]);
+      expect(stream).toBe(true);
+    }
+    await drawer
+      .findAll('[data-request-section="body"] button')
+      .find((item) => item.text().includes('添加参数'))!
+      .trigger('click');
+    await drawer.get('input[aria-label="参数字段 1"]').setValue('vendor_effort');
+    await drawer.get('[aria-label="参数值 1"]').setValue('manual');
+    expect(previewBody(drawer)).toEqual({
+      vendor_effort: 'manual',
+      model: 'gpt-demo',
+      stream: true,
+      messages: [{ role: 'user', content: '<当前题目，由测试流程填入>' }],
+    });
+    await drawer.get('.ant-drawer-footer .ant-btn-primary').trigger('click');
+    await flushPromises();
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      modelKey: 'site-3/model-2-0',
+      headers: [],
+      preset: '最大 (max)',
+      parameters: { vendor_effort: 'manual' },
+    });
+  });
+
+  it('Anthropic 推理选项、请求预览与提交快照保持相同 effort 原值', async () => {
+    const create = vi.spyOn(taskApi, 'createIqParticipant');
+    const page = await setup();
+    const drawer = await openDrawer(page);
+    await choose(page, '参与者模型', 'site-2/model-1-0');
+    const select = page.wrapper
+      .findAllComponents(Select)
+      .find((item) => item.vm.$attrs['aria-label'] === '推理强度')!;
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      expect(select.props('options')).toContainEqual({
+        value: effort,
+        label: expect.stringContaining(`(${effort})`),
+      });
+      await choose(page, '推理强度', effort);
+      expect(previewBody(drawer)).toEqual({
+        output_config: { effort },
+        model: 'claude-sonnet-demo',
+        stream: true,
+        messages: [{ role: 'user', content: '<当前题目，由测试流程填入>' }],
+      });
+    }
+    await drawer.get('.ant-drawer-footer .ant-btn-primary').trigger('click');
+    await flushPromises();
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      modelKey: 'site-2/model-1-0',
+      headers: [],
+      preset: '最大 (max)',
+      parameters: { output_config: { effort: 'max' } },
+    });
+  });
+
+  it('请求头初始独立为空，可显式复制模型并修改副本，保存不改源模型', async () => {
+    const model = sitesState.sites[0]!.models[0]!;
+    model.policy = chatPolicy();
+    model.policy.headers = [
+      { key: 'anthropic-beta', value: 'source-feature', type: 'string', enabled: true },
+      { key: 'x-disabled', value: 'retained', type: 'string', enabled: false },
+    ];
+    const create = vi.spyOn(taskApi, 'createIqParticipant');
+    const page = await setup();
+    const drawer = await openDrawer(page);
+    await choose(page, '参与者模型', 'site-1/model-0-0');
+    expect(drawer.find('[data-parameter-key="anthropic-beta"]').exists()).toBe(false);
+    await drawer
+      .findAll('button')
+      .find((item) => item.text().includes('从模型复制请求头'))!
+      .trigger('click');
+    await flushPromises();
+    await drawer
+      .get(
+        '[data-request-section="headers"] [data-parameter-key="anthropic-beta"] input[aria-label^="参数值"]',
+      )
+      .setValue('iq-feature');
+    const previewHeaders = JSON.parse(drawer.get('[aria-label="请求头 JSON"]').text());
+    expect(previewHeaders).toMatchObject({
+      'anthropic-beta': 'iq-feature',
+    });
+    expect(previewHeaders).not.toHaveProperty('x-disabled');
+    expect(previewBody(drawer)).not.toHaveProperty('anthropic-beta');
+    await drawer.get('.ant-drawer-footer .ant-btn-primary').trigger('click');
+    await flushPromises();
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: [
+          { key: 'anthropic-beta', value: 'iq-feature', type: 'string', enabled: true },
+          { key: 'x-disabled', value: 'retained', type: 'string', enabled: false },
+        ],
+      }),
+    );
+    expect(model.policy.headers[0]!.value).toBe('source-feature');
+  });
+
   it('添加后预检等待期间显示旋转图标，返回结果后恢复可用状态', async () => {
     const pending = deferred<IqParticipant>();
     vi.spyOn(taskApi, 'runIqPrecheck').mockReturnValueOnce(pending.promise);
@@ -107,24 +240,28 @@ describe('IQ 配置页与参与者抽屉', () => {
     expect(row.find('.animate-spin').exists()).toBe(false);
   });
 
-  it('预览区域常驻，参数无效时提示修正，恢复有效后展示独立 IQ 参数', async () => {
+  it('请求预览页展示完整请求，参数无效时提示修正，恢复后展示独立 IQ 参数', async () => {
     const site = sitesState.sites[0]!;
     site.policy = chatPolicy('站点探针内容', 8, { temperature: 0.9 });
     const originalPolicy = JSON.stringify(site.policy);
     const create = vi.spyOn(taskApi, 'createIqParticipant');
     const page = await setup();
     const drawer = await openDrawer(page);
-    const preview = () => drawer.get('[aria-label="IQ 参数预览"]');
+    const preview = () => drawer.get('[aria-label="有效请求预览"]');
     const submit = () => drawer.get('.ant-drawer-footer .ant-btn-primary');
     const addParameter = () =>
       drawer
-        .findAll('button')
+        .findAll('[data-request-section="body"] button')
         .find((item) => item.text().includes('添加参数'))!
         .trigger('click');
 
     expect(preview().text()).toBe('请先选择模型后查看预览。');
     await choose(page, '参与者模型', 'site-1/model-0-0');
-    expect(JSON.parse(preview().text())).toEqual({ reasoning_effort: 'high' });
+    expect(previewBody(preview())).toMatchObject({
+      reasoning_effort: 'high',
+      model: 'gpt-demo',
+      stream: true,
+    });
 
     await addParameter();
     expect(drawer.get('[role="alert"]').text()).toBe('请输入参数字段');
@@ -134,14 +271,14 @@ describe('IQ 配置页与参与者抽屉', () => {
     const row = drawer.get('[data-parameter-key=""]');
     await row.get('[aria-label^="参数字段 "]').setValue('asu');
     await row.get('[aria-label^="参数值 "]').setValue('d');
-    expect(JSON.parse(preview().text())).toEqual({ reasoning_effort: 'high', asu: 'd' });
+    expect(previewBody(preview())).toMatchObject({ reasoning_effort: 'high', asu: 'd' });
     expect(submit().attributes('disabled')).toBeUndefined();
 
     await addParameter();
     expect(preview().text()).toBe('请先修正配置后查看预览。');
     expect(submit().attributes('disabled')).toBeDefined();
     await drawer.get('[data-parameter-key=""] button[title="删除参数"]').trigger('click');
-    expect(JSON.parse(preview().text())).toEqual({ reasoning_effort: 'high', asu: 'd' });
+    expect(previewBody(preview())).toMatchObject({ reasoning_effort: 'high', asu: 'd' });
     expect(submit().attributes('disabled')).toBeUndefined();
     expect(JSON.stringify(site.policy)).toBe(originalPolicy);
     expect(create).not.toHaveBeenCalled();
@@ -175,13 +312,13 @@ describe('IQ 配置页与参与者抽屉', () => {
       .setValue(true);
     const drawer = await openDrawer(page);
     await choose(page, '参与者模型', 'site-1/model-0-0');
-    expect(drawer.text()).toContain('暂无手写参数');
-    expect(drawer.get('[aria-label="IQ 参数预览"]').text()).toBe(
-      '{\n  "reasoning_effort": "high"\n}',
-    );
+    expect(drawer.text()).toContain('暂无请求参数');
+    expect(previewBody(drawer)).toMatchObject({
+      reasoning_effort: 'high',
+    });
     expect(drawer.text()).not.toContain('探针题面不能带入IQ');
     await drawer
-      .findAll('button')
+      .findAll('[data-request-section="body"] button')
       .find((item) => item.text().includes('添加参数'))!
       .trigger('click');
     await drawer.get('input[aria-label="参数字段 1"]').setValue('reasoning_effort');
@@ -190,6 +327,7 @@ describe('IQ 配置页与参与者抽屉', () => {
     await flushPromises();
     expect(create).toHaveBeenCalledExactlyOnceWith({
       modelKey: 'site-1/model-0-0',
+      headers: [],
       preset: '高 (high)',
       parameters: { reasoning_effort: 'low' },
     });
@@ -241,7 +379,7 @@ describe('IQ 配置页与参与者抽屉', () => {
     const drawer = await openDrawer(page);
     await choose(page, '参与者模型', 'site-1/model-0-0');
     await drawer
-      .findAll('button')
+      .findAll('[data-request-section="body"] button')
       .find((item) => item.text().includes('添加参数'))!
       .trigger('click');
     await drawer.get('input[aria-label="参数字段 1"]').setValue('messages');
@@ -256,6 +394,7 @@ describe('IQ 配置页与参与者抽屉', () => {
     await flushPromises();
     expect(create).toHaveBeenCalledExactlyOnceWith({
       modelKey: 'site-1/model-0-0',
+      headers: [],
       preset: '高 (high)',
       parameters: { reasoning_effort: 'high' },
     });
@@ -266,10 +405,10 @@ describe('IQ 配置页与参与者抽屉', () => {
     const drawer = await openDrawer(page);
     await choose(page, '参与者模型', 'site-1/model-0-0');
     await choose(page, '推理强度', 'max');
-    expect(drawer.get('[aria-label="IQ 参数预览"]').text()).toContain('max');
+    expect(drawer.get('[aria-label="有效请求预览"]').text()).toContain('max');
     await page.store.refresh();
     await flushPromises();
-    expect(drawer.get('[aria-label="IQ 参数预览"]').text()).toContain('max');
+    expect(drawer.get('[aria-label="有效请求预览"]').text()).toContain('max');
     const select = page.wrapper
       .findAllComponents(Select)
       .find((item) => item.vm.$attrs['aria-label'] === '推理强度')!;

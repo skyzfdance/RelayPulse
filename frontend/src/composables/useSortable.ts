@@ -20,11 +20,16 @@ export function useSortable(
       if (!node) return;
       sortable = Sortable.create(node, {
         animation: 150,
+        // Use pointer-driven fallback drag so sorting also works in embedded WebViews
+        // where native HTML drag events may not start reliably.
+        forceFallback: true,
         handle: '[data-sort-handle]',
         draggable: '[data-sort-id]',
         dataIdAttr: 'data-sort-id',
         disabled: toValue(options.disabled) ?? false,
-        onStart: () => {
+        // `onStart` runs after forceFallback inserts its shadow row. Capture the
+        // source order earlier, before that temporary node enters the list.
+        onChoose: () => {
           original = sortable?.toArray() ?? [];
         },
         onEnd: ({ oldIndex, newIndex }) => {

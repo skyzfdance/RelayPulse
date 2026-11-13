@@ -319,7 +319,7 @@ describe('探测记录的前端命令契约和 Mock', () => {
       probedAt: expect.any(String),
       requestInfo: {
         endpoint: 'https://input.codes/v1/responses',
-        strategyLabel: '低推理',
+        strategyLabel: '继承站点默认',
         httpStatus: 200,
         requestId: 'mock-request-probe-001',
       },

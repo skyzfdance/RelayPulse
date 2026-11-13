@@ -89,6 +89,7 @@ describe('IQ 回放证据手动保留', () => {
     vi.setSystemTime(new Date('2025-01-01T00:00:00Z'));
     const participant = await taskApi.createIqParticipant({
       modelKey: 'site-1/model-0-0',
+      headers: [],
       preset: 'high',
       parameters: { reasoning_effort: 'high' },
     });
@@ -120,6 +121,7 @@ describe('IQ 回放证据手动保留', () => {
     );
     const nextParticipant = await taskApi.createIqParticipant({
       modelKey: 'site-1/model-0-0',
+      headers: [],
       preset: 'high',
       parameters: { reasoning_effort: 'high' },
     });

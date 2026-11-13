@@ -17,6 +17,7 @@ async fn repeated_and_conflicting_requests_are_rejected_and_abort_releases_lease
                 target,
                 model_id,
                 CustomRequest {
+                    headers: vec![],
                     version: 2,
                     endpoint: "/draft".into(),
                     parameters: vec![],

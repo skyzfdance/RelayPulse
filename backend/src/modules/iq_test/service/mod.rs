@@ -40,6 +40,7 @@ pub(super) struct ParticipantExecution {
     pub dto: IqParticipant,
     pub connection: IqConnectionSnapshot,
     pub parameters: Map<String, Value>,
+    pub headers: Vec<crate::shared::model_client::Parameter>,
     pub sanitize: Sanitizer,
 }
 pub(super) struct RunControl {
@@ -277,48 +278,38 @@ impl Drop for Done {
 /// 只用于元信息/DTO 的已知连接秘密脱敏，不改写响应事实文件。
 #[derive(Clone)]
 pub(super) struct Sanitizer {
-    patterns: Vec<zeroize::Zeroizing<String>>,
+    text: crate::shared::text_redaction::TextRedactor,
 }
 impl Sanitizer {
-    fn new(connection: &IqConnectionSnapshot, previous: Option<&Self>) -> Self {
+    fn new(
+        connection: &IqConnectionSnapshot,
+        configured_headers: &[crate::shared::model_client::Parameter],
+        previous: Option<&Self>,
+    ) -> Self {
         // 重新建立连接后，旧凭据仍属于已知秘密，不能从原 IQ 参数中重新泄露。
-        let mut patterns = previous.map(|s| s.patterns.clone()).unwrap_or_default();
-        patterns.push(zeroize::Zeroizing::new(
-            connection.target.secret.to_string(),
-        ));
-        for header in &connection.target.headers {
-            let key = header.key.to_ascii_lowercase();
-            if [
-                "authorization",
-                "token",
-                "secret",
-                "key",
-                "cookie",
-                "password",
-                "credential",
-            ]
+        let mut text = previous.map(|s| s.text.clone()).unwrap_or_default();
+        let mut patterns = vec![connection.target.secret.as_str()];
+        for (name, value) in connection
+            .target
+            .headers
             .iter()
-            .any(|word| key.contains(word))
-            {
-                patterns.push(zeroize::Zeroizing::new(header.value.clone()));
-                if key.contains("authorization") {
-                    if let Some((_, credential)) = header.value.split_once(' ') {
-                        patterns.push(zeroize::Zeroizing::new(credential.trim().to_owned()));
+            .map(|h| (&h.key, &h.value))
+            .chain(configured_headers.iter().map(|h| (&h.key, &h.value)))
+        {
+            if crate::modules::sites::sensitive_request_header(name) {
+                patterns.push(value.as_str());
+                if name.to_ascii_lowercase().contains("authorization") {
+                    if let Some((_, credential)) = value.split_once(' ') {
+                        patterns.push(credential.trim());
                     }
                 }
             }
         }
-        patterns.retain(|s| !s.is_empty());
-        patterns.sort_by_key(|s| std::cmp::Reverse(s.len()));
-        patterns.dedup();
-        Self { patterns }
+        text = text.extended(patterns);
+        Self { text }
     }
     fn text(&self, text: &str) -> String {
-        let mut text = text.to_owned();
-        for pattern in &self.patterns {
-            text = text.replace(pattern.as_str(), "[REDACTED]");
-        }
-        text
+        self.text.text(text)
     }
     pub(super) fn value(&self, value: &Value) -> Value {
         match value {

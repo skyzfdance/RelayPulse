@@ -1,13 +1,19 @@
 <script setup lang="ts">
-import type { RequestParameterDraft } from '@/types/request-parameters';
+import type { RequestParameterDraft, RequestParameterValidator } from '@/types/request-parameters';
 
 import { ref } from 'vue';
 
+import { mergeRequestHeadersFromJson } from '@/utils/request-headers';
 import { mergeRequestParametersFromJson } from '@/utils/request-parameters';
 
 defineOptions({ name: 'RequestParameterJsonImport' });
 
-const props = defineProps<{ parameters: RequestParameterDraft[]; disabled?: boolean }>();
+const props = defineProps<{
+  parameters: RequestParameterDraft[];
+  disabled?: boolean;
+  mode?: 'body' | 'headers';
+  validation?: RequestParameterValidator;
+}>();
 const emit = defineEmits<{ apply: [parameters: RequestParameterDraft[]]; close: [] }>();
 const json = ref('');
 const error = ref('');
@@ -23,7 +29,14 @@ function updateJson(value: string) {
 function submit() {
   if (props.disabled) return;
   try {
-    const imported = mergeRequestParametersFromJson(props.parameters, json.value);
+    const imported = (
+      props.mode === 'headers' ? mergeRequestHeadersFromJson : mergeRequestParametersFromJson
+    )(props.parameters, json.value);
+    const validationError = props
+      .validation?.(imported)
+      .flatMap((item) => [item.key, item.value])
+      .find(Boolean);
+    if (validationError) throw new Error(validationError);
     emit('apply', imported);
     emit('close');
   } catch (cause) {
@@ -46,7 +59,11 @@ function submit() {
     @ok="submit"
   >
     <p class="mt-0! mb-3! text-xs leading-5 text-rp-secondary">
-      粘贴 JSON 对象，自动识别参数类型；同名参数覆盖现有值，其余参数保留。嵌套对象按字段合并。
+      {{
+        mode === 'headers'
+          ? '粘贴字符串键值的 JSON 对象；同名请求头覆盖现有值，其余请求头保留。'
+          : '粘贴 JSON 对象，自动识别参数类型；同名参数覆盖现有值，其余参数保留。嵌套对象按字段合并。'
+      }}
     </p>
     <a-textarea
       :value="json"
@@ -54,7 +71,9 @@ function submit() {
       :status="error ? 'error' : undefined"
       :aria-invalid="Boolean(error)"
       aria-label="JSON 参数"
-      :placeholder="placeholder"
+      :placeholder="
+        mode === 'headers' ? '{\n  &quot;x-route&quot;: &quot;custom-value&quot;\n}' : placeholder
+      "
       :auto-size="{ minRows: 10, maxRows: 18 }"
       :spellcheck="false"
       class="font-mono text-xs!"

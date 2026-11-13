@@ -39,6 +39,7 @@ async fn missing_anthropic_max_tokens_is_sent_unchanged_rejected_silently_and_bl
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].head.contains(&format!("x-api-key: {SECRET}")));
+    assert!(!requests[0].head.contains("anthropic-version:"));
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body["model"], "actual-model");
     assert_eq!(body["stream"], true);
@@ -71,6 +72,74 @@ async fn missing_anthropic_max_tokens_is_sent_unchanged_rejected_silently_and_bl
 }
 
 #[tokio::test]
+async fn anthropic_precheck_generation_and_history_use_only_enabled_provider_headers() {
+    use crate::shared::model_client::{Parameter, ParameterType};
+    for enabled in [None, Some(false), Some(true)] {
+        let f = Fixture::new();
+        let server = Server::new(vec![success(Protocol::Anthropic); 2]);
+        let site = f.site(&server.url, Protocol::Anthropic, &["remote"], false);
+        let mut headers = vec![];
+        if let Some(enabled) = enabled {
+            let mut header =
+                Parameter::new("anthropic-version", "user-version", ParameterType::String);
+            header.enabled = enabled;
+            headers.push(header);
+        }
+        let p = f
+            .app
+            .iq_test
+            .create_participant(IqParticipantInput {
+                model_key: format!("{}/{}", site.id, site.models[0].id),
+                preset: "custom".into(),
+                headers: headers.clone(),
+                parameters: Default::default(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            f.app
+                .iq_test
+                .precheck(p.snapshot_id)
+                .await
+                .unwrap()
+                .precheck
+                .status,
+            PrecheckStatus::Available
+        );
+        let question = f.question("test visible headers").await;
+        let run = f.start(&[question]).await;
+        let run = f.terminal(&run.id).await;
+        assert_eq!(run.status, RunStatus::Completed);
+        assert_eq!(run.participants[0].headers, headers);
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            assert!(request.head.contains(&format!("x-api-key: {SECRET}")));
+            assert_eq!(
+                request.head.contains("anthropic-version: user-version"),
+                enabled == Some(true)
+            );
+        }
+        let mut metas = 0;
+        for (path, bytes) in support::files(&f.root()) {
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("meta."))
+            {
+                let meta: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(
+                    meta["participant"]["headers"],
+                    serde_json::to_value(&headers).unwrap()
+                );
+                metas += 1;
+            }
+        }
+        assert_eq!(metas, 1);
+        f.app.iq_test.stop().await;
+    }
+}
+
+#[tokio::test]
 async fn every_protocol_precheck_and_generation_preserve_the_same_user_parameter_object() {
     for protocol in [
         Protocol::OpenaiCompatible,
@@ -83,6 +152,7 @@ async fn every_protocol_precheck_and_generation_preserve_the_same_user_parameter
         let site = f.site(&server.url, protocol, &["actual-model"], true);
         let mut parameters = json!({
             "thinking":{"type":"enabled","budget_tokens":32000},
+            "output_config":{"effort":"max"},
             "reasoning":{"effort":"high"},
             "reasoning_effort":"medium",
             "temperature":0.37,
@@ -144,7 +214,7 @@ async fn rejected_parameter_reason_redacts_current_old_and_authorization_credent
         )
     };
     let mut rotated_error = rejection(format!(
-        "unsupported parameter vendor_feature; old={SECRET}; current={NEW_KEY}; old-auth={OLD_AUTH}; new-auth={NEW_AUTH}; old-header={OLD_HEADER}; new-header={NEW_HEADER}"
+        "unsupported parameter vendor_feature; old={SECRET}; current={NEW_KEY}; old-auth={OLD_AUTH}; old-header={OLD_HEADER}"
     ));
     let body = rotated_error.parts.remove(0).1;
     rotated_error.parts = body
@@ -172,7 +242,27 @@ async fn rejected_parameter_reason_redacts_current_old_and_authorization_credent
     ];
     f.sites.save_connection(&site.id, &connection).unwrap();
     let parameters = json!({"vendor_feature":true,"max_tokens":48000});
-    let p = f.participant(&site, 0, parameters.clone()).await;
+    let p = f
+        .app
+        .iq_test
+        .create_participant(IqParticipantInput {
+            model_key: format!("{}/{}", site.id, site.models[0].id),
+            preset: "custom".into(),
+            headers: connection
+                .headers
+                .iter()
+                .map(|header| {
+                    crate::shared::model_client::Parameter::new(
+                        &header.key,
+                        &header.value,
+                        crate::shared::model_client::ParameterType::String,
+                    )
+                })
+                .collect(),
+            parameters: parameters.as_object().unwrap().clone(),
+        })
+        .await
+        .unwrap();
     let old = f.app.iq_test.precheck(p.snapshot_id.clone()).await.unwrap();
     assert_eq!(old.precheck.status, PrecheckStatus::Unavailable);
     assert!(old
@@ -233,9 +323,7 @@ async fn rejected_parameter_reason_redacts_current_old_and_authorization_credent
         SECRET,
         NEW_KEY,
         OLD_AUTH,
-        NEW_AUTH,
         OLD_HEADER,
-        NEW_HEADER,
         "never-return-the-whole-response",
     ] {
         assert!(!result.precheck.message.contains(secret), "{secret}");
@@ -264,6 +352,14 @@ async fn rejected_parameter_reason_redacts_current_old_and_authorization_credent
     assert!(requests[0].head.contains(&format!("Bearer {SECRET}")));
     assert!(requests[1].head.contains(&format!("Bearer {NEW_KEY}")));
     for request in requests {
+        assert!(request
+            .head
+            .contains(&format!("x-vendor-authorization: Bearer {OLD_AUTH}")));
+        assert!(request
+            .head
+            .contains(&format!("x-client-token: {OLD_HEADER}")));
+        assert!(!request.head.contains(NEW_AUTH));
+        assert!(!request.head.contains(NEW_HEADER));
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(body["vendor_feature"], true);
         assert_eq!(body["max_tokens"], 48000);

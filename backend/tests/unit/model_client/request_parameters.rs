@@ -88,3 +88,35 @@ fn parameter_table_controls_every_body_field_and_parent_state_for_every_protocol
         assert_eq!(request::prepare(&input).unwrap().body, json!({}));
     }
 }
+
+#[test]
+fn header_parameters_are_flat_strings_with_case_insensitive_names_and_disabled_drafts() {
+    use super::super::{header_parameters, Parameter, ParameterBinding, ParameterType};
+    let mut disabled = Parameter::new("invalid header", "bad\nvalue", ParameterType::Number);
+    disabled.enabled = false;
+    let mut headers = vec![
+        Parameter::new("X.Route", "literal", ParameterType::String),
+        disabled,
+    ];
+    let actual = header_parameters(&headers).unwrap();
+    assert_eq!(actual.len(), 1);
+    assert_eq!(
+        (&actual[0].key, &actual[0].value),
+        (&"X.Route".into(), &"literal".into())
+    );
+    headers.push(Parameter::new(
+        "x.route",
+        "duplicate",
+        ParameterType::String,
+    ));
+    assert!(header_parameters(&headers).is_err());
+    headers.pop();
+    headers[0].kind = ParameterType::Number;
+    assert!(header_parameters(&headers).is_err());
+    headers[0].kind = ParameterType::String;
+    headers[0].binding = Some(ParameterBinding::Model);
+    assert!(header_parameters(&headers).is_err());
+    headers[0].binding = None;
+    headers[0].key = "Authorization".into();
+    assert_eq!(header_parameters(&headers).unwrap()[0].key, "Authorization");
+}

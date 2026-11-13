@@ -1,6 +1,9 @@
 import type { Connection, RequestHeader } from '@/types/domain/sites';
 
+import { httpHeaderNameError, httpHeaderValueError } from '@/utils/http-headers';
 import { requestUrl } from '@/utils/request-url';
+
+import { credentialHeaderError } from './site-request';
 
 export const connectionNumberFields = {
   intervalSeconds: {
@@ -91,21 +94,21 @@ export function headerNameError(
   headers: RequestHeader[],
   index: number,
 ): string | null {
-  const error = textError(value, '请求头名称');
+  if (typeof value !== 'string' || value === '') return '请输入请求头名称';
+  if (value !== value.trim()) return '请求头名称首尾不能有空格';
+  const error = httpHeaderNameError(value);
   if (error) return error;
   const key = (value as string).toLowerCase();
-  if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/u.test(key)) return '请求头名称格式无效';
-  if (['authorization', 'x-api-key', 'cookie', 'proxy-authorization'].includes(key))
-    return '访问凭据请使用专用凭据字段';
+  const credentialError = credentialHeaderError(key);
+  if (credentialError) return credentialError;
   if (headers.some((header, i) => i !== index && header.key.toLowerCase() === key))
     return '请求头不能重复';
   return null;
 }
 
 export function headerValueError(value: unknown): string | null {
-  const error = textError(value, '请求头值', true);
-  if (error) return error;
-  return /[\r\n]/u.test(value as string) ? '请求头值不能包含换行' : null;
+  if (typeof value === 'string' && value !== value.trim()) return '请求头值首尾不能有空格';
+  return httpHeaderValueError(value);
 }
 
 export function validateConnection(connection: Connection, baseUrl: string): string | null {

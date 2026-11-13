@@ -72,9 +72,9 @@ fn wire(value: &Value) -> String {
 fn thinking_is_first_output_but_does_not_replace_a_valid_answer() {
     for (protocol, thinking) in thinking_cases() {
         let mut content = stream::Content::default();
-        assert!(content.observe(&thinking, protocol), "{thinking}");
+        assert!(content.observe(&thinking, protocol, true), "{thinking}");
         assert!(!content.success());
-        content.observe(&ended(protocol), protocol);
+        content.observe(&ended(protocol), protocol, true);
         assert!(
             !content.success(),
             "thinking alone must not pass: {thinking}"
@@ -136,7 +136,7 @@ fn empty_thinking_control_events_and_signatures_are_not_first_output() {
         (Protocol::Anthropic, json!({"type":"ping"})),
     ] {
         let mut content = stream::Content::default();
-        assert!(!content.observe(&event, protocol), "{event}");
+        assert!(!content.observe(&event, protocol, true), "{event}");
         assert!(!content.success());
     }
 }

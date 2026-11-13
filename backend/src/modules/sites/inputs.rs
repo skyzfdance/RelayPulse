@@ -1,7 +1,7 @@
 //! 配置继承与执行数据归站点；公共客户端只收到已经解析的请求规格。
 use super::{
-    access::Lease, require_model, validation, CustomRequest, Model, Protocol, Result, Site,
-    SiteError,
+    access::Lease, require_model, validation, CustomRequest, Model, Parameter, Protocol, Result,
+    Site, SiteError,
 };
 use crate::shared::model_client::{
     CatalogRequest, CheckBody, CheckRequest, EndpointMode, RequestTarget,
@@ -20,17 +20,12 @@ impl ExecutionSnapshot {
         }
         let policy = model.policy.as_ref().unwrap_or(&self.site.policy);
         validation::policy(policy, self.site.protocol)?;
-        let body = if self.site.protocol == Protocol::CustomHttp {
-            CheckBody::Custom {
-                parameters: policy.parameters.clone(),
-            }
-        } else {
-            CheckBody::Standard {
-                parameters: policy.parameters.clone(),
-            }
-        };
+        let body = probe_body(self.site.protocol, policy.parameters.clone());
         Ok(CheckRequest {
-            target: self.target.clone(),
+            target: RequestTarget {
+                headers: super::configured_request_headers(&policy.headers)?,
+                ..self.target.clone()
+            },
             model: model.name.clone(),
             endpoint: self.site.connection.probe_path.clone(),
             endpoint_mode: EndpointMode::Relative,
@@ -45,13 +40,14 @@ impl ExecutionSnapshot {
         let model = require_model(&self.site, model_id)?;
         validation::custom(draft, &self.site.base_url)?;
         Ok(CheckRequest {
-            target: self.target.clone(),
+            target: RequestTarget {
+                headers: super::configured_request_headers(&draft.headers)?,
+                ..self.target.clone()
+            },
             model: model.name.clone(),
             endpoint: draft.endpoint.clone(),
             endpoint_mode: EndpointMode::SameOriginAppend,
-            body: CheckBody::Custom {
-                parameters: draft.parameters.clone(),
-            },
+            body: probe_body(self.site.protocol, draft.parameters.clone()),
         })
     }
     pub(super) fn catalog_request(&self) -> CatalogRequest {
@@ -61,6 +57,16 @@ impl ExecutionSnapshot {
         }
     }
 }
+
+// 独立配置只替换请求内容；响应仍按站点协议解析。
+fn probe_body(protocol: Protocol, parameters: Vec<Parameter>) -> CheckBody {
+    if protocol == Protocol::CustomHttp {
+        CheckBody::Custom { parameters }
+    } else {
+        CheckBody::Standard { parameters }
+    }
+}
+
 /// 正式执行在整个请求及结果事务期间持有此作用域；内部锁不暴露给调用者。
 pub struct SiteExecutionScope {
     snapshot: ExecutionSnapshot,

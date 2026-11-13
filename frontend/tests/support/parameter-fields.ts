@@ -15,7 +15,11 @@ export const parameterValueSelector = (key: string) =>
 export const messagesValue = (content: string) => JSON.stringify([{ role: 'user', content }]);
 
 export function policyWithBody(body: Record<string, unknown>): ProbePolicy {
-  return { version: 2, parameters: serializeRequestParameters(createRequestParameters(body)) };
+  return {
+    version: 2,
+    headers: [],
+    parameters: serializeRequestParameters(createRequestParameters(body)),
+  };
 }
 
 export function chatPolicy(
@@ -50,4 +54,10 @@ export function setPolicyPrompt(policy: ProbePolicy, value: string) {
     (parameter) => parameter.key === 'input' || parameter.key === 'messages',
   )!;
   parameter.value = parameter.key === 'input' ? value : messagesValue(value);
+}
+
+export function previewBody(preview: {
+  get(selector: string): { text(): string };
+}): Record<string, unknown> {
+  return JSON.parse(preview.get('[aria-label="请求体 JSON"]').text());
 }

@@ -5,3 +5,5 @@ pub(crate) use relaypulse_runtime::shared::environment;
 pub(crate) use relaypulse_runtime::shared::file_output;
 pub(crate) use relaypulse_runtime::shared::state_changes;
 pub(crate) use relaypulse_storage::shared::persistence;
+
+pub(crate) mod text_redaction;

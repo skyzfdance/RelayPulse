@@ -8,6 +8,7 @@ mod generation;
 mod http;
 mod parameters;
 mod request;
+mod response_output;
 mod stream;
 #[cfg(any(test, feature = "test-support"))]
 #[path = "../../../../../tests/support/model_client.rs"]
@@ -22,7 +23,9 @@ pub use cancellation::Cancellation;
 pub use capture::{
     CaptureError, CaptureEvent, CaptureOutcome, CaptureSink, OutputKind, ResponseKind,
 };
-pub use endpoint::{base_url, credential, endpoint, headers as validate_headers};
+pub use endpoint::{
+    base_url, credential, endpoint, header_parameters, headers as validate_headers,
+};
 pub use generation::{
     decode_generation_output, validate_parameters as validate_generation_parameters,
     DecodedGenerationOutput, GenerationOutputPart,

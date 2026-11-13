@@ -1,4 +1,4 @@
-import type { SiteProtocol } from './sites';
+import type { RequestParameter, SiteProtocol } from './sites';
 
 export interface IqQuestionInput {
   content: string;
@@ -27,6 +27,7 @@ export interface IqHistoryFilterOption {
 export interface IqParticipantInput {
   modelKey: string;
   preset: string;
+  headers: RequestParameter[];
   /** 仅包含独立配置的 IQ 参数；不携带探针策略或凭据。 */
   parameters: Record<string, unknown>;
 }
@@ -41,6 +42,7 @@ export interface IqParticipant extends IqCandidate {
   endpoint: string;
   createdAtMs: number;
   preset: string;
+  headers: RequestParameter[];
   parameters: Record<string, unknown>;
   precheck: IqPrecheck;
 }

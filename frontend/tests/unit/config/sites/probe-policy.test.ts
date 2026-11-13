@@ -21,7 +21,11 @@ const parameter = (
   type: RequestParameter['type'] = 'string',
   enabled = true,
 ): RequestParameter => ({ key, value, type, enabled });
-const policy = (parameters: RequestParameter[]): ProbePolicy => ({ version: 2, parameters });
+const policy = (parameters: RequestParameter[]): ProbePolicy => ({
+  version: 2,
+  headers: [],
+  parameters,
+});
 
 describe('探针参数预览与保存契约', () => {
   it.each([

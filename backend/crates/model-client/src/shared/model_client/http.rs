@@ -75,9 +75,6 @@ impl Transport {
                 HeaderValue::from_str(&config.secret).map_err(|_| ClientError::Response)?;
             key.set_sensitive(true);
             headers.insert("x-api-key", key);
-            if !headers.contains_key("anthropic-version") {
-                headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-            }
         } else {
             let mut key = HeaderValue::from_str(&format!("Bearer {}", config.secret.as_str()))
                 .map_err(|_| ClientError::Response)?;

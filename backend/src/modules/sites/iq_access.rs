@@ -56,7 +56,10 @@ impl IqCredentialAccess {
         Ok(IqConnectionSnapshot {
             source: source(&snapshot.site, model),
             endpoint: snapshot.site.connection.probe_path.clone(),
-            target: snapshot.target,
+            target: RequestTarget {
+                headers: vec![],
+                ..snapshot.target
+            },
         })
     }
 }

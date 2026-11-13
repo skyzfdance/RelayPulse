@@ -16,6 +16,7 @@ impl ProbePolicy {
         }
         Self {
             version: 2,
+            headers: vec![],
             parameters: flatten(body),
         }
     }
@@ -55,6 +56,7 @@ pub(super) fn decode_policy(text: &str, protocol: Protocol) -> Result<ProbePolic
     append_legacy(&mut body, &legacy.parameters)?;
     Ok(ProbePolicy {
         version: 2,
+        headers: vec![],
         parameters: flatten(body),
     })
 }
@@ -69,8 +71,21 @@ pub(super) fn decode_custom(text: &str) -> Result<CustomRequest> {
     append_legacy(&mut body, &legacy.parameters)?;
     Ok(CustomRequest {
         version: 2,
+        headers: vec![],
         endpoint: legacy.endpoint,
         parameters: flatten(body),
+    })
+}
+
+/// 仅兼容旧配置里原本共享的 Header；显式保存过 headers（包括空表）后不再继承。
+pub(super) fn legacy_headers(text: &str, old: &[super::RequestHeader]) -> Result<Vec<Parameter>> {
+    let value: Value = serde_json::from_str(text).map_err(|_| SiteConfigError::Storage)?;
+    Ok(if value.get("headers").is_none() {
+        old.iter()
+            .map(|h| Parameter::new(&h.key, &h.value, ParameterType::String))
+            .collect()
+    } else {
+        vec![]
     })
 }
 

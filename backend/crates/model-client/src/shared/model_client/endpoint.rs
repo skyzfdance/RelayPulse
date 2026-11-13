@@ -77,3 +77,24 @@ pub fn headers(values: &[super::RequestHeader]) -> Result<(), InputError> {
     }
     Ok(())
 }
+
+/// Header 参数是平铺的字符串表，不使用 Body 的对象路径规则。
+pub fn header_parameters(
+    values: &[super::Parameter],
+) -> Result<Vec<super::RequestHeader>, InputError> {
+    let mut result = Vec::new();
+    for parameter in values.iter().filter(|p| p.enabled) {
+        if parameter.kind != super::ParameterType::String || parameter.binding.is_some() {
+            return Err(invalid(
+                "headers",
+                "请求头须使用不含动态绑定的 string 类型。",
+            ));
+        }
+        result.push(super::RequestHeader {
+            key: parameter.key.clone(),
+            value: parameter.value.clone(),
+        });
+    }
+    headers(&result)?;
+    Ok(result)
+}

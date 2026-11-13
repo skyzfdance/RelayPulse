@@ -14,6 +14,7 @@ const taskStore = useSiteTasksStore();
 const site = detailsStore.selectedSiteDetail!;
 const policy = ref<ProbePolicy>({
   ...site.policy,
+  headers: site.policy.headers.map((header) => ({ ...header })),
   parameters: site.policy.parameters.map((parameter) => ({ ...parameter })),
 });
 const policyFields = ref<InstanceType<typeof ProbePolicyFields>>();
@@ -81,6 +82,8 @@ async function save() {
       ref="policyFields"
       v-model="policy"
       :protocol="site.protocol"
+      :base-url="site.baseUrl"
+      :probe-path="site.connection.probePath"
       :disabled="disabled"
     />
   </a-drawer>

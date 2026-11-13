@@ -111,6 +111,7 @@ impl Fixture {
         self.app
             .iq_test
             .create_participant(IqParticipantInput {
+                headers: vec![],
                 model_key: format!("{}/{}", site.id, site.models[index].id),
                 preset: "高 (high)".into(),
                 parameters: parameters.as_object().unwrap().clone(),

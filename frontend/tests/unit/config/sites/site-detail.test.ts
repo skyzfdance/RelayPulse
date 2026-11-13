@@ -8,6 +8,7 @@ import { resetFeedbackForTests } from '@/composables/useFeedback';
 import { seedSites, state } from '@/mocks/handlers/config/sites';
 import { useSiteDetailsStore, useSiteStore, useSiteTasksStore } from '@/stores/site';
 
+import { previewBody } from '../../../support/parameter-fields';
 import {
   chatPolicy,
   messagesValue,
@@ -59,6 +60,12 @@ function overlayButton(container: Element, label: string) {
       (item) => item.textContent?.replace(/\s/gu, '') === label,
     )!,
   );
+}
+
+async function enableCustomEndpoint() {
+  const toggle = new DOMWrapper(document.querySelector('[aria-label="使用自定义探针请求"]')!);
+  if (toggle.attributes('aria-checked') !== 'true') await toggle.trigger('click');
+  await flushPromises();
 }
 
 describe('站点详情与页面共享数据', () => {
@@ -475,9 +482,12 @@ describe('站点详情与页面共享数据', () => {
     await flushPromises();
     const drawer = new DOMWrapper(document.querySelector('.ant-drawer')!);
     expect(drawer.findAll('[role="switch"]')).toHaveLength(1);
+    expect(drawer.find('[aria-label="探针策略来源"]').exists()).toBe(false);
+    expect(drawer.get(parameterValueSelector('messages')).attributes('disabled')).toBeUndefined();
     expect(drawer.get('[aria-label="使用自定义探针请求"]').attributes('aria-checked')).toBe(
       'false',
     );
+    expect(drawer.find('[aria-label="自定义探测端点"]').exists()).toBe(false);
     expect(drawer.find('.ant-segmented').exists()).toBe(false);
     expect(drawer.find('[aria-label="配置方式"]').exists()).toBe(false);
     expect(drawer.find('textarea').exists()).toBe(true);
@@ -490,8 +500,10 @@ describe('站点详情与页面共享数据', () => {
     await overlayButton(document.querySelector('.ant-drawer')!, '保存').trigger('click');
     await flushPromises();
     expect(wrapper.findComponent(ModelProbeSettingsDrawer).exists()).toBe(false);
-    expect(policyPrompt(details.selectedSiteDetail?.models[0].policy)).toBe('模型独立提示词');
     expect(details.selectedSiteDetail?.models[0].customRequest).toBeNull();
+    expect(details.selectedSiteDetail?.models[0].policy?.parameters).toContainEqual(
+      expect.objectContaining({ key: 'messages', value: messagesValue('模型独立提示词') }),
+    );
     expect(policyPrompt(details.selectedSiteDetail?.policy)).toBe('站点默认提示词');
     expect(wrapper.getComponent(SiteDetail).text()).toContain('独立策略');
   });
@@ -516,8 +528,10 @@ describe('站点详情与页面共享数据', () => {
       await overlayButton(drawer.element, '保存').trigger('click');
       await flushPromises();
       expect(wrapper.findComponent(ModelProbeSettingsDrawer).exists()).toBe(false);
-      expect(details.selectedSiteDetail?.models[0].policy).toEqual(site.policy);
-      expect((await api.fetchSite(site.id)).models[0].policy).toEqual(site.policy);
+      const expected = site.policy;
+      expect(details.selectedSiteDetail?.models[0].policy).toEqual(expected);
+      expect(details.selectedSiteDetail?.models[0].customRequest).toBeNull();
+      expect((await api.fetchSite(site.id)).models[0].policy).toEqual(expected);
       expect(wrapper.get(`[data-row-key="${model.id}"]`).text()).toContain('独立策略');
 
       const nextPolicy = JSON.parse(JSON.stringify(site.policy));
@@ -525,16 +539,71 @@ describe('站点详情与页面共享数据', () => {
       const current = await api.savePolicy(site.id, null, nextPolicy, null);
       details.setSiteDetail(current);
       await flushPromises();
-      expect(current.models[0].policy).toEqual(site.policy);
+      expect(current.models[0].policy).toEqual(expected);
+      expect(current.models[0].customRequest).toBeNull();
       expect(current.models[1].policy).toBeNull();
       await button(wrapper, label).trigger('click');
       await flushPromises();
       const reopened = new DOMWrapper(document.querySelector('.ant-drawer')!);
+      expect(reopened.get('[aria-label="使用自定义探针请求"]').attributes('aria-checked')).toBe(
+        'false',
+      );
+      expect(
+        reopened.get(parameterValueSelector('messages')).attributes('disabled'),
+      ).toBeUndefined();
       expect(reopened.get<HTMLInputElement>(parameterValueSelector('messages')).element.value).toBe(
         messagesValue(policyPrompt(site.policy)!),
       );
     },
   );
+  it('自定义开关只切换端点，Headers 和 Body 始终可编辑且共用同一份草稿', async () => {
+    const site = state.sites[0];
+    site.policy.headers = [{ enabled: true, key: 'x-mode', type: 'string', value: 'site' }];
+    const { wrapper, details } = await mountPage();
+    const model = site.models[0];
+    await button(wrapper, `设置模型 ${model.name}`).trigger('click');
+    await flushPromises();
+    const drawer = new DOMWrapper(document.querySelector('.ant-drawer')!);
+    const header = drawer.get(parameterValueSelector('x-mode'));
+    expect(header.attributes('disabled')).toBeUndefined();
+    await header.setValue('model');
+    await drawer.get(parameterValueSelector('messages')).setValue(messagesValue('模型提示词'));
+    await drawer
+      .get<HTMLInputElement>('[data-parameter-key="max_tokens"] input[type="checkbox"]')
+      .setValue(false);
+    await enableCustomEndpoint();
+    await drawer.get('[aria-label="自定义探测端点"]').setValue('/custom-probe');
+    for (const expected of [false, true]) {
+      await drawer.get('[aria-label="使用自定义探针请求"]').trigger('click');
+      expect(drawer.get('[aria-label="使用自定义探针请求"]').attributes('aria-checked')).toBe(
+        String(expected),
+      );
+      expect(drawer.get<HTMLInputElement>(parameterValueSelector('x-mode')).element.value).toBe(
+        'model',
+      );
+      expect(previewBody(drawer)).toMatchObject({
+        messages: [{ role: 'user', content: '模型提示词' }],
+      });
+      expect(previewBody(drawer)).not.toHaveProperty('max_tokens');
+      expect(drawer.get(parameterValueSelector('messages')).attributes('disabled')).toBeUndefined();
+    }
+    expect(drawer.get<HTMLInputElement>('[aria-label="自定义探测端点"]').element.value).toBe(
+      '/custom-probe',
+    );
+    await overlayButton(drawer.element, '保存').trigger('click');
+    await flushPromises();
+    const saved = details.selectedSiteDetail!.models[0];
+    expect(saved.policy).toBeNull();
+    expect(saved.customRequest?.endpoint).toBe('/custom-probe');
+    expect(saved.customRequest?.headers).toEqual([
+      { enabled: true, key: 'x-mode', type: 'string', value: 'model' },
+    ]);
+    expect(saved.customRequest?.parameters).toContainEqual(
+      expect.objectContaining({ key: 'max_tokens', enabled: false }),
+    );
+    expect(wrapper.get(`[data-row-key="${model.id}"]`).text()).toContain('自定义策略');
+    expect(details.selectedSiteDetail?.policy.headers[0].value).toBe('site');
+  });
   it('自定义探针使用端点和参数表，抽屉内部保存后回填目标模型并按接口数据重新打开', async () => {
     state.sites[0].models[0].policy = chatPolicy('已有模型策略');
     const { wrapper, details } = await mountPage();
@@ -544,32 +613,50 @@ describe('站点详情与页面共享数据', () => {
     await button(wrapper, `设置模型 ${model.name}`).trigger('click');
     await flushPromises();
     const drawer = new DOMWrapper(document.querySelector('.ant-drawer')!);
-    await drawer.get('[aria-label="使用自定义探针请求"]').trigger('click');
+    expect(drawer.get('[aria-label="使用自定义探针请求"]').attributes('aria-checked')).toBe(
+      'false',
+    );
+    await enableCustomEndpoint();
+    expect(drawer.get<HTMLInputElement>(parameterValueSelector('messages')).element.value).toBe(
+      messagesValue('已有模型策略'),
+    );
+    for (const key of ['messages', 'stream', 'max_tokens', 'reasoning_effort'])
+      await drawer
+        .get(`[data-request-section="body"] [data-parameter-key="${key}"] button[title="删除参数"]`)
+        .trigger('click');
     expect(drawer.find(parameterValueSelector('max_tokens')).exists()).toBe(false);
     expect(drawer.find(parameterValueSelector('messages')).exists()).toBe(false);
     expect(drawer.find('textarea').exists()).toBe(false);
-    expect(drawer.text()).toContain('请求参数');
+    expect(drawer.text()).toContain('请求体 Body');
     expect(drawer.get('[data-parameter-key="model"]').text()).toContain(model.name);
-    expect(drawer.get<HTMLInputElement>('[aria-label="自定义探测端点"]').element.value).toBe('');
+    expect(drawer.get<HTMLInputElement>('[aria-label="自定义探测端点"]').element.value).toBe(
+      site.connection.probePath,
+    );
+    await drawer.get('[aria-label="自定义探测端点"]').setValue('');
     expect(overlayButton(drawer.element, '保存').attributes('disabled')).toBeDefined();
     await drawer.get('[aria-label="自定义探测端点"]').setValue('/v1/images/generations');
-    await overlayButton(drawer.element, '添加参数').trigger('click');
+    await overlayButton(drawer.get('[data-request-section="body"]').element, '添加参数').trigger(
+      'click',
+    );
     expect(drawer.text()).toContain('请输入参数字段');
     expect(overlayButton(drawer.element, '保存').attributes('disabled')).toBeDefined();
     await drawer.get(parameterKeySelector('')).setValue('prompt');
     await drawer.get(parameterValueSelector('prompt')).setValue('ping');
-    await overlayButton(drawer.element, '添加参数').trigger('click');
+    await overlayButton(drawer.get('[data-request-section="body"]').element, '添加参数').trigger(
+      'click',
+    );
     await drawer.get(parameterKeySelector('')).setValue('n');
     await drawer.get(parameterValueSelector('n')).setValue('2');
     wrapper
       .getComponent(ModelProbeSettingsDrawer)
-      .findAllComponents(Select)[2]
+      .findAllComponents(Select)
+      .find((select) => select.vm.$attrs['aria-label'] === '参数类型 3')!
       .vm.$emit('update:value', 'number');
     await vi.waitFor(() => {
-      expect(drawer.get('pre').text()).toContain(
+      expect(drawer.get('[aria-label="请求地址"] pre').text()).toContain(
         'POST https://api.openai.com/v1/images/generations',
       );
-      expect(JSON.parse(drawer.get('pre').text().split('\n\n')[1])).toEqual({
+      expect(previewBody(drawer)).toEqual({
         model: model.name,
         prompt: 'ping',
         n: 2,
@@ -577,6 +664,7 @@ describe('站点详情与页面共享数据', () => {
     });
     const request = {
       version: 2,
+      headers: [],
       endpoint: '/v1/images/generations',
       parameters: [
         { enabled: true, key: 'model', type: 'string', value: '', binding: 'model' },
@@ -592,10 +680,10 @@ describe('站点详情与页面共享数据', () => {
     expect(details.selectedSiteDetail?.models[0].policy).toBeNull();
     expect(details.selectedSiteDetail?.policy).toEqual(site.policy);
     expect(details.selectedSiteDetail?.models[1]).toEqual(site.models[1]);
-    expect(wrapper.getComponent(SiteDetail).text()).toContain('自定义请求');
+    expect(wrapper.getComponent(SiteDetail).text()).toContain('自定义策略');
     const modelRow = wrapper.get(`[data-row-key="${model.id}"]`);
     expect(modelRow.text()).not.toContain(`${model.firstTokenMs} ms`);
-    expect(modelRow.text()).toContain('—');
+    expect(modelRow.text()).toContain(`${(model.firstTokenMs! / 1000).toFixed(2)} s`);
 
     await button(wrapper, `设置模型 ${model.name}`).trigger('click');
     await flushPromises();
@@ -625,10 +713,11 @@ describe('站点详情与页面共享数据', () => {
     );
   });
 
-  it('关闭自定义后恢复常规探针配置，隐藏的端点错误不影响保存', async () => {
+  it('关闭自定义端点保留模型参数，隐藏的端点错误不影响保存独立策略', async () => {
     const site = state.sites[0];
     site.models[0].customRequest = {
       version: 2,
+      headers: [],
       endpoint: '/custom',
       parameters: [{ enabled: true, key: 'input', type: 'string', value: 'ping' }],
     };
@@ -641,17 +730,25 @@ describe('站点详情与页面共享数据', () => {
     expect(overlayButton(drawer.element, '保存').attributes('disabled')).toBeDefined();
     await drawer.get('[aria-label="使用自定义探针请求"]').trigger('click');
     expect(drawer.find('[aria-label="自定义探测端点"]').exists()).toBe(false);
-    expect(drawer.get<HTMLInputElement>(parameterValueSelector('messages')).element.value).toBe(
-      messagesValue(policyPrompt(site.policy)!),
+    expect(drawer.get<HTMLInputElement>(parameterValueSelector('input')).element.value).toBe(
+      'ping',
     );
+    expect(drawer.get(parameterValueSelector('input')).attributes('disabled')).toBeUndefined();
+    await drawer.get(parameterValueSelector('input')).setValue('保留的模型参数');
     expect(overlayButton(drawer.element, '保存').attributes('disabled')).toBeUndefined();
     await overlayButton(drawer.element, '保存').trigger('click');
     await flushPromises();
-    expect(details.selectedSiteDetail?.models[0].policy).toEqual(site.policy);
+    const expected = {
+      version: 2,
+      headers: [],
+      parameters: [{ enabled: true, key: 'input', type: 'string', value: '保留的模型参数' }],
+    };
+    expect(details.selectedSiteDetail?.models[0].policy).toEqual(expected);
     expect(details.selectedSiteDetail?.models[0].customRequest).toBeNull();
     const saved = await api.fetchSite(site.id);
-    expect(saved.models[0].policy).toEqual(site.policy);
+    expect(saved.models[0].policy).toEqual(expected);
     expect(saved.models[0].customRequest).toBeNull();
+    expect(wrapper.get(`[data-row-key="${site.models[0].id}"]`).text()).toContain('独立策略');
     await button(wrapper, label).trigger('click');
     await flushPromises();
     expect(
@@ -665,8 +762,8 @@ describe('站点详情与页面共享数据', () => {
     await button(wrapper, label).trigger('click');
     await flushPromises();
     const drawer = new DOMWrapper(document.querySelector('.ant-drawer')!);
+    await enableCustomEndpoint();
     await drawer.get(parameterValueSelector('messages')).setValue(messagesValue('未保存提示词'));
-    await drawer.get('[aria-label="使用自定义探针请求"]').trigger('click');
     await drawer.get('[aria-label="自定义探测端点"]').setValue('/unsaved');
     await overlayButton(drawer.element, '取消').trigger('click');
     await flushPromises();
@@ -681,11 +778,13 @@ describe('站点详情与页面共享数据', () => {
     expect(reopened.get('[aria-label="使用自定义探针请求"]').attributes('aria-checked')).toBe(
       'false',
     );
+    await enableCustomEndpoint();
     expect(reopened.get<HTMLInputElement>(parameterValueSelector('messages')).element.value).toBe(
       messagesValue('最新站点默认策略'),
     );
-    await reopened.get('[aria-label="使用自定义探针请求"]').trigger('click');
-    expect(reopened.get<HTMLInputElement>('[aria-label="自定义探测端点"]').element.value).toBe('');
+    expect(reopened.get<HTMLInputElement>('[aria-label="自定义探测端点"]').element.value).toBe(
+      current.connection.probePath,
+    );
   });
 
   it('同步检查传当前模型名称；取消不写入，确认后写入并重新获取详情', async () => {

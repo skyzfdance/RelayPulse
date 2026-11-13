@@ -37,6 +37,7 @@ function participant(siteId: string, modelKey: string): IqParticipant {
     health: 'healthy',
     endpoint: 'https://example.invalid/v1',
     createdAtMs: 500,
+    headers: [],
     preset: 'high',
     parameters: { reasoning_effort: 'high' },
     precheck: { status: 'available', message: '', checkedAtMs: 600 },

@@ -145,7 +145,7 @@ describe('探测记录的请求详情', () => {
       headers: [],
       body: '',
     });
-    await wrapper.setProps({ recordId: 'empty-body', summary: { method: 'POST', bodyBytes: 0 } });
+    await wrapper.setProps({ recordId: 'probe-001', summary: { method: 'POST', bodyBytes: 0 } });
     expect(wrapper.getComponent(Collapse).props('activeKey')).toEqual([]);
     await requestToggle(wrapper).trigger('click');
     await waitForLoaded(wrapper);

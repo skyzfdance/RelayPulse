@@ -182,6 +182,7 @@ fn all_fourteen_commands_use_registered_ipc_direct_camel_case_dtos_real_http_sql
             "protocol",
             "health",
             "endpoint",
+            "headers",
             "snapshotId",
             "createdAtMs",
             "preset",

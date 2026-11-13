@@ -90,7 +90,7 @@ defineExpose({ validate });
       <div
         class="grid min-h-10 grid-cols-[1fr_1.5fr_40px] items-center border-b border-rp-line bg-rp-subtle px-3 text-xs text-rp-secondary"
       >
-        <span>请求头</span><span>值</span><span />
+        <span>模型获取请求头</span><span>值</span><span />
       </div>
       <div
         v-for="(header, index) in connection.headers"
@@ -142,7 +142,7 @@ defineExpose({ validate });
         ></a-button>
       </div>
       <a-button type="link" class="h-10!" @click="addHeader"
-        ><template #icon><AppIcon name="PlusOutlined" /></template>添加请求头</a-button
+        ><template #icon><AppIcon name="PlusOutlined" /></template>添加模型获取请求头</a-button
       >
     </div>
     <div class="divide-y divide-rp-line border-t border-rp-line">

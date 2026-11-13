@@ -19,6 +19,7 @@ async fn trial_uses_unsaved_draft_and_formal_probes_respect_model_not_site_enabl
             id.clone(),
             site.models[0].id.clone(),
             CustomRequest {
+                headers: vec![],
                 version: 2,
                 endpoint: "/draft".into(),
                 parameters: vec![],

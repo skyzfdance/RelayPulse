@@ -37,12 +37,14 @@ export interface SiteProtocolOption {
 
 export interface ProbePolicy {
   version: 2;
+  headers: RequestParameter[];
   parameters: RequestParameter[];
 }
 
 export interface CustomProbeRequest {
   version: 2;
   endpoint: string;
+  headers: RequestParameter[];
   parameters: RequestParameter[];
 }
 

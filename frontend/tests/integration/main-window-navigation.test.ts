@@ -62,6 +62,7 @@ async function open(route: string) {
 async function completedIqRun() {
   const participant = await iqTaskApi.createIqParticipant({
     modelKey: 'site-1/model-0-0',
+    headers: [],
     preset: 'high',
     parameters: { reasoning_effort: 'high' },
   });

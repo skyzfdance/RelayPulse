@@ -8,10 +8,7 @@ use crate::{
 };
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
-use tauri::{
-    ipc::{InvokeBody, Request},
-    AppHandle, Manager, Runtime,
-};
+use tauri::{ipc::Request, AppHandle, Manager, Runtime};
 
 pub(super) fn service(state: &StartupState) -> Result<&Arc<NotificationService>, CommandError> {
     match state {
@@ -37,14 +34,15 @@ pub(super) fn parse<T: DeserializeOwned>(
     state: &StartupState,
     action: relaypulse_operations::ActionDefinition,
 ) -> Result<T, CommandError> {
-    let result = (|| {
-        let InvokeBody::Json(value) = request.body() else {
-            return Err(CommandError::invalid(field, "通知请求必须是 JSON 对象。"));
+    let result = crate::commands::json_input::decode(request).map_err(|error| {
+        let message = match error {
+            crate::commands::json_input::DecodeError::Body => "通知请求必须是 JSON 对象。",
+            crate::commands::json_input::DecodeError::Fields => {
+                "通知请求格式或字段取值不合法，请检查后重试。"
+            }
         };
-        serde_json::from_value(value.clone()).map_err(|_| {
-            CommandError::invalid(field, "通知请求格式或字段取值不合法，请检查后重试。")
-        })
-    })();
+        CommandError::invalid(field, message)
+    });
     if result.is_err() {
         record_failure(state, action, NotificationBoundaryFailure::InvalidRequest);
     }

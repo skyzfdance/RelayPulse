@@ -244,7 +244,8 @@
       "pub fn endpoint(base: &str, value: &str, custom: bool) -> Result<Url, InputError>",
       "pub fn credential(value: &str) -> Result<(), InputError>",
       "pub(super) fn target(value: &super::RequestTarget) -> Result<(), InputError>",
-      "pub fn headers(values: &[super::RequestHeader]) -> Result<(), InputError>"
+      "pub fn headers(values: &[super::RequestHeader]) -> Result<(), InputError>",
+      "pub fn header_parameters( values: &[super::Parameter], ) -> Result<Vec<super::RequestHeader>, InputError>"
     ],
     "wire": []
   },
@@ -282,6 +283,7 @@
       "mod http;",
       "mod parameters;",
       "mod request;",
+      "mod response_output;",
       "mod stream;",
       "#[cfg(any(test, feature = \"test-support\"))] #[path = \"../../../../../tests/support/model_client.rs\"] pub mod test_support;",
       "#[cfg(test)] #[path = \"../../../../../tests/unit/model_client/mod.rs\"] mod tests;",
@@ -290,7 +292,7 @@
       "mod user_agent;",
       "pub use cancellation::Cancellation;",
       "pub use capture::{ CaptureError, CaptureEvent, CaptureOutcome, CaptureSink, OutputKind, ResponseKind, };",
-      "pub use endpoint::{base_url, credential, endpoint, headers as validate_headers};",
+      "pub use endpoint::{ base_url, credential, endpoint, header_parameters, headers as validate_headers, };",
       "pub use generation::{ decode_generation_output, validate_parameters as validate_generation_parameters, DecodedGenerationOutput, GenerationOutputPart, };",
       "pub use parameters::{enabled as parameter_enabled, parameter_value, parameters};",
       "pub use types::*;",
@@ -319,10 +321,16 @@
     ],
     "wire": []
   },
+  "backend/crates/model-client/src/shared/model_client/response_output.rs": {
+    "publicItems": [
+      "pub(super) fn output<'a>( value: &'a Value, protocol: Protocol, streaming: bool, ) -> Vec<(OutputKind, &'a str)>"
+    ],
+    "wire": []
+  },
   "backend/crates/model-client/src/shared/model_client/stream.rs": {
     "publicItems": [
       "#[derive(Default)] pub(super) struct Content { answer_text: bool, pub ended: bool, pub failed: bool, pub usage: TokenUsage, }",
-      "impl Content > pub fn observe(&mut self, value: &Value, protocol: Protocol) -> bool",
+      "impl Content > pub fn observe(&mut self, value: &Value, protocol: Protocol, streaming: bool) -> bool",
       "impl Content > pub fn success(&self) -> bool",
       "#[derive(Default)] pub(super) struct Sse { buffer: Vec<u8>, lines: Vec<String>, event_bytes: usize, skip_lf: bool, }",
       "impl Sse > pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>, ClientError>",
@@ -340,7 +348,7 @@
       "impl Parameter > pub fn model() -> Self",
       "#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)] #[serde(deny_unknown_fields)] pub struct RequestHeader { pub key: String, pub value: String, }",
       "#[derive(Clone)] pub struct RequestTarget { pub protocol: Protocol, pub base_url: String, pub headers: Vec<RequestHeader>, pub secret: Zeroizing<String>, }",
-      "#[derive(Clone, Copy)] pub enum EndpointMode { Relative, SameOriginAppend, }",
+      "#[derive(Clone, Copy)] pub enum EndpointMode { /// 原始 Base URL + 端点；不进行相对路径解析。 Relative, /// 同样原文拼接，并检查最终地址与 Base URL 同源。 SameOriginAppend, }",
       "#[derive(Clone)] pub enum CheckBody { Standard { parameters: Vec<Parameter> }, Custom { parameters: Vec<Parameter> }, }",
       "#[derive(Clone)] pub struct CheckRequest { pub target: RequestTarget, pub model: String, pub endpoint: String, pub endpoint_mode: EndpointMode, pub body: CheckBody, }",
       "pub struct CatalogRequest { pub target: RequestTarget, pub endpoint: String, }",
@@ -356,7 +364,7 @@
       "#[derive(Debug, thiserror::Error)] pub enum ClientError { #[error(\"请求记录写入失败。\")] Capture, #[error(transparent)] Invalid(#[from] InputError), #[error(\"请求已取消。\")] Cancelled, #[error(\"远端请求超时。\")] Timeout, #[error(\"无法连接远端服务。\")] Network, #[error(\"远端返回 HTTP {0}。\")] Status(u16), #[error(\"远端响应格式无效或超过大小限制。\")] Response, }",
       "impl ClientError > pub(super) fn transport(error: reqwest::Error) -> Self",
       "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)] #[serde(rename_all = \"snake_case\")] pub enum CheckFailure { Http, Network, Timeout, InvalidResponse, }",
-      "#[derive(Debug, Clone)] pub struct CheckResult { pub success: bool, pub status_code: Option<u16>, pub duration_ms: u64, /// 从请求开始到首段非空思考或回答文本；自定义请求及非流式响应为 None。 pub first_token_ms: Option<u64>, pub failure: Option<CheckFailure>, pub metadata: ResponseMetadata, }",
+      "#[derive(Debug, Clone)] pub struct CheckResult { pub success: bool, pub status_code: Option<u16>, pub duration_ms: u64, /// 从请求开始到首段非空思考或回答文本；未启用协议解析的通用 HTTP 请求及非流式响应为 None。 pub first_token_ms: Option<u64>, pub failure: Option<CheckFailure>, pub metadata: ResponseMetadata, }",
       "#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)] #[serde(rename_all = \"camelCase\")] pub struct TokenUsage { pub input_tokens: Option<u64>, pub output_tokens: Option<u64>, pub total_tokens: Option<u64>, }",
       "#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)] #[serde(rename_all = \"camelCase\")] pub struct ResponseMetadata { pub request_id: Option<String>, pub kind: Option<super::ResponseKind>, pub usage: TokenUsage, pub received_bytes: u64, pub body_complete: bool, }",
       "impl CheckResult > pub fn message(&self) -> &'static str"

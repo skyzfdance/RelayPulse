@@ -397,7 +397,7 @@ registerSiteOperation('run_site_probe', (args) => {
   const models = modelId ? [requireModel(siteId, modelId)] : site.models.filter((m) => m.enabled);
   if (!models.length) throw businessError('没有可探测的模型');
   for (const model of models) {
-    model.firstTokenMs = model.customRequest ? null : 420;
+    model.firstTokenMs = site.protocol === 'custom-http' ? null : 420;
     model.durationMs = 1250;
     model.health = 'healthy';
   }

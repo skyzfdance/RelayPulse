@@ -3,6 +3,7 @@ mod configuration;
 mod diagnostics;
 mod error;
 mod iq_test;
+mod json_input;
 mod notifications;
 mod operation_logs;
 mod panel;

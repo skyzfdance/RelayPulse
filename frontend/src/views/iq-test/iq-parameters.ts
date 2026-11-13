@@ -6,18 +6,8 @@ import {
   requestParameterValidation,
 } from '@/utils/request-parameters';
 
-export function iqPresets(protocol: string) {
-  if (protocol === 'anthropic')
-    return [
-      { value: 'off', label: '关闭' },
-      { value: 'low', label: '低' },
-      { value: 'medium', label: '中' },
-      { value: 'high', label: '高' },
-      { value: 'custom', label: '自定义参数…' },
-    ];
-  if (protocol === 'custom-http') return [{ value: 'custom', label: '自定义参数…' }];
+export function iqPresets() {
   return [
-    { value: 'minimal', label: '最低 (minimal)' },
     { value: 'low', label: '低 (low)' },
     { value: 'medium', label: '中 (medium)' },
     { value: 'high', label: '高 (high)' },
@@ -82,12 +72,7 @@ export function buildIqParameters(
   let body: Record<string, unknown> = {};
   if (preset !== 'custom') {
     if (protocol === 'anthropic') {
-      body = {
-        thinking:
-          preset === 'off'
-            ? { type: 'disabled' }
-            : { type: 'enabled', budget_tokens: { low: 1024, medium: 8192, high: 32000 }[preset] },
-      };
+      body = { output_config: { effort: preset } };
     } else if (protocol === 'openai-responses') body = { reasoning: { effort: preset } };
     else if (protocol !== 'custom-http') body = { reasoning_effort: preset };
   }

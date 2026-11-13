@@ -4,6 +4,8 @@ mod error;
 mod inputs;
 mod iq_access;
 mod policy;
+mod request_headers;
+mod request_privacy;
 mod service;
 mod sqlite;
 mod sync;
@@ -24,6 +26,8 @@ pub use service::{CommitObserver, SiteCommit, SiteMutation, SiteService};
 use sqlite::require_model;
 // 以下两种导入只会编译其中一种：测试时向整个 crate 开放 SiteStore，供其他模块的测试准备数据；
 // 非测试构建仅在 sites 内部使用，外部通过 SiteService 操作，避免绕过任务互斥和同步协调。
+pub(crate) use request_headers::configured_request_headers;
+pub(crate) use request_privacy::sensitive_request_header;
 #[cfg(test)]
 pub use sqlite::SiteStore;
 #[cfg(not(test))]

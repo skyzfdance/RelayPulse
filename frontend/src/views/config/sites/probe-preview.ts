@@ -31,11 +31,11 @@ export function defaultProbePolicy(protocol: SiteProtocol): ProbePolicy {
         ? anthropicReasoningDefaults
         : { max_tokens: 8, reasoning_effort: 'low' }),
     });
-  return { version: 2, parameters: serializeRequestParameters(createRequestParameters(body)) };
-}
-
-export function defaultCustomProbeRequest(): CustomProbeRequest {
-  return { version: 2, endpoint: '', parameters: defaultProbePolicy('custom-http').parameters };
+  return {
+    version: 2,
+    headers: [],
+    parameters: serializeRequestParameters(createRequestParameters(body)),
+  };
 }
 
 /** 按参数表生成实际请求，不根据协议补充字段。 */

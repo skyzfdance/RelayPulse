@@ -122,6 +122,16 @@ fn all_nine_commands_use_real_registered_ipc_http_files_and_history_without_chan
         json!({"siteId":id,"connection":connection}),
     )
     .unwrap();
+    let mut policy = site["policy"].clone();
+    policy["headers"] = Value::Array(connection["headers"].as_array().unwrap().iter().map(|header| {
+        json!({"key":header["key"],"value":header["value"],"type":"string","enabled":true})
+    }).collect());
+    invoke(
+        &window,
+        "update_site_probe_policy",
+        json!({"siteId":id,"modelId":null,"policy":policy,"customRequest":null}),
+    )
+    .unwrap();
     invoke(&window, "run_site_probe", json!({"siteId":id})).unwrap();
     let options = invoke(&window, "get_probe_record_options", json!({})).unwrap();
     assert_eq!(
@@ -161,7 +171,7 @@ fn all_nine_commands_use_real_registered_ipc_http_files_and_history_without_chan
     assert!(detail.get("totalTokens").is_none());
     assert_eq!(detail["usage"]["inputTokens"], 0);
     assert_eq!(detail["usageSource"], "provider");
-    assert_eq!(detail["requestInfo"]["strategyLabel"], "低推理");
+    assert_eq!(detail["requestInfo"]["strategyLabel"], "继承站点默认");
     assert_eq!(detail["requestInfo"]["requestId"], "provider-id");
     let request = invoke(
         &window,

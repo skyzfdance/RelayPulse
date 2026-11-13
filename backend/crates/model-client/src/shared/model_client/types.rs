@@ -191,7 +191,7 @@ pub struct CheckResult {
     pub success: bool,
     pub status_code: Option<u16>,
     pub duration_ms: u64,
-    /// 从请求开始到首段非空思考或回答文本；自定义请求及非流式响应为 None。
+    /// 从请求开始到首段非空思考或回答文本；未启用协议解析的通用 HTTP 请求及非流式响应为 None。
     pub first_token_ms: Option<u64>,
     pub failure: Option<CheckFailure>,
     pub metadata: ResponseMetadata,

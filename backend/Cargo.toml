@@ -1,6 +1,6 @@
 [package]
 name = "relaypulse"
-version = "3.0.1"
+version = "3.0.2"
 default-run = "relaypulse"
 description = "RelayPulse desktop application"
 edition = "2021"

@@ -63,6 +63,8 @@ impl Connection {
 pub struct ProbePolicy {
     #[serde(default = "parameter_schema_version")]
     pub version: u8,
+    #[serde(default)]
+    pub headers: Vec<Parameter>,
     pub parameters: Vec<Parameter>,
 }
 fn parameter_schema_version() -> u8 {
@@ -75,6 +77,8 @@ pub struct CustomRequest {
     #[serde(default = "parameter_schema_version")]
     pub version: u8,
     pub endpoint: String,
+    #[serde(default)]
+    pub headers: Vec<Parameter>,
     pub parameters: Vec<Parameter>,
 }
 

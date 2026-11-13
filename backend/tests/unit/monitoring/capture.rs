@@ -125,6 +125,26 @@ fn credential_redaction_handles_every_split_and_json_escaping_without_changing_o
     let bytes = b"\0\xffdata\xfe";
     assert_eq!(redaction::Redactor::new("").push(bytes, true), bytes);
 }
+
+#[test]
+fn configured_sensitive_headers_are_redacted_in_snapshots_and_split_body_echoes() {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-auth", "auth-secret".parse().unwrap());
+    headers.insert("x-client-token", "client-secret".parse().unwrap());
+    headers.insert("x-route", "visible".parse().unwrap());
+    let body = b"auth-secret/client-secret/visible";
+    for split in 0..=body.len() {
+        let mut redactor = redaction::Redactor::new("site-secret");
+        redactor.include_headers(&headers);
+        let saved = redactor.headers(&headers).to_string();
+        assert!(!saved.contains("auth-secret"));
+        assert!(!saved.contains("client-secret"));
+        assert!(saved.contains("visible"));
+        let mut output = redactor.push(&body[..split], false);
+        output.extend(redactor.push(&body[split..], true));
+        assert_eq!(output, b"[REDACTED]/[REDACTED]/visible");
+    }
+}
 async fn recording(
     kind: ResponseKind,
     content_type: &str,

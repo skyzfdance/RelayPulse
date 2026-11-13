@@ -1,6 +1,40 @@
 use super::*;
 use futures_util::future::BoxFuture;
 
+#[tokio::test]
+async fn responses_json_has_the_same_text_for_probes_generation_and_replay() {
+    for body in [
+        json!({"status":"completed","output_text":"OK"}),
+        json!({"status":"completed","output_text":"OK", "output":[
+            {"type":"message","content":[{"type":"output_text","text":"OK"}]}
+        ]}),
+    ] {
+        let server = Server::new(vec![Response::json(body.clone()); 2]);
+        let client = ModelClient::default();
+        assert!(
+            check(&client, &request(&server.url, Protocol::OpenaiResponses))
+                .await
+                .success
+        );
+        let mut capture = Capture::default();
+        let generated = client
+            .generate_once(
+                &input(&server.url, Protocol::OpenaiResponses),
+                options(2000),
+                &Cancellation::default(),
+                &mut capture,
+            )
+            .await
+            .unwrap();
+        assert_eq!(generated.failure, None);
+        assert_eq!(capture.output, vec![(OutputKind::Text, "OK".into())]);
+        let replay =
+            decode_generation_output(Protocol::OpenaiResponses, body.to_string().as_bytes());
+        assert_eq!(replay.parts.len(), 1);
+        assert_eq!(replay.parts[0].text, "OK");
+    }
+}
+
 #[derive(Default)]
 struct Capture {
     raw: Vec<u8>,

@@ -134,6 +134,21 @@ impl SiteStore {
         self.write(|tx| {
             let site = load(tx, id)?;
             validation::connection(value, &site.base_url)?;
+            // 在修改目录专用 Header 之前，固化旧共享 Header 的探针副本。
+            tx.execute(
+                "UPDATE sites SET policy=?1 WHERE id=?2",
+                params![json(&site.policy)?, id],
+            )?;
+            for model in &site.models {
+                tx.execute(
+                    "UPDATE site_models SET policy=?1,custom_request=?2 WHERE id=?3",
+                    params![
+                        model.policy.as_ref().map(json).transpose()?,
+                        model.custom_request.as_ref().map(json).transpose()?,
+                        model.id
+                    ],
+                )?;
+            }
             tx.execute(
                 "UPDATE sites SET connection=?1,revision=revision+1 WHERE id=?2",
                 params![json(value)?, id],
@@ -348,12 +363,23 @@ fn protocol_name(value: Protocol) -> &'static str {
 fn load(c: &SqlConnection, id: &str) -> Result<Site> {
     let mut site = c.query_row("SELECT id,name,protocol,base_url,enabled,priority,connection,policy,revision,EXISTS(SELECT 1 FROM site_credentials WHERE site_id=sites.id) FROM sites WHERE id=?1", [id], |r| {
         let protocol = decode(format!("\"{}\"",r.get::<_,String>(2)?))?;
-        let policy = policy::decode_policy(&r.get::<_,String>(7)?, protocol).map_err(|_|rusqlite::Error::InvalidQuery)?;
-        Ok(Site { id:r.get(0)?,name:r.get(1)?,protocol,base_url:r.get(3)?,enabled:r.get(4)?,priority:r.get(5)?,connection:decode(r.get(6)?)?,policy,revision:r.get(8)?,credential_configured:r.get(9)?,models:vec![] })
+        let connection: Connection = decode(r.get(6)?)?;
+        let text: String = r.get(7)?;
+        let mut policy = policy::decode_policy(&text, protocol).map_err(|_|rusqlite::Error::InvalidQuery)?;
+        policy.headers.extend(policy::legacy_headers(&text, &connection.headers).map_err(|_|rusqlite::Error::InvalidQuery)?);
+        Ok(Site { id:r.get(0)?,name:r.get(1)?,protocol,base_url:r.get(3)?,enabled:r.get(4)?,priority:r.get(5)?,connection,policy,revision:r.get(8)?,credential_configured:r.get(9)?,models:vec![] })
     }).optional()?.ok_or(SiteConfigError::NotFound)?;
     site.models = c.prepare("SELECT id,name,enabled,policy,custom_request,created_at_ms FROM site_models WHERE site_id=?1 ORDER BY position,id")?.query_map([id], |r| {
-        let policy = r.get::<_,Option<String>>(3)?.map(|text|policy::decode_policy(&text, site.protocol)).transpose().map_err(|_|rusqlite::Error::InvalidQuery)?;
-        let custom_request = r.get::<_,Option<String>>(4)?.map(|text|policy::decode_custom(&text)).transpose().map_err(|_|rusqlite::Error::InvalidQuery)?;
+        let policy = r.get::<_,Option<String>>(3)?.map(|text| {
+            let mut value = policy::decode_policy(&text, site.protocol)?;
+            value.headers.extend(policy::legacy_headers(&text, &site.connection.headers)?);
+            Ok::<_, SiteConfigError>(value)
+        }).transpose().map_err(|_|rusqlite::Error::InvalidQuery)?;
+        let custom_request = r.get::<_,Option<String>>(4)?.map(|text| {
+            let mut value = policy::decode_custom(&text)?;
+            value.headers.extend(policy::legacy_headers(&text, &site.connection.headers)?);
+            Ok::<_, SiteConfigError>(value)
+        }).transpose().map_err(|_|rusqlite::Error::InvalidQuery)?;
         Ok(Model {created_at_ms:u64::try_from(r.get::<_,i64>(5)?).map_err(|_|rusqlite::Error::InvalidQuery)?,id:r.get(0)?,name:r.get(1)?,enabled:r.get(2)?,policy,custom_request})
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     validate(&site)?;

@@ -1,11 +1,12 @@
 use crate::application::operation_history::{ReadFailureKind, ReadFailureTarget};
+use crate::commands::json_input;
 use crate::{
     commands::error::CommandError,
     modules::operation_logs::{OperationLogError, OperationLogQuery},
 };
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{Map, Value};
-use tauri::ipc::{InvokeBody, Request};
+use tauri::ipc::Request;
 fn invalid(field: &'static str) -> CommandError {
     OperationLogError::Validation {
         field,
@@ -14,18 +15,14 @@ fn invalid(field: &'static str) -> CommandError {
     .into()
 }
 fn object(request: Request<'_>, field: &'static str) -> Result<Map<String, Value>, CommandError> {
-    match request.body() {
-        InvokeBody::Json(Value::Object(body)) => Ok(body.clone()),
-        _ => Err(invalid(field)),
-    }
+    json_input::object(request).map_err(|_| invalid(field))
 }
 fn take<T: DeserializeOwned>(
     body: &mut Map<String, Value>,
     key: &str,
     field: &'static str,
 ) -> Result<T, CommandError> {
-    serde_json::from_value(body.remove(key).ok_or_else(|| invalid(field))?)
-        .map_err(|_| invalid(field))
+    json_input::take(body, key).map_err(|_| invalid(field))
 }
 pub(super) fn query(request: Request<'_>) -> Result<OperationLogQuery, CommandError> {
     let mut body = object(request, "query")?;

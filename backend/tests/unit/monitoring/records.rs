@@ -88,6 +88,56 @@ fn filter(query: ProbeRecordsQuery) -> query::RecordFilter {
 fn value(value: impl serde::Serialize) -> Value {
     serde_json::to_value(value).unwrap()
 }
+
+#[test]
+fn strategy_source_does_not_depend_on_protocol_or_reasoning_fields() {
+    let f = Fixture::new();
+    let site = f.site();
+    f.seed(
+        &site,
+        "strategy",
+        NOW - DAY,
+        "historical",
+        "succeeded",
+        [None; 3],
+    );
+    for protocol in [
+        "openai-compatible",
+        "openai-responses",
+        "anthropic",
+        "custom-http",
+    ] {
+        for (source, label) in [
+            ("site_default", "继承站点默认"),
+            ("model_policy", "独立策略"),
+            ("custom_request", "自定义策略"),
+        ] {
+            for parameters in [
+                json!([]),
+                json!([{"key":"output_config.effort","value":"max","type":"string"}]),
+            ] {
+                let policy = json!({"source":source,"parameters":parameters});
+                f.database
+                    .with_connection(|c| {
+                        c.execute(
+                    "UPDATE probe_records SET protocol=?1,policy_json=?2 WHERE id='strategy'",
+                    params![protocol, policy.to_string()],
+                )
+                    })
+                    .unwrap();
+                let detail = value(
+                    f.records
+                        .get("strategy", (NOW - 30 * DAY) as u64, NOW as u64)
+                        .unwrap()
+                        .unwrap()
+                        .detail(None)
+                        .unwrap(),
+                );
+                assert_eq!(detail["requestInfo"]["strategyLabel"], label);
+            }
+        }
+    }
+}
 #[test]
 fn filters_stable_order_retention_nulls_zero_and_site_aggregation_use_historical_facts() {
     let f = Fixture::new();
@@ -404,5 +454,5 @@ fn missing_snapshots_and_historical_thresholds_are_projected_without_current_con
     assert_eq!(detail["result"], "success");
     assert_eq!(detail["slowEvaluation"]["duration"]["comparison"], "gte");
     assert_eq!(detail["slowEvaluation"]["duration"]["triggered"], false);
-    assert_eq!(detail["requestInfo"]["strategyLabel"], "模型独立策略");
+    assert_eq!(detail["requestInfo"]["strategyLabel"], "独立策略");
 }

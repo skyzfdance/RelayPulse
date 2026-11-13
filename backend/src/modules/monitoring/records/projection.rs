@@ -4,7 +4,6 @@ use super::{
     error::{RecordError, Result},
     queries::StoredRecord,
 };
-use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 impl StoredRecord {
@@ -161,42 +160,13 @@ impl StoredRecord {
     fn strategy_label(&self) -> Option<String> {
         let policy = self.policy.as_ref()?;
         let source = policy["source"].as_str()?;
-        if source == "custom_request" || self.protocol.as_deref() == Some("custom-http") {
-            return Some("自定义请求".into());
+        // 策略来源是保存事实，与 Body 中是否填写推理字段无关。
+        match source {
+            "custom_request" => Some("自定义策略".into()),
+            "model_policy" => Some("独立策略".into()),
+            "site_default" => Some("继承站点默认".into()),
+            _ => None,
         }
-        let mut effort = None;
-        if let Some(parameters) = policy["parameters"].as_array() {
-            for parameter in parameters {
-                let key = parameter["key"].as_str();
-                match (self.protocol.as_deref(), key) {
-                    (Some("openai-compatible"), Some("reasoning_effort"))
-                    | (Some("openai-responses"), Some("reasoning.effort")) => {
-                        effort = parameter["value"].as_str().map(str::to_owned)
-                    }
-                    (Some("openai-responses"), Some("reasoning")) => {
-                        effort = parameter["value"]
-                            .as_str()
-                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                            .and_then(|v| v["effort"].as_str().map(str::to_owned));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Some(match effort.as_deref() {
-            Some("none") => "不使用推理".into(),
-            Some("minimal") => "最低推理".into(),
-            Some("low") => "低推理".into(),
-            Some("medium") => "中推理".into(),
-            Some("high") => "高推理".into(),
-            Some("xhigh") => "超高推理".into(),
-            Some(value) => format!("推理：{value}"),
-            None => match source {
-                "model_policy" => "模型独立策略",
-                _ => "站点默认策略",
-            }
-            .into(),
-        })
     }
 }
 pub(super) fn request(

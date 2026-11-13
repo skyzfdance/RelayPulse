@@ -138,6 +138,7 @@ describe('IQ 默认历史夹具', () => {
     );
     expect(retired).toMatchObject({
       modelKey: 'retired-site/retired-model',
+      headers: [],
       preset: 'custom',
       parameters: { reasoning_effort: 'low' },
     });
@@ -154,6 +155,7 @@ describe('IQ 默认历史夹具', () => {
     seedIqState();
     const participant = await taskApi.createIqParticipant({
       modelKey: 'site-1/model-0-0',
+      headers: [],
       preset: 'high',
       parameters: { reasoning_effort: 'high' },
     });

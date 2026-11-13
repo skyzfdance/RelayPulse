@@ -13,8 +13,7 @@ import { routerKey } from 'vue-router';
 import { savePolicy, testCustomProbe } from '@/api/config/sites';
 import { useSiteDetailsStore, useSiteTasksStore } from '@/stores/site';
 
-import { customProbeError, policyError } from '../probe-policy';
-import { defaultCustomProbeRequest } from '../probe-preview';
+import { customEndpointError, policyError } from '../probe-policy';
 
 import ProbePolicyFields from './ProbePolicyFields.vue';
 import AppIcon from '@/components/AppIcon.vue';
@@ -38,21 +37,21 @@ onScopeDispose(() => {
 });
 // 每次打开都从当前已保存的模型配置新建草稿，关闭时随抽屉销毁。
 const custom = ref(Boolean(model.customRequest));
-const policy = ref<ProbePolicy>(JSON.parse(JSON.stringify(model.policy ?? site.policy)));
-const customRequest = ref<CustomProbeRequest>(
-  model.customRequest
-    ? JSON.parse(JSON.stringify(model.customRequest))
-    : defaultCustomProbeRequest(),
-);
-const activeCustomRequest = computed({
-  get: () => (custom.value ? customRequest.value : undefined),
+const { version, headers, parameters } = model.customRequest ?? model.policy ?? site.policy;
+const policy = ref<ProbePolicy>(JSON.parse(JSON.stringify({ version, headers, parameters })));
+// 端点开关与参数草稿分开，切换端点时不替换 Headers / Body。
+const endpoint = ref(model.customRequest?.endpoint ?? site.connection.probePath);
+const activeCustomEndpoint = computed({
+  get: () => (custom.value ? endpoint.value : undefined),
   set: (value) => {
-    if (!disabled.value && value) customRequest.value = value;
+    if (!disabled.value && value !== undefined) endpoint.value = value;
   },
 });
 const policyFields = ref<InstanceType<typeof ProbePolicyFields>>();
-const error = computed(() =>
-  custom.value ? customProbeError(customRequest.value, site.baseUrl) : policyError(policy.value),
+const error = computed(
+  () =>
+    (custom.value ? customEndpointError(site.baseUrl, endpoint.value) : null) ??
+    policyError(policy.value),
 );
 const testResult = ref<CustomProbeTestResult>();
 const testError = ref('');
@@ -63,7 +62,7 @@ const testTitle = computed(() => {
   return `${result.simulated ? '模拟' : ''}试探${result.success ? '通过' : '失败'}${status} · 总耗时 ${(result.durationMs / 1000).toFixed(2)} s`;
 });
 watch(
-  [custom, customRequest],
+  [custom, endpoint, policy],
   () => {
     testResult.value = undefined;
     testError.value = '';
@@ -84,7 +83,10 @@ async function test() {
   testing.value = true;
   testResult.value = undefined;
   testError.value = '';
-  const input = JSON.parse(JSON.stringify(customRequest.value));
+  const input: CustomProbeRequest = {
+    ...JSON.parse(JSON.stringify(policy.value)),
+    endpoint: endpoint.value,
+  };
   try {
     const result = await testCustomProbe(site.id, model.id, input);
     if (!disposed) testResult.value = result;
@@ -109,11 +111,12 @@ async function save() {
   try {
     await policyFields.value?.validate();
     if (disposed) return;
+    const draft: ProbePolicy = JSON.parse(JSON.stringify(policy.value));
     const saved = await savePolicy(
       site.id,
       model.id,
-      !custom.value ? JSON.parse(JSON.stringify(policy.value)) : null,
-      custom.value ? JSON.parse(JSON.stringify(customRequest.value)) : null,
+      custom.value ? null : draft,
+      custom.value ? { ...draft, endpoint: endpoint.value } : null,
     );
     detailsStore.setSiteDetail(saved);
     if (!disposed) emit('close');
@@ -158,7 +161,9 @@ async function save() {
     <section class="mb-4 flex items-center justify-between gap-4 border-b border-rp-line pb-4">
       <div>
         <h3 class="m-0 text-sm leading-5.5 font-semibold">自定义探针请求</h3>
-        <p class="m-0 text-xs leading-5 text-rp-tertiary">仅覆盖当前模型的探测端点和请求参数</p>
+        <p class="m-0 text-xs leading-5 text-rp-tertiary">
+          关闭时使用站点探测端点；开启后可单独配置探测端点
+        </p>
       </div>
       <a-switch
         :checked="custom"
@@ -171,10 +176,11 @@ async function save() {
     <ProbePolicyFields
       ref="policyFields"
       v-model="policy"
-      v-model:custom-request="activeCustomRequest"
+      v-model:custom-endpoint="activeCustomEndpoint"
       :protocol="site.protocol"
       :model-name="model.name"
       :base-url="site.baseUrl"
+      :probe-path="site.connection.probePath"
       :disabled="disabled"
       @change="
         testResult = undefined;

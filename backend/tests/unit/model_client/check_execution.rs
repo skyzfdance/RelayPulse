@@ -74,7 +74,7 @@ async fn anthropic_responses_json_and_sse_success_and_incomplete_failure() {
         let streaming = response.content_type == "text/event-stream"; let server = Server::new(vec![response]);
         let result = check(&ModelClient::default(), &request(&server.url, protocol)).await;
         assert!(result.success, "{protocol:?}: {result:?}"); assert_eq!(result.first_token_ms.is_some(), streaming);
-        if protocol == Protocol::Anthropic { let head=server.requests()[0].head.to_lowercase(); assert!(head.contains("x-api-key: local-test-secret")); assert!(head.contains("anthropic-version: 2023-06-01")); }
+        if protocol == Protocol::Anthropic { let head=server.requests()[0].head.to_lowercase(); assert!(head.contains("x-api-key: local-test-secret")); assert!(!head.contains("anthropic-version:")); }
     }
     for response in [
         Response::raw(200, "text/html", "<html>login</html>"),

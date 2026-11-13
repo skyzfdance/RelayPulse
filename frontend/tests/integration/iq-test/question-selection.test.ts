@@ -340,6 +340,7 @@ describe('IQ 测试题目分页选择', () => {
     expect(view.count()).toBe('已选 3 道 · 可选 20 道');
     await view.store.addParticipant({
       modelKey: 'site-1/model-0-0',
+      headers: [],
       preset: 'high',
       parameters: { reasoning_effort: 'high' },
     });

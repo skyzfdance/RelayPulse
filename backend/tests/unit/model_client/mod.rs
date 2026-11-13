@@ -14,5 +14,6 @@ use std::time::Duration;
 
 mod catalog_requests;
 mod check_execution;
+mod request_headers;
 mod request_parameters;
 mod sse_decoding;

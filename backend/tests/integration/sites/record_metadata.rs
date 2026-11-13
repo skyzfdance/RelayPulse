@@ -26,6 +26,84 @@ fn events(f: &Fixture, id: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn provider_headers_are_never_completed_in_requests_jsonl_or_request_records() {
+    use crate::shared::model_client::{Parameter, ParameterType};
+    let f = Fixture::new();
+    let server = Server::new(vec![
+        crate::shared::model_client::test_support::success(
+            Protocol::Anthropic
+        );
+        3
+    ]);
+    let id = f
+        .store
+        .create(
+            &CreateSite {
+                name: "visible headers".into(),
+                protocol: Protocol::Anthropic,
+                base_url: server.url.clone(),
+                models_path: "/models".into(),
+                probe_path: "/messages".into(),
+                secret: "secret-only-in-vault".into(),
+                enabled: false,
+            },
+            &["remote".into()],
+        )
+        .unwrap();
+    for (index, enabled) in [None, Some(false), Some(true)].into_iter().enumerate() {
+        let mut policy = ProbePolicy::for_protocol(Protocol::Anthropic);
+        if let Some(enabled) = enabled {
+            let mut header =
+                Parameter::new("anthropic-version", "user-version", ParameterType::String);
+            header.enabled = enabled;
+            policy.headers.push(header);
+        }
+        f.store.save_policy(&id, None, Some(&policy), None).unwrap();
+        f.execute(Operation::Run(id.clone(), None)).await;
+        let saved = row(&f);
+        let record_id = saved["id"].as_str().unwrap();
+        let log = events(&f, record_id);
+        let started = log
+            .iter()
+            .find(|event| event["event"] == "request_started")
+            .unwrap();
+        let projected = serde_json::to_value(
+            f.monitoring
+                .get_probe_record_request(record_id.into())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        for headers in [&started["headers"], &projected["headers"]] {
+            let version = headers
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|header| header["name"] == "anthropic-version");
+            if enabled == Some(true) {
+                assert_eq!(version.unwrap()["value"], "user-version");
+            } else {
+                assert!(version.is_none());
+            }
+            assert!(headers
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|header| header["name"] == "x-api-key" && header["value"] == "[REDACTED]"));
+        }
+        assert_eq!(
+            server.requests()[index]
+                .head
+                .contains("anthropic-version: user-version"),
+            enabled == Some(true)
+        );
+        assert!(!serde_json::to_string(&log)
+            .unwrap()
+            .contains("secret-only-in-vault"));
+    }
+}
+
+#[tokio::test]
 async fn probe_http_and_jsonl_metadata_preserve_literal_addresses() {
     for (base_path, endpoint, path) in [
         ("/usage", "v1/res", "/usagev1/res"),
@@ -45,6 +123,7 @@ async fn probe_http_and_jsonl_metadata_preserve_literal_addresses() {
                         Some(&site.models[0].id),
                         None,
                         Some(&CustomRequest {
+                            headers: vec![],
                             version: 2,
                             endpoint: endpoint.into(),
                             parameters: vec![],
@@ -179,6 +258,7 @@ async fn custom_formal_request_keeps_its_own_endpoint_and_body_but_trial_creates
     let id = f.site(&server.url, &["image-model"]);
     let model = f.store.get(&id).unwrap().models[0].id.clone();
     let custom = CustomRequest {
+        headers: vec![],
         version: 2,
         endpoint:"/images/generations?api_key=query-only-secret#fragment-only-secret".into(),
         parameters:serde_json::from_value(json!([

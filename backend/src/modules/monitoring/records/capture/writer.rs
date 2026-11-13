@@ -107,6 +107,7 @@ impl CaptureSink for FileCapture {
                     body,
                     headers,
                 } => {
+                    self.redactor.include_headers(headers);
                     let url = reqwest::Url::parse(url).map_err(|_| CaptureError)?;
                     json!({"event":"request_started", "protocol":protocol,
                         "method":method,"endpoint":self.redactor.endpoint(&url),"body":self.redactor.value(body),

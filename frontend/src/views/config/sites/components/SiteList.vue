@@ -111,19 +111,17 @@ function move(index: number, delta: number) {
         "
         @click="selectSite(site.id)"
       >
-        <a-tooltip title="拖动调整优先级，也可用上下方向键排序">
-          <button
-            :disabled="reordering"
-            data-sort-handle
-            class="h-8 w-5 cursor-grab border-0 bg-transparent p-0 text-rp-quaternary active:cursor-grabbing"
-            :aria-label="`拖动 ${site.name}，当前优先级 ${site.priority}`"
-            @click.stop
-            @keydown.up.prevent="move(index, -1)"
-            @keydown.down.prevent="move(index, 1)"
-          >
-            <AppIcon name="HolderOutlined" />
-          </button>
-        </a-tooltip>
+        <button
+          :disabled="reordering"
+          data-sort-handle
+          class="h-8 w-5 cursor-grab border-0 bg-transparent p-0 text-rp-quaternary active:cursor-grabbing"
+          :aria-label="`拖动 ${site.name}，当前优先级 ${site.priority}`"
+          @click.stop
+          @keydown.up.prevent="move(index, -1)"
+          @keydown.down.prevent="move(index, 1)"
+        >
+          <AppIcon name="HolderOutlined" />
+        </button>
         <button
           class="min-w-0 cursor-pointer border-0 bg-transparent p-0 text-left text-inherit"
           :aria-current="site.id === selectedId ? 'true' : undefined"

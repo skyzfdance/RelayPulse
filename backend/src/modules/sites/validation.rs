@@ -61,6 +61,7 @@ pub fn policy(value: &ProbePolicy, _protocol: Protocol) -> Result<()> {
     if value.version != 2 {
         return Err(invalid("policy", "请求参数配置版本无效。"));
     }
+    super::configured_request_headers(&value.headers)?;
     parameters(&value.parameters)
 }
 pub fn custom(value: &CustomRequest, base: &str) -> Result<()> {
@@ -68,6 +69,7 @@ pub fn custom(value: &CustomRequest, base: &str) -> Result<()> {
         return Err(invalid("customRequest", "请求参数配置版本无效。"));
     }
     endpoint(base, &value.endpoint, true)?;
+    super::configured_request_headers(&value.headers)?;
     parameters(&value.parameters)
 }
 pub fn parameters(values: &[Parameter]) -> Result<()> {

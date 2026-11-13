@@ -21,6 +21,7 @@ import { deferred } from '../support/deferred';
 let pinia: ReturnType<typeof createPinia>;
 const input = {
   modelKey: 'site-1/model-0-0',
+  headers: [],
   preset: '高',
   parameters: { reasoning_effort: 'high' },
 };
@@ -108,6 +109,7 @@ describe('IQ 浏览器契约与状态生命周期', () => {
     sitesState.sites[0].baseUrl = 'https://changed.invalid';
     sitesState.sites[0].models[0].policy = {
       version: 2,
+      headers: [],
       parameters: [{ key: 'max_tokens', type: 'number', value: '8', enabled: true }],
     };
     sitesState.sites[0].models = [];

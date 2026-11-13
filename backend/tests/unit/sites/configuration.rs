@@ -41,6 +41,26 @@ fn protocol_endpoint_templates_do_not_add_version_paths() {
 }
 
 #[test]
+fn request_header_credentials_are_site_business_rules() {
+    let valid = vec![Parameter::new(
+        "X-Trace-Id",
+        "trace-1",
+        crate::shared::model_client::ParameterType::String,
+    )];
+    assert_eq!(
+        configured_request_headers(&valid).unwrap()[0].key,
+        "X-Trace-Id"
+    );
+
+    let reserved = vec![Parameter::new(
+        "X-API-Key",
+        "manual-secret",
+        crate::shared::model_client::ParameterType::String,
+    )];
+    assert!(configured_request_headers(&reserved).is_err());
+}
+
+#[test]
 fn anthropic_saved_policies_are_not_completed_with_new_reasoning_defaults() {
     let legacy = json!({"prompt":"saved prompt","maxTokens":8,"parameters":[]});
     let expanded = policy::decode_policy(&legacy.to_string(), Protocol::Anthropic).unwrap();
@@ -84,6 +104,7 @@ fn isolated_saves_credentials_persistence_and_unique_models() {
     assert_eq!(original.name, "本地站点");
     assert!(!serde_json::to_string(&original).unwrap().contains("secret"));
     let custom = CustomRequest {
+        headers: vec![],
         version: 2,
         endpoint: "/custom".into(),
         parameters: vec![],
@@ -431,11 +452,13 @@ fn request_parameter_table_round_trips_disabled_rows_empty_objects_and_empty_tab
     let saved = store.save_policy(&id, None, Some(&policy), None).unwrap();
     assert_eq!(saved.policy, policy);
     let dto = serde_json::to_value(&saved.policy).unwrap();
-    assert_eq!(dto.as_object().unwrap().len(), 2);
+    assert_eq!(dto.as_object().unwrap().len(), 3);
+    assert_eq!(dto["headers"], json!([]));
     assert!(dto.get("prompt").is_none());
     assert!(dto.get("maxTokens").is_none());
     let model = saved.models[0].id.clone();
     let empty = CustomRequest {
+        headers: vec![],
         version: 2,
         endpoint: "/custom".into(),
         parameters: vec![],
@@ -450,6 +473,7 @@ fn request_parameter_table_round_trips_disabled_rows_empty_objects_and_empty_tab
     assert_eq!(reopened.policy, policy);
     assert_eq!(reopened.models[0].custom_request, Some(empty));
     let blank = ProbePolicy {
+        headers: vec![],
         version: 2,
         parameters: vec![],
     };
@@ -580,4 +604,64 @@ fn legacy_json_is_expanded_once_and_preserved_when_switching_protocols() {
     let (store, _) = fixture(tmp.path());
     assert_eq!(store.get(&id).unwrap().policy, expanded.policy);
     assert_eq!(store.get(&id).unwrap().models, expanded.models);
+}
+
+#[test]
+fn legacy_shared_headers_are_copied_once_and_catalog_changes_do_not_change_probe_headers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db) = fixture(tmp.path());
+    let id = store
+        .create(&input(), &["default".into(), "own".into()])
+        .unwrap();
+    let site = store.get(&id).unwrap();
+    let mut legacy = serde_json::to_value(&site.policy).unwrap();
+    legacy.as_object_mut().unwrap().remove("headers");
+    let mut connection = site.connection.clone();
+    connection.headers = vec![RequestHeader {
+        key: "x-old".into(),
+        value: "shared".into(),
+    }];
+    db.with_connection(|c| {
+        c.execute(
+            "UPDATE sites SET policy=?1,connection=?2 WHERE id=?3",
+            rusqlite::params![
+                legacy.to_string(),
+                serde_json::to_string(&connection).unwrap(),
+                id
+            ],
+        )?;
+        c.execute(
+            "UPDATE site_models SET policy=?1 WHERE id=?2",
+            rusqlite::params![legacy.to_string(), site.models[1].id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let before = store.get(&id).unwrap();
+    assert_eq!(before.policy.headers[0].value, "shared");
+    assert_eq!(
+        before.models[1].policy.as_ref().unwrap().headers,
+        before.policy.headers
+    );
+    connection.headers[0].value = "catalog-only".into();
+    store.save_connection(&id, &connection).unwrap();
+    let mut policy = before.policy.clone();
+    policy.headers.clear();
+    store
+        .save_policy(&id, Some(&site.models[1].id), Some(&policy), None)
+        .unwrap();
+    drop(store);
+    drop(db);
+    let (store, _) = fixture(tmp.path());
+    let reloaded = store.get(&id).unwrap();
+    assert_eq!(reloaded.connection.headers[0].value, "catalog-only");
+    assert_eq!(reloaded.policy.headers[0].value, "shared");
+    assert!(reloaded.models[1]
+        .policy
+        .as_ref()
+        .unwrap()
+        .headers
+        .is_empty());
+    let dto = serde_json::to_value(reloaded).unwrap();
+    assert_eq!(dto["policy"]["headers"][0]["type"], "string");
 }

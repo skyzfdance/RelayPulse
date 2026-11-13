@@ -1,11 +1,12 @@
 //! 仅解码 IPC 的类型、必填字段及封装；业务取值范围由 monitoring 校验。
+use crate::commands::json_input;
 use crate::{
     commands::error::CommandError,
     modules::monitoring::{ProbeRecordsQuery, RecordError, TokenStatsQuery},
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use tauri::ipc::{InvokeBody, Request};
+use tauri::ipc::Request;
 fn invalid(field: &'static str) -> CommandError {
     RecordError::Validation {
         field,
@@ -14,18 +15,14 @@ fn invalid(field: &'static str) -> CommandError {
     .into()
 }
 fn object(request: Request<'_>, field: &'static str) -> Result<Map<String, Value>, CommandError> {
-    match request.body() {
-        InvokeBody::Json(Value::Object(object)) => Ok(object.clone()),
-        _ => Err(invalid(field)),
-    }
+    json_input::object(request).map_err(|_| invalid(field))
 }
 fn take<T: DeserializeOwned>(
     map: &mut Map<String, Value>,
     key: &str,
     field: &'static str,
 ) -> Result<T, CommandError> {
-    serde_json::from_value(map.remove(key).ok_or_else(|| invalid(field))?)
-        .map_err(|_| invalid(field))
+    json_input::take(map, key).map_err(|_| invalid(field))
 }
 fn query(request: Request<'_>, allowed: &[&str]) -> Result<Map<String, Value>, CommandError> {
     let mut body = object(request, "query")?;
@@ -75,9 +72,5 @@ pub(super) fn record_ids(request: Request<'_>) -> Result<Vec<String>, CommandErr
     Ok(ids)
 }
 pub(super) fn no_args(request: Request<'_>) -> Result<(), CommandError> {
-    match request.body() {
-        InvokeBody::Json(Value::Null) => Ok(()),
-        InvokeBody::Json(Value::Object(object)) if object.is_empty() => Ok(()),
-        _ => Err(invalid("request")),
-    }
+    json_input::no_args(request).map_err(|_| invalid("request"))
 }

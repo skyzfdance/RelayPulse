@@ -142,9 +142,9 @@ export function createProbeRecordRequestInfoFixture(
   record: MockProbeRecord,
 ): ProbeRecordRequestInfo {
   const requests: Record<string, { endpoint: string; strategyLabel: string }> = {
-    'site-1': { endpoint: 'https://input.codes/v1/responses', strategyLabel: '低推理' },
-    'site-2': { endpoint: 'https://doudui.cc/v1/responses', strategyLabel: '低推理' },
-    'site-3': { endpoint: 'https://api.anthropic.com/v1/messages', strategyLabel: '标准探针' },
+    'site-1': { endpoint: 'https://input.codes/v1/responses', strategyLabel: '继承站点默认' },
+    'site-2': { endpoint: 'https://doudui.cc/v1/responses', strategyLabel: '继承站点默认' },
+    'site-3': { endpoint: 'https://api.anthropic.com/v1/messages', strategyLabel: '继承站点默认' },
   };
   const receivedResponse = record.result !== 'failure' || record.durationMs !== null;
   let httpStatus: number | null = null;
@@ -208,10 +208,7 @@ export function createProbeRecordRequestContentFixture(
             { name: 'content-type', value: 'application/json' },
             { name: 'user-agent', value: 'RelayPulse/2.0.0 (macOS 15.0; arm)' },
             ...(anthropic
-              ? [
-                  { name: 'x-api-key', value: '[REDACTED]' },
-                  { name: 'anthropic-version', value: '2023-06-01' },
-                ]
+              ? [{ name: 'x-api-key', value: '[REDACTED]' }]
               : [{ name: 'authorization', value: '[REDACTED]' }]),
           ],
     body: JSON.stringify(body),

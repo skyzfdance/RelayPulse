@@ -44,7 +44,6 @@ pub(super) struct StoredRecord {
     pub method: Option<String>,
     pub endpoint: Option<String>,
     pub policy: Option<Value>,
-    pub protocol: Option<String>,
     pub slow_first_token_ms: Option<u64>,
     pub slow_total_ms: Option<u64>,
     pub request_id: Option<String>,
@@ -205,7 +204,6 @@ fn stored(r: &Row<'_>) -> rusqlite::Result<StoredRecord> {
             .get::<_, Option<String>>("policy_json")?
             .map(|s| serde_json::from_str(&s).map_err(|_| rusqlite::Error::InvalidQuery))
             .transpose()?,
-        protocol: r.get("protocol")?,
         slow_first_token_ms: optional_number(r, "slow_first_token_ms")?,
         slow_total_ms: optional_number(r, "slow_total_ms")?,
         request_id: r.get("request_id")?,

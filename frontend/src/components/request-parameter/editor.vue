@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import type { RequestParameterDraft } from '@/types/request-parameters';
+import type { RequestParameterDraft, RequestParameterValidator } from '@/types/request-parameters';
 
 import { computed, ref } from 'vue';
 
+import { requestHeaderValidation } from '@/utils/request-headers';
 import {
   newRequestParameter,
   parameterBlocked,
@@ -28,24 +29,43 @@ const props = withDefaults(
     hint?: string;
     emptyText?: string;
     error?: string;
+    mode?: 'body' | 'headers';
+    title?: string;
+    validation?: RequestParameterValidator;
   }>(),
   {
     modelName: '',
+    mode: 'body',
+    title: '请求参数',
     error: '',
+    validation: undefined,
     description: '勾选的参数加入请求，取消勾选保留配置',
     hint: '支持对象路径；关闭父级时子参数不发送，空对象仍可发送。',
     emptyText: '暂无请求参数，可添加参数配置请求',
   },
 );
-const rows = computed(() => requestParameterRows(parameters.value));
-const validation = computed(() => requestParameterValidation(parameters.value));
+const rows = computed(() =>
+  props.mode === 'headers'
+    ? parameters.value.map((parameter) => ({ parameter, depth: 0, blocked: false }))
+    : requestParameterRows(parameters.value),
+);
+const validationCallback = computed(() => props.validation);
+const validation = computed(
+  () =>
+    props.validation?.(parameters.value) ??
+    (props.mode === 'headers'
+      ? requestHeaderValidation(parameters.value)
+      : requestParameterValidation(parameters.value)),
+);
 const validationError = computed(() =>
   validation.value.flatMap((item) => [item.key, item.value]).find(Boolean),
 );
 const error = computed(() => props.error || validationError.value);
 const enabledCount = computed(
   () =>
-    parameters.value.filter((parameter) => parameterEnabled(parameters.value, parameter)).length,
+    parameters.value.filter((parameter) =>
+      props.mode === 'headers' ? parameter.enabled : parameterEnabled(parameters.value, parameter),
+    ).length,
 );
 const parameterTypes = ['string', 'number', 'boolean', 'object', 'json'].map((value) => ({
   value,
@@ -57,15 +77,24 @@ function rowValidation(parameter: RequestParameterDraft) {
   return validation.value[parameters.value.indexOf(parameter)];
 }
 function hasChildren(parameter: RequestParameterDraft) {
+  if (props.mode === 'headers') return false;
   return Boolean(
     parameter.key && parameters.value.some((child) => child.key.startsWith(`${parameter.key}.`)),
   );
 }
 function rowDisabled(parameter: RequestParameterDraft) {
-  return props.disabled || !parameterEnabled(parameters.value, parameter);
+  return props.disabled || !isEnabled(parameter);
+}
+function isEnabled(parameter: RequestParameterDraft) {
+  return props.mode === 'headers'
+    ? parameter.enabled
+    : parameterEnabled(parameters.value, parameter);
 }
 function setEnabled(parameter: RequestParameterDraft, checked: unknown) {
-  if (!props.disabled && !parameterBlocked(parameters.value, parameter))
+  if (
+    !props.disabled &&
+    (props.mode === 'headers' || !parameterBlocked(parameters.value, parameter))
+  )
     parameter.enabled = Boolean(checked);
 }
 function updateParameter<K extends 'key' | 'value' | 'type'>(
@@ -74,7 +103,8 @@ function updateParameter<K extends 'key' | 'value' | 'type'>(
   value: RequestParameterDraft[K],
 ) {
   if (rowDisabled(parameter) || parameter.binding) return;
-  if (field === 'key') updateRequestParameterKey(parameters.value, parameter, value);
+  if (field === 'key' && props.mode === 'headers') parameter.key = value;
+  else if (field === 'key') updateRequestParameterKey(parameters.value, parameter, value);
   else if (field === 'type') {
     if (hasChildren(parameter) && value !== 'object') return;
     parameter.type = value as RequestParameterDraft['type'];
@@ -88,6 +118,10 @@ function addParameter(parent?: RequestParameterDraft) {
   else parameters.value.push(parameter);
 }
 function removeParameter(parameter: RequestParameterDraft) {
+  if (props.mode === 'headers') {
+    if (!props.disabled) parameters.value.splice(parameters.value.indexOf(parameter), 1);
+    return;
+  }
   if (!props.disabled && !parameterBlocked(parameters.value, parameter))
     removeRequestParameter(parameters.value, parameter);
 }
@@ -103,7 +137,7 @@ function applyImportedParameters(imported: RequestParameterDraft[]) {
   <section class="request-parameter-section">
     <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h3>请求参数</h3>
+        <h3>{{ title }}</h3>
         <p class="request-parameter-description">{{ description }}</p>
       </div>
       <div class="flex shrink-0 flex-wrap justify-end gap-2">
@@ -131,9 +165,9 @@ function applyImportedParameters(imported: RequestParameterDraft[]) {
           v-for="({ parameter, depth, blocked }, index) in rows"
           :key="parameter.id"
           :data-parameter-key="parameter.key"
-          :data-parameter-enabled="parameterEnabled(parameters, parameter)"
+          :data-parameter-enabled="isEnabled(parameter)"
           class="request-parameter-row min-h-12 border-b border-rp-line px-2.5 py-2 last:border-b-0"
-          :class="{ 'request-parameter-inactive': !parameterEnabled(parameters, parameter) }"
+          :class="{ 'request-parameter-inactive': !isEnabled(parameter) }"
           role="row"
         >
           <div role="cell" class="flex items-center justify-center">
@@ -213,11 +247,13 @@ function applyImportedParameters(imported: RequestParameterDraft[]) {
           <div role="cell">
             <a-select
               :value="parameter.type"
-              :disabled="rowDisabled(parameter) || Boolean(parameter.binding)"
+              :disabled="rowDisabled(parameter) || Boolean(parameter.binding) || mode === 'headers'"
               :options="
-                hasChildren(parameter)
-                  ? parameterTypes.filter((type) => type.value === 'object')
-                  : parameterTypes
+                mode === 'headers'
+                  ? parameterTypes.filter((type) => type.value === 'string')
+                  : hasChildren(parameter)
+                    ? parameterTypes.filter((type) => type.value === 'object')
+                    : parameterTypes
               "
               :aria-label="`参数类型 ${index + 1}`"
               class="w-full"
@@ -259,7 +295,9 @@ function applyImportedParameters(imported: RequestParameterDraft[]) {
         :class="error ? 'text-rp-error' : 'text-rp-tertiary'"
         :role="error ? 'alert' : undefined"
       >
-        {{ error ?? hint }}
+        {{
+          error || (mode === 'headers' ? '请求头使用平铺的字符串键值，认证使用站点凭据。' : hint)
+        }}
       </p>
       <span class="shrink-0 text-rp-tertiary"
         >已启用 {{ enabledCount }} / {{ parameters.length }}</span
@@ -268,7 +306,9 @@ function applyImportedParameters(imported: RequestParameterDraft[]) {
     <JsonParameterImport
       v-if="importOpen"
       :parameters="parameters"
+      :validation="validationCallback"
       :disabled="disabled"
+      :mode="mode"
       @apply="applyImportedParameters"
       @close="importOpen = false"
     />

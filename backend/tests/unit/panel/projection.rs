@@ -16,6 +16,7 @@ fn site(id: &str, models: &[&str]) -> Site {
         credential_configured: true,
         connection: Connection::for_protocol(Protocol::CustomHttp),
         policy: ProbePolicy {
+            headers: vec![],
             version: 2,
             parameters: vec![],
         },

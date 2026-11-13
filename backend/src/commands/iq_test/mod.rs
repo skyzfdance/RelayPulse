@@ -5,12 +5,8 @@ use crate::{
     startup::StartupState,
 };
 use serde::{de::DeserializeOwned, Deserialize};
-use serde_json::Value;
 use std::sync::Arc;
-use tauri::{
-    ipc::{InvokeBody, Request},
-    State,
-};
+use tauri::{ipc::Request, State};
 fn service(state: &StartupState) -> Result<Arc<IqTest>, CommandError> {
     match state {
         StartupState::Ready(app) => Ok(app.iq_test.clone()),
@@ -18,20 +14,21 @@ fn service(state: &StartupState) -> Result<Arc<IqTest>, CommandError> {
     }
 }
 fn args<T: DeserializeOwned>(request: Request<'_>, field: &'static str) -> Result<T, CommandError> {
-    let value = match request.body() {
-        InvokeBody::Json(value) => value.clone(),
-        _ => return Err(CommandError::invalid(field, "IQ 请求必须是 JSON 对象。")),
-    };
-    serde_json::from_value(value)
-        .map_err(|_| CommandError::invalid(field, "IQ 请求字段缺失、类型错误或含未知字段。"))
+    crate::commands::json_input::decode(request).map_err(|error| {
+        let message = match error {
+            crate::commands::json_input::DecodeError::Body => "IQ 请求必须是 JSON 对象。",
+            crate::commands::json_input::DecodeError::Fields => {
+                "IQ 请求字段缺失、类型错误或含未知字段。"
+            }
+        };
+        CommandError::invalid(field, message)
+    })
 }
 fn no_args(request: Request<'_>) -> Result<(), CommandError> {
-    match request.body() {
-        InvokeBody::Json(Value::Null) => Ok(()),
-        InvokeBody::Json(Value::Object(fields)) if fields.is_empty() => Ok(()),
-        _ => Err(CommandError::invalid("request", "此 IQ 命令不接受参数。")),
-    }
+    crate::commands::json_input::no_args(request)
+        .map_err(|_| CommandError::invalid("request", "此 IQ 命令不接受参数。"))
 }
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Id {

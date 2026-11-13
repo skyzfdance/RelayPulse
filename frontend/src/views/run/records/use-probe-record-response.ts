@@ -1,63 +1,44 @@
-import type { ProbeRecordResponseContent } from '@/types/domain/records';
 import type { MaybeRefOrGetter } from 'vue';
 
-import { onScopeDispose, ref, shallowRef, toValue, watch } from 'vue';
+import { ref, toValue, watch } from 'vue';
 
 import { reportOperationReadFailure } from '@/api/operation-read-failures';
 import { fetchProbeRecordResponse, openProbeRecordLogDirectory } from '@/api/run/records';
 import { useFeedback } from '@/composables/useFeedback';
-import { RelayPulseBackendError } from '@/utils/backend-error';
 
-/** 原始返回按需读取；元数据和打开结果均隔离已关闭或已切换记录的旧响应。 */
+import { useProbeRecordContent } from './use-probe-record-content';
+
+/** 原始返回按需读取；打开目录由探测记录模块独立处理。 */
 export function useProbeRecordResponse(
   recordId: MaybeRefOrGetter<string>,
   expanded: MaybeRefOrGetter<boolean>,
 ) {
-  const content = shallowRef<ProbeRecordResponseContent>();
-  const loading = ref(false);
-  const error = ref('');
-  const retryable = ref(false);
+  const resource = useProbeRecordContent(
+    recordId,
+    expanded,
+    (id) => fetchProbeRecordResponse(id),
+    '暂时无法读取原始返回，请重试',
+  );
+  const { content } = resource;
   const openingDirectory = ref(false);
   const feedback = useFeedback();
-  let version = 0;
-  let disposed = false;
-  let hiddenFailure: { cause: unknown } | undefined;
-
-  async function reload() {
-    if (disposed || loading.value) return;
-    const requestVersion = ++version;
-    const id = toValue(recordId);
-    content.value = undefined;
-    hiddenFailure = undefined;
-    error.value = '';
-    retryable.value = false;
-    openingDirectory.value = false;
-    loading.value = true;
-    try {
-      const next = await fetchProbeRecordResponse(id);
-      if (disposed || requestVersion !== version) return;
-      content.value = next;
-    } catch (cause) {
-      if (disposed || requestVersion !== version) return;
-      error.value = cause instanceof Error ? cause.message : '暂时无法读取原始返回，请重试';
-      retryable.value = !(cause instanceof RelayPulseBackendError) || cause.retryable;
-      if (toValue(expanded)) reportOperationReadFailure('probe_record_detail', 'detail', cause);
-      else hiddenFailure = { cause };
-    } finally {
-      if (!disposed && requestVersion === version) loading.value = false;
-    }
-  }
-
+  watch(
+    content,
+    () => {
+      openingDirectory.value = false;
+    },
+    { flush: 'sync' },
+  );
   async function openLogDirectory() {
     const file = content.value?.logFile;
-    if (disposed || openingDirectory.value || !file?.canOpenDirectory) return;
-    const actionVersion = version;
+    if (openingDirectory.value || !file?.canOpenDirectory) return;
+    const isCurrent = resource.current();
     openingDirectory.value = true;
     try {
       const result = await openProbeRecordLogDirectory(toValue(recordId));
-      if (!disposed && actionVersion === version) feedback.success(result.message);
+      if (isCurrent()) feedback.success(result.message);
     } catch (cause) {
-      if (!disposed && actionVersion === version) {
+      if (isCurrent()) {
         feedback.error(
           cause instanceof Error ? cause.message : '暂时无法打开日志目录，请重试',
           'message',
@@ -65,36 +46,9 @@ export function useProbeRecordResponse(
         reportOperationReadFailure('probe_record_detail', 'detail', cause);
       }
     } finally {
-      if (!disposed && actionVersion === version) openingDirectory.value = false;
+      if (isCurrent()) openingDirectory.value = false;
     }
   }
 
-  watch(
-    () => toValue(recordId),
-    () => {
-      version += 1;
-      hiddenFailure = undefined;
-      content.value = undefined;
-      error.value = '';
-      loading.value = retryable.value = false;
-      openingDirectory.value = false;
-    },
-    { flush: 'sync' },
-  );
-  watch(
-    () => [toValue(recordId), toValue(expanded)] as const,
-    ([, open]) => {
-      if (open && hiddenFailure) {
-        reportOperationReadFailure('probe_record_detail', 'detail', hiddenFailure.cause);
-        hiddenFailure = undefined;
-      }
-      if (open && !content.value && !error.value && !loading.value) void reload();
-    },
-    { immediate: true },
-  );
-  onScopeDispose(() => {
-    disposed = true;
-    version += 1;
-  });
-  return { content, loading, error, retryable, reload, openingDirectory, openLogDirectory };
+  return { ...resource, openingDirectory, openLogDirectory };
 }

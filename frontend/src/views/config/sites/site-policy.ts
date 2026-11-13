@@ -20,6 +20,8 @@ export function siteDraft(site: ManagedSite): SiteDraft {
 
 export function validateSite(draft: SiteDraft): string | null {
   if (!draft.name.trim()) return '请输入站点名称';
+  if (draft.baseUrl !== draft.baseUrl.trim() || /[\r\n\t]/u.test(draft.baseUrl))
+    return '请输入有效的 Base URL';
   try {
     const url = new URL(draft.baseUrl);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)

@@ -60,6 +60,49 @@ async function mountDrawer() {
 }
 
 describe('探针请求参数编辑', () => {
+  it('Anthropic 推理参数使用同一张参数表编辑、停用和保存，重新打开不补回删除项', async () => {
+    useSiteStore().selectedSiteId = 'site-2';
+    await useSiteDetailsStore().loadSiteDetails();
+    const { wrapper, drawer, button } = await mountDrawer();
+    expect(
+      drawer.get<HTMLInputElement>(parameterValueSelector('thinking.type')).element.value,
+    ).toBe('adaptive');
+    expect(
+      drawer.get<HTMLInputElement>(parameterValueSelector('output_config.effort')).element.value,
+    ).toBe('low');
+    await drawer.get(parameterValueSelector('output_config.effort')).setValue('high');
+    await drawer.get(parameterValueSelector('max_tokens')).setValue('8192');
+    expect(JSON.parse(drawer.get('pre').text())).toMatchObject({
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+      max_tokens: 8192,
+    });
+    await drawer
+      .get<HTMLInputElement>('[data-parameter-key="thinking"] input[type="checkbox"]')
+      .setValue(false);
+    await drawer
+      .get('[data-parameter-key="output_config"] button[title="删除参数及其子参数"]')
+      .trigger('click');
+    const preview = JSON.parse(drawer.get('pre').text());
+    expect(preview).not.toHaveProperty('thinking');
+    expect(preview).not.toHaveProperty('output_config');
+    await button('保存').trigger('click');
+    await flushPromises();
+    const saved = (await api.fetchSite('site-2')).policy;
+    expect(policyBody(saved)).toEqual(preview);
+    expect(saved.parameters.find((parameter) => parameter.key === 'thinking.type')).toMatchObject({
+      value: 'adaptive',
+      enabled: true,
+    });
+    wrapper.unmount();
+    const reopened = await mountDrawer();
+    expect(JSON.parse(reopened.drawer.get('pre').text())).toEqual(preview);
+    await reopened.drawer
+      .get<HTMLInputElement>('[data-parameter-key="thinking"] input[type="checkbox"]')
+      .setValue(true);
+    expect(JSON.parse(reopened.drawer.get('pre').text()).thinking).toEqual({ type: 'adaptive' });
+  });
+
   it('基础参数统一进入表格，数字仅校验类型，预览不限制协议取值', async () => {
     const { wrapper, policy } = mountFields();
     expect(wrapper.find('[aria-label="最大输出"]').exists()).toBe(false);

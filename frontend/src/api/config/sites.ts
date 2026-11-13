@@ -38,12 +38,12 @@ export function fetchSite(siteId: string): Promise<ManagedSite> {
   );
 }
 
-/** 连接站点并获取模型目录，返回新站点 ID。 */
+/** 添加站点并尝试获取模型目录；目录失败仍返回已保存的新站点 ID。 */
 export function createSite(input: CreateSiteInput): Promise<string> {
   return callBackend<string>(
     'create_site',
     { input },
-    { successText: '站点已添加', failFeedback: 'message' },
+    { successFeedback: 'none', failFeedback: 'message' },
   );
 }
 

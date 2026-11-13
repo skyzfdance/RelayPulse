@@ -8,6 +8,12 @@ import {
 
 import { customProbeError, policyError, resolveCustomProbeEndpoint } from './probe-policy';
 
+const anthropicReasoningDefaults = {
+  max_tokens: 4096,
+  thinking: { type: 'adaptive' },
+  output_config: { effort: 'low' },
+};
+
 /** 只在创建配置时提供基础参数，之后由使用者维护整张参数表。 */
 export function defaultProbePolicy(protocol: SiteProtocol): ProbePolicy {
   const body: Record<string, unknown> = { model: '' };
@@ -21,8 +27,9 @@ export function defaultProbePolicy(protocol: SiteProtocol): ProbePolicy {
     Object.assign(body, {
       messages: [{ role: 'user', content: '只回复 OK' }],
       stream: true,
-      max_tokens: 8,
-      ...(protocol === 'openai-compatible' ? { reasoning_effort: 'low' } : {}),
+      ...(protocol === 'anthropic'
+        ? anthropicReasoningDefaults
+        : { max_tokens: 8, reasoning_effort: 'low' }),
     });
   return { version: 2, parameters: serializeRequestParameters(createRequestParameters(body)) };
 }

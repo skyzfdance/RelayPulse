@@ -72,6 +72,14 @@ impl Fixture {
                     name: "原站点".into(),
                     protocol,
                     base_url: url.into(),
+                    models_path: "/models".into(),
+                    probe_path: match protocol {
+                        Protocol::OpenaiCompatible => "/v1/chat/completions",
+                        Protocol::OpenaiResponses => "/v1/responses",
+                        Protocol::Anthropic => "/v1/messages",
+                        Protocol::CustomHttp => "/probe",
+                    }
+                    .into(),
                     secret: SECRET.into(),
                     enabled,
                 },

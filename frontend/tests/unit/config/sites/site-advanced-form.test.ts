@@ -36,6 +36,12 @@ function mountForm(overrides: Partial<Connection> = {}) {
 }
 
 describe('高级设置表单校验', () => {
+  it('模型列表端点可留空，校验和保存均保留空值', async () => {
+    const { wrapper, connection } = mountForm({ modelsPath: '' });
+    await expect(wrapper.vm.validate()).resolves.toBeDefined();
+    const saved = await api.saveSiteConnection('site-1', connection);
+    expect(saved.connection.modelsPath).toBe('');
+  });
   it.each([
     ['intervalSeconds', '探测频率', 86400],
     ['slowFirstTokenSeconds', '首 Token 慢阈值', 100],
@@ -74,10 +80,10 @@ describe('高级设置表单校验', () => {
   it.each([
     ['modelsPath', '模型列表端点'],
     ['probePath', '探测端点'],
-  ] as const)('%s 必填且拒绝首尾空格，修改后立即校验', async (name, label) => {
+  ] as const)('%s 拒绝首尾空格，探测端点必填，修改后立即校验', async (name, label) => {
     const { wrapper } = mountForm();
     const input = wrapper.get(`input#${name}`);
-    for (const value of ['', '   ', ' /v1/test', '/v1/test ']) {
+    for (const value of [...(name === 'probePath' ? [''] : []), '   ', ' /v1/test', '/v1/test ']) {
       await input.setValue(value);
       await vi.waitFor(() =>
         expect(wrapper.text()).toContain(
@@ -92,10 +98,10 @@ describe('高级设置表单校验', () => {
   });
 
   it('未修改的空字段在失焦时也显示必填提示', async () => {
-    const { wrapper } = mountForm({ modelsPath: '' });
-    expect(wrapper.text()).not.toContain('请输入模型列表端点');
-    await wrapper.get('input#modelsPath').trigger('blur');
-    await vi.waitFor(() => expect(wrapper.text()).toContain('请输入模型列表端点'));
+    const { wrapper } = mountForm({ probePath: '' });
+    expect(wrapper.text()).not.toContain('请输入探测端点');
+    await wrapper.get('input#probePath').trigger('blur');
+    await vi.waitFor(() => expect(wrapper.text()).toContain('请输入探测端点'));
   });
 
   it('请求头名称必填，值允许为空；非空名称和值拒绝首尾空格', async () => {
@@ -142,7 +148,7 @@ describe('高级设置表单校验', () => {
   });
 
   it('保存按钮校验所有字段，失败时不调用保存；修正后允许空请求头值并以秒保存', async () => {
-    state.sites[0].connection.modelsPath = '';
+    state.sites[0].connection.modelsPath = '/../models';
     state.sites[0].connection.headers = [{ key: '', value: '' }];
     state.sites[0].connection.failureThreshold = 11;
     await useSiteStore().loadSite({ autoLoadDetails: false });

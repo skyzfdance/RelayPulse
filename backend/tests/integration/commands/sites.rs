@@ -59,7 +59,7 @@ fn all_seventeen_commands_use_registered_ipc_real_http_and_persistence() {
         json!({"value":"openai-compatible","label":"OpenAI 兼容协议"})
     );
     assert_eq!(invoke(&window, "get_sites", json!({})).unwrap(), json!([]));
-    let id=invoke(&window,"create_site",json!({"input":{"name":"local","protocol":"custom-http","baseUrl":server.url,"secret":"ipc-private-key","enabled":true}})).unwrap();
+    let id=invoke(&window,"create_site",json!({"input":{"name":"local","protocol":"custom-http","baseUrl":server.url,"modelsPath":"/models","probePath":"/probe","secret":"ipc-private-key","enabled":true}})).unwrap();
     assert!(id.is_string());
     let site = invoke(&window, "get_site", json!({"siteId":id})).unwrap();
     assert_eq!(site.as_object().unwrap().len(), 9);

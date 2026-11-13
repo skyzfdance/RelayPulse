@@ -43,6 +43,8 @@ impl Fixture {
                     name: "current name".into(),
                     protocol: Protocol::OpenaiResponses,
                     base_url: "http://127.0.0.1:1".into(),
+                    models_path: "/models".into(),
+                    probe_path: "/v1/responses".into(),
                     secret: "test-secret".into(),
                     enabled: false,
                 },

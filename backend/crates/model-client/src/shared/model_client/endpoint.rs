@@ -2,8 +2,13 @@ use super::{types::invalid, InputError};
 use reqwest::{header::HeaderValue, Url};
 
 pub fn base_url(value: &str) -> Result<Url, InputError> {
-    let url =
-        Url::parse(value.trim()).map_err(|_| invalid("baseUrl", "请输入有效的 Base URL。"))?;
+    if value.is_empty() || value != value.trim() || value.contains(['\r', '\n', '\t']) {
+        return Err(invalid(
+            "baseUrl",
+            "Base URL 不能为空、首尾空格或包含换行。",
+        ));
+    }
+    let url = Url::parse(value).map_err(|_| invalid("baseUrl", "请输入有效的 Base URL。"))?;
     validate_url(&url)?;
     Ok(url)
 }
@@ -18,29 +23,23 @@ fn validate_url(url: &Url) -> Result<(), InputError> {
     Ok(())
 }
 
-/// 端点路径追加到 Base URL，保留其路径前缀；自定义端点另校验同源。
+/// 只连接原始字符串，不补斜杠、不解析相对路径，也不替换 Base URL。
 pub fn endpoint(base: &str, value: &str, custom: bool) -> Result<Url, InputError> {
-    if value.trim().is_empty()
-        || value != value.trim()
-        || value.contains(['\r', '\n'])
-        || (custom && value.contains('\t'))
-    {
+    if value.trim().is_empty() || value != value.trim() || value.contains(['\r', '\n', '\t']) {
         return Err(invalid("endpoint", "端点不能为空、首尾空格或包含换行。"));
     }
-    let base = base_url(base)?;
-    let mut resolution_base = base.clone();
-    resolution_base.set_path(&format!("{}/", base.path().trim_end_matches('/')));
-    // 完整地址继续按原规则处理；普通路径只归一化连接处的斜杠，不覆盖基址路径。
-    let value = if value.starts_with("//") {
-        value
-    } else {
-        value.trim_start_matches('/')
-    };
-    let url = resolution_base
-        .join(value)
-        .map_err(|_| invalid("endpoint", "端点格式无效。"))?;
+    let parsed_base = base_url(base)?;
+    let address = format!("{base}{value}");
+    let url = Url::parse(&address).map_err(|_| invalid("endpoint", "端点格式无效。"))?;
     validate_url(&url)?;
-    if custom && url.origin() != base.origin() {
+    // URL 解析器会消解 ../、反斜杠等输入；拒绝这些地址，避免发送悄悄改写的请求。
+    if url.as_str() != address {
+        return Err(invalid(
+            "endpoint",
+            "拼接地址需要 URL 规范化，请直接修正配置；程序不会自动补全或纠正。",
+        ));
+    }
+    if custom && url.origin() != parsed_base.origin() {
         return Err(invalid("endpoint", "端点必须与站点 Base URL 同源。"));
     }
     Ok(url)

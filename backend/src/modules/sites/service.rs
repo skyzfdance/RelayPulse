@@ -4,7 +4,8 @@ use super::{
     *,
 };
 use crate::shared::model_client::{
-    Cancellation, CatalogRequest, CheckResult, ExecutionOptions, ModelClient, RequestTarget,
+    Cancellation, CatalogRequest, CheckResult, ClientError, ExecutionOptions, ModelClient,
+    RequestTarget,
 };
 use crate::shared::state_changes::StateChanges;
 use std::{future::Future, sync::Arc, time::Duration};
@@ -142,7 +143,8 @@ impl SiteService {
             validation::name(&input.name)?;
             validation::base_url(&input.base_url)?;
             validation::credential(&input.secret)?;
-            let connection = Connection::for_protocol(input.protocol);
+            let connection = input.connection();
+            validation::connection(&connection, &input.base_url)?;
             let request = CatalogRequest {
                 endpoint: connection.models_path,
                 target: RequestTarget {
@@ -152,7 +154,22 @@ impl SiteService {
                     secret: Zeroizing::new(input.secret.clone()),
                 },
             };
-            let names = self.discover(&request).await?;
+            // 模型发现尽力执行；远端失败时仍保存站点，便于之后调整端点并同步。
+            // 本地输入错误、取消及存储错误继续失败，不能伪报创建成功。
+            let names = if request.endpoint.is_empty() {
+                vec![]
+            } else {
+                match self.discover(&request).await {
+                    Ok(names) => names,
+                    Err(SiteError::Http(
+                        ClientError::Network
+                        | ClientError::Timeout
+                        | ClientError::Status(_)
+                        | ClientError::Response,
+                    )) => vec![],
+                    Err(error) => return Err(error),
+                }
+            };
             let store = self.store.clone();
             let changes = self.changes.clone();
             lease
@@ -342,6 +359,13 @@ impl SiteService {
         .await
     }
     async fn discover(&self, request: &CatalogRequest) -> ServiceResult<Vec<String>> {
+        if request.endpoint.is_empty() {
+            return Err(super::invalid(
+                "modelsPath",
+                "未配置模型列表端点，请在高级设置中填写，或手动添加模型。",
+            )
+            .into());
+        }
         self.client
             .list_models(
                 request,

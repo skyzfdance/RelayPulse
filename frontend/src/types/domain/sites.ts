@@ -16,11 +16,14 @@ export interface RequestHeader {
   value: string;
 }
 
-/** 添加站点的输入；连接配置与探针策略由创建接口初始化。 */
+/** 添加站点的输入；界面按协议填入可编辑端点，后端原样使用提交值。 */
 export interface CreateSiteInput {
   name: string;
   protocol: SiteProtocol;
   baseUrl: string;
+  /** 留空跳过模型获取，之后可手动添加模型。 */
+  modelsPath: string;
+  probePath: string;
   secret: string;
   /** 是否在小面板中显示，不影响模型探测。 */
   enabled: boolean;

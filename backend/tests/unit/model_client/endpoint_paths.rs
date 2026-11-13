@@ -1,16 +1,38 @@
 use super::*;
 
 #[test]
-fn endpoint_paths_preserve_base_prefix_and_normalize_joining_slashes() {
+fn endpoint_paths_are_the_literal_base_plus_endpoint() {
     for custom in [false, true] {
         for base in ["https://example.test/v1", "https://example.test/v1/"] {
             for path in ["responses", "/responses"] {
                 assert_eq!(
                     endpoint(base, path, custom).unwrap().as_str(),
-                    "https://example.test/v1/responses"
+                    format!("{base}{path}")
                 );
             }
         }
+        assert_eq!(
+            endpoint("https://aitogether.site/usage", "v1/res", custom)
+                .unwrap()
+                .as_str(),
+            "https://aitogether.site/usagev1/res"
+        );
+        assert_eq!(
+            endpoint("https://example.test/base/", "//models", custom)
+                .unwrap()
+                .as_str(),
+            "https://example.test/base///models"
+        );
+        assert_eq!(
+            endpoint(
+                "https://example.test/base",
+                "https://other.test/models",
+                custom
+            )
+            .unwrap()
+            .as_str(),
+            "https://example.test/basehttps://other.test/models"
+        );
         assert_eq!(
             endpoint(
                 "https://example.test/gateway/v1",
@@ -37,41 +59,120 @@ fn endpoint_paths_preserve_base_prefix_and_normalize_joining_slashes() {
     }
 }
 
+#[test]
+fn addresses_that_require_rewriting_are_rejected_instead_of_corrected() {
+    for custom in [false, true] {
+        for path in [
+            "/../models",
+            "/./models",
+            "/%2e%2e/models",
+            "/a\\models",
+            "/a\tmodels",
+            "/a b",
+        ] {
+            assert!(
+                endpoint("https://example.test/base", path, custom).is_err(),
+                "{path}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
-async fn catalog_and_both_probe_modes_send_the_base_path_prefix_over_http() {
-    let server = Server::new(vec![
-        Response::json(json!({"data":[{"id":"model"}]})),
-        test_support::success(Protocol::OpenaiCompatible),
-        test_support::success(Protocol::OpenaiCompatible),
-    ]);
-    let client = ModelClient::default();
-    let base = format!("{}/gateway/v1", server.url);
-    let catalog = CatalogRequest {
-        target: target(&base, Protocol::OpenaiCompatible),
-        endpoint: "/models".into(),
-    };
-    assert_eq!(
-        client
-            .list_models(
-                &catalog,
-                ExecutionOptions::default(),
-                &Cancellation::default()
+async fn catalog_probes_and_generation_send_literal_paths_over_http() {
+    for (base_path, path, expected) in [
+        ("/usage", "v1/res", "/usagev1/res"),
+        ("/usage", "/v1/res", "/usage/v1/res"),
+        ("/usage/", "v1/res", "/usage/v1/res"),
+        ("/usage/", "/v1/res", "/usage//v1/res"),
+        ("/v1", "/v1/responses", "/v1/v1/responses"),
+    ] {
+        let server = Server::new(vec![
+            Response::json(json!({"data":[{"id":"model"}]})),
+            test_support::success(Protocol::OpenaiCompatible),
+            test_support::success(Protocol::OpenaiCompatible),
+            test_support::success(Protocol::OpenaiCompatible),
+        ]);
+        let client = ModelClient::default();
+        let base = format!("{}{base_path}", server.url);
+        let catalog = CatalogRequest {
+            target: target(&base, Protocol::OpenaiCompatible),
+            endpoint: path.into(),
+        };
+        assert_eq!(
+            client
+                .list_models(
+                    &catalog,
+                    ExecutionOptions::default(),
+                    &Cancellation::default()
+                )
+                .await
+                .unwrap(),
+            vec!["model"]
+        );
+        let mut capture = AddressCapture::default();
+        for mode in [EndpointMode::Relative, EndpointMode::SameOriginAppend] {
+            let mut input = request(&base, Protocol::OpenaiCompatible);
+            input.endpoint = path.into();
+            input.endpoint_mode = mode;
+            assert!(
+                client
+                    .check_once(
+                        &input,
+                        ExecutionOptions::default(),
+                        &Cancellation::default(),
+                        Some(&mut capture)
+                    )
+                    .await
+                    .unwrap()
+                    .success
+            );
+        }
+        let input = GenerationRequest {
+            target: catalog.target,
+            model: "model".into(),
+            endpoint: path.into(),
+            prompt: "test literal address".into(),
+            parameters: Default::default(),
+        };
+        let result = client
+            .generate_once(
+                &input,
+                GenerationOptions {
+                    output_timeout: Some(Duration::from_secs(2)),
+                },
+                &Cancellation::default(),
+                &mut capture,
             )
             .await
-            .unwrap(),
-        vec!["model"]
-    );
-    for mode in [EndpointMode::Relative, EndpointMode::SameOriginAppend] {
-        let mut input = request(&base, Protocol::OpenaiCompatible);
-        input.endpoint = "/chat/completions".into();
-        input.endpoint_mode = mode;
-        assert!(check(&client, &input).await.success);
+            .unwrap();
+        assert_eq!(result.failure, None);
+        let sent = server.requests();
+        assert_eq!(sent.len(), 4);
+        assert!(sent[0].head.starts_with(&format!("GET {expected} ")));
+        for request in &sent[1..] {
+            assert!(
+                request.head.starts_with(&format!("POST {expected} ")),
+                "{}",
+                request.head
+            );
+        }
+        assert_eq!(capture.0, vec![format!("{}{expected}", server.url); 3]);
     }
-    let sent = server.requests();
-    assert!(sent[0].head.starts_with("GET /gateway/v1/models "));
-    for request in &sent[1..] {
-        assert!(request
-            .head
-            .starts_with("POST /gateway/v1/chat/completions "));
+}
+
+#[derive(Default)]
+struct AddressCapture(Vec<String>);
+impl CaptureSink for AddressCapture {
+    fn record<'a>(
+        &'a mut self,
+        event: CaptureEvent<'a>,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), CaptureError>> {
+        Box::pin(async move {
+            if let CaptureEvent::Started { url, .. } = event {
+                self.0.push(url.into());
+            }
+            Ok(())
+        })
     }
 }

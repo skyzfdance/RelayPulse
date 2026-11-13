@@ -50,6 +50,29 @@ afterEach(() => {
 });
 
 describe('IQ 浏览器契约与状态生命周期', () => {
+  it.each([
+    ['https://aitogether.site/usage', 'v1/res', 'https://aitogether.site/usagev1/res'],
+    ['https://example.test/usage', '/v1/res', 'https://example.test/usage/v1/res'],
+    ['https://example.test/usage/', 'v1/res', 'https://example.test/usage/v1/res'],
+    ['https://example.test/usage/', '/v1/res', 'https://example.test/usage//v1/res'],
+  ])('快照、预检与测试保留拼接地址 %s + %s', async (baseUrl, endpoint, expected) => {
+    sitesState.sites[0].baseUrl = baseUrl;
+    sitesState.sites[0].connection.probePath = endpoint;
+    const participant = await readyParticipant();
+    expect(participant.endpoint).toBe(expected);
+    expect((await snapshotApi.fetchIqSnapshot()).participants[0].endpoint).toBe(expected);
+    const run = await taskApi.startIqRun(startInput);
+    expect(run.participants[0].endpoint).toBe(expected);
+    for (let tick = 0; tick < 6; tick++) advanceIqRun();
+    expect((await historyApi.fetchIqRun(run.id)).participants[0].endpoint).toBe(expected);
+  });
+
+  it('快照拒绝需要 URL 纠正的端点，不生成替代展示地址', async () => {
+    sitesState.sites[0].connection.probePath = '/../responses';
+    await expect(taskApi.createIqParticipant(input)).rejects.toThrow('不会自动纠正');
+    expect((await snapshotApi.fetchIqSnapshot()).participants).toHaveLength(0);
+  });
+
   it('题库 CRUD 和启停由接口回环并验证长度', async () => {
     const initial = await snapshotApi.fetchIqSnapshot();
     const saved = await bankApi.saveIqQuestion({

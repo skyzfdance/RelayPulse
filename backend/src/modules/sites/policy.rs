@@ -8,9 +8,15 @@ use serde_json::{json, Value};
 
 impl ProbePolicy {
     pub fn for_protocol(protocol: Protocol) -> Self {
+        let mut body = default_body(protocol, "只回复 OK", 8);
+        if protocol == Protocol::Anthropic {
+            body["max_tokens"] = json!(4096);
+            body["thinking"] = json!({"type":"adaptive"});
+            body["output_config"] = json!({"effort":"low"});
+        }
         Self {
             version: 2,
-            parameters: flatten(default_body(protocol, "只回复 OK", 8)),
+            parameters: flatten(body),
         }
     }
 }
@@ -148,6 +154,8 @@ fn flatten(body: Value) -> Vec<Parameter> {
             "max_tokens",
             "reasoning",
             "reasoning_effort",
+            "thinking",
+            "output_config",
         ] {
             if let Some(value) = fields.remove(key) {
                 append(&mut parameters, key.into(), value);

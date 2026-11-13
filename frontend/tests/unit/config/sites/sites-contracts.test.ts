@@ -33,6 +33,45 @@ afterEach(() => {
 });
 
 describe('站点管理契约与 Mock', () => {
+  it('没有模型列表端点时跳过获取，手动模型不会被同步误删', async () => {
+    const id = await createSite({
+      name: '手动配置',
+      protocol: 'custom-http',
+      baseUrl: 'https://example.com/usage',
+      modelsPath: '',
+      probePath: 'generate',
+      secret: 'test-only-secret',
+      enabled: false,
+    });
+    expect((await fetchSite(id)).models).toEqual([]);
+    await addModel(id, 'manual');
+    await expect(syncModels(id, ['manual'])).rejects.toThrow('未配置模型列表端点');
+    const saved = await fetchSite(id);
+    expect(saved.models.map(({ name }) => name)).toEqual(['manual']);
+    expect(saved.connection).toMatchObject({ modelsPath: '', probePath: 'generate' });
+  });
+  it.each([
+    'https://example.com',
+    'https://example.com/',
+    'https://example.com/usage',
+    'https://example.com/usage/',
+  ])('新增和编辑原样保存 Base URL：%s', async (baseUrl) => {
+    const id = await createSite({
+      name: '原文地址',
+      protocol: 'openai-compatible',
+      baseUrl,
+      modelsPath: '/models',
+      probePath: '/chat/completions',
+      secret: 'test-only-secret',
+      enabled: false,
+    });
+    const created = await fetchSite(id);
+    expect(created.baseUrl).toBe(baseUrl);
+    expect(created.enabled).toBe(false);
+    const saved = await saveSite('site-1', { ...siteDraft(await fetchSite('site-1')), baseUrl });
+    expect(saved.baseUrl).toBe(baseUrl);
+    expect((await fetchSite('site-1')).baseUrl).toBe(baseUrl);
+  });
   it('编辑响应式草稿可以保存，并且凭据不保留在返回数据或模拟状态中', async () => {
     const site = await fetchSite((await fetchSites())[0].id);
     const draft = reactive(siteDraft(site));
@@ -62,11 +101,13 @@ describe('站点管理契约与 Mock', () => {
       name: '测试站点',
       protocol: 'anthropic',
       baseUrl: 'https://example.com',
+      modelsPath: '/models',
+      probePath: '/messages',
       secret: 'test-only-secret',
       enabled: true,
     });
     const created = await fetchSite(siteId);
-    expect(created.connection.probePath).toBe('/v1/messages');
+    expect(created.connection.probePath).toBe('/messages');
     await addModel(siteId, 'new-model');
     expect((await fetchSites()).find((s) => s.id === siteId)?.modelCount).toBe(
       created.models.length + 1,
@@ -117,7 +158,7 @@ describe('站点管理契约与 Mock', () => {
   it('保存接口拒绝端点和请求头首尾空格，允许请求头值为空', async () => {
     const site = await fetchSite('site-1');
     for (const field of ['modelsPath', 'probePath'] as const) {
-      for (const value of ['', ' /v1/test', '/v1/test ']) {
+      for (const value of [...(field === 'probePath' ? [''] : []), ' /v1/test', '/v1/test ']) {
         const connection = structuredClone(site.connection);
         connection[field] = value;
         await expect(saveSiteConnection(site.id, connection)).rejects.toThrow();

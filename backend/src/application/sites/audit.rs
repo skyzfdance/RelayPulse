@@ -56,7 +56,7 @@ impl Sites {
             Operation::Get(_) => (OperationAction::DetailReadFailed, Value::Null),
             Operation::Create(v) => (
                 OperationAction::SiteCreated,
-                json!({"名称": v.name, "协议": v.protocol, "baseUrl":v.base_url, "启用":v.enabled, "凭据":if v.secret.is_empty(){"未配置"}else{"已配置"}}),
+                json!({"名称": v.name, "协议": v.protocol, "baseUrl":v.base_url, "modelsPath":v.models_path, "probePath":v.probe_path, "启用":v.enabled, "凭据":if v.secret.is_empty(){"未配置"}else{"已配置"}}),
             ),
             Operation::Save(_, v) => (
                 OperationAction::SiteUpdated,

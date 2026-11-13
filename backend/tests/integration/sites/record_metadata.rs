@@ -26,6 +26,59 @@ fn events(f: &Fixture, id: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn probe_http_and_jsonl_metadata_preserve_literal_addresses() {
+    for (base_path, endpoint, path) in [
+        ("/usage", "v1/res", "/usagev1/res"),
+        ("/usage", "/v1/res", "/usage/v1/res"),
+        ("/usage/", "v1/res", "/usage/v1/res"),
+        ("/usage/", "/v1/res", "/usage//v1/res"),
+    ] {
+        for custom in [false, true] {
+            let f = Fixture::new();
+            let server = Server::new(vec![Response::raw(200, "text/plain", "OK")]);
+            let id = f.site(&format!("{}{base_path}", server.url), &["model"]);
+            let site = f.store.get(&id).unwrap();
+            if custom {
+                f.store
+                    .save_policy(
+                        &id,
+                        Some(&site.models[0].id),
+                        None,
+                        Some(&CustomRequest {
+                            version: 2,
+                            endpoint: endpoint.into(),
+                            parameters: vec![],
+                        }),
+                    )
+                    .unwrap();
+            } else {
+                let mut connection = site.connection;
+                connection.probe_path = endpoint.into();
+                f.store.save_connection(&id, &connection).unwrap();
+            }
+            f.execute(Operation::Run(id, None)).await;
+            let expected = format!("{}{path}", server.url);
+            let saved = row(&f);
+            assert_eq!(saved["endpoint"], expected);
+            assert!(server.requests()[0]
+                .head
+                .starts_with(&format!("POST {path} ")));
+            let log = events(&f, saved["id"].as_str().unwrap());
+            let context = log
+                .iter()
+                .find(|e| e["event"] == "request_context")
+                .unwrap();
+            assert_eq!(context["context"]["endpoint"], expected);
+            let started = log
+                .iter()
+                .find(|e| e["event"] == "request_started")
+                .unwrap();
+            assert_eq!(started["endpoint"], expected);
+        }
+    }
+}
+
+#[tokio::test]
 async fn real_probe_saves_frozen_metadata_and_redacted_exact_request_with_provider_usage() {
     let f = Fixture::new();
     let mut response = Response::sse(&[
@@ -43,6 +96,8 @@ async fn real_probe_saves_frozen_metadata_and_redacted_exact_request_with_provid
                 name: "original".into(),
                 protocol: Protocol::OpenaiResponses,
                 base_url: server.url.clone(),
+                models_path: "/models".into(),
+                probe_path: "/v1/responses".into(),
                 secret: "secret-only-in-vault".into(),
                 enabled: false,
             },

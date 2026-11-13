@@ -15,6 +15,7 @@ import type {
 import { publish } from '@/api/events';
 import { IQ_STATE_CHANGED } from '@/api/iq-test/events';
 import { RelayPulseBackendError } from '@/utils/backend-error';
+import { requestUrl } from '@/utils/request-url';
 
 import {
   requestMockIqCompletionNotification,
@@ -473,12 +474,11 @@ function buildParticipant(input: IqParticipantInput, participantId: string = id(
   if (!candidate) validation('源模型已删除或停用，请刷新候选模型');
   const site = sitesState.sites.find((item) => item.id === candidate.siteId)!;
   // 仅取连接地址的脱敏投影；不读取 policy、customRequest、请求头或真实凭据。
-  let endpoint = '已脱敏地址';
+  let endpoint: string;
   try {
-    const url = new URL(site.baseUrl);
-    endpoint = `${url.origin}${url.pathname}`;
+    endpoint = requestUrl(site.baseUrl, site.connection.probePath).split(/[?#]/u, 1)[0];
   } catch {
-    /* 不回显无法解析的原始地址 */
+    validation('源连接端点无效，请修改配置；程序不会自动纠正');
   }
   const snapshotId = id();
   snapshotAvailability.set(snapshotId, site.credentialConfigured);

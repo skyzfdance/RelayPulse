@@ -1,6 +1,43 @@
 use super::*;
 
 #[tokio::test]
+async fn pagination_keeps_the_literal_base_and_endpoint_path() {
+    for (base_path, endpoint_path, path) in [
+        ("/usage", "v1/models", "/usagev1/models"),
+        ("/usage/", "/v1/models", "/usage//v1/models"),
+        ("/v1", "/v1/models", "/v1/v1/models"),
+    ] {
+        let server = Server::new(vec![
+            Response::json(
+                json!({"data":[{"id":"remote-a"}],"has_more":true,"last_id":"remote-a"}),
+            ),
+            Response::json(json!({"data":[{"id":"remote-b"}],"has_more":false})),
+        ]);
+        let input = CatalogRequest {
+            target: target(&format!("{}{base_path}", server.url), Protocol::Anthropic),
+            endpoint: format!("{endpoint_path}?region=test"),
+        };
+        let names = ModelClient::default()
+            .list_models(
+                &input,
+                ExecutionOptions::default(),
+                &Cancellation::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["remote-a", "remote-b"]);
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0]
+            .head
+            .starts_with(&format!("GET {path}?region=test ")));
+        assert!(requests[1]
+            .head
+            .starts_with(&format!("GET {path}?region=test&after_id=remote-a ")));
+    }
+}
+
+#[tokio::test]
 async fn catalog_parses_pages_and_rejects_failure_without_partial_results() {
     let server = Server::new(vec![
         Response::json(

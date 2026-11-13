@@ -77,7 +77,9 @@ pub struct RequestTarget {
 }
 #[derive(Clone, Copy)]
 pub enum EndpointMode {
+    /// 原始 Base URL + 端点；不进行相对路径解析。
     Relative,
+    /// 同样原文拼接，并检查最终地址与 Base URL 同源。
     SameOriginAppend,
 }
 #[derive(Clone)]

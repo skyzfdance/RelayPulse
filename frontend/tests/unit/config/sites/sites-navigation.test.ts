@@ -230,9 +230,11 @@ it('加载成功的空列表显示原版空态，添加第一个站点后进入�
     const modal = document.querySelector('.ant-modal')!;
     await new DOMWrapper(modal.querySelector('input#name')!).setValue('首个站点');
     await new DOMWrapper(modal.querySelector('input#baseUrl')!).setValue('https://example.com');
+    await new DOMWrapper(modal.querySelector('input#modelsPath')!).setValue('/models');
+    await new DOMWrapper(modal.querySelector('input#probePath')!).setValue('/chat/completions');
     await new DOMWrapper(modal.querySelector('input[type="password"]')!).setValue('test-secret');
     const submit = Array.from(modal.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('连接并获取模型'),
+      button.textContent?.includes('添加站点'),
     )!;
     await new DOMWrapper(submit).trigger('click');
     await flushPromises();

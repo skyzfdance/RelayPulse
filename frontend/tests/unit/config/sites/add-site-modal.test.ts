@@ -5,12 +5,12 @@ import AntdvNext, { App, Checkbox, ConfigProvider, Input, Modal, Select, theme }
 import zhCN from 'antdv-next/locale/zh_CN';
 import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, ref } from 'vue';
+import { h, ref } from 'vue';
 
 import * as catalog from '@/api/catalog';
 import * as api from '@/api/config/sites';
-import { resetFeedbackForTests } from '@/composables/useFeedback';
-import { seedSites } from '@/mocks/handlers/config/sites';
+import * as feedback from '@/composables/useFeedback';
+import { seedSites, state } from '@/mocks/handlers/config/sites';
 import { useSiteStore } from '@/stores/site';
 
 import { deferred } from '../../../support/deferred';
@@ -22,7 +22,7 @@ beforeEach(() => {
   setActivePinia(createPinia());
   window.history.replaceState({}, '', '/');
   seedSites();
-  resetFeedbackForTests();
+  feedback.resetFeedbackForTests();
 });
 afterEach(async () => {
   dispose.splice(0).forEach((fn) => fn());
@@ -53,34 +53,162 @@ async function submit(modal: Awaited<ReturnType<typeof mountModal>>['modal']) {
 }
 
 describe('添加站点的表单校验和协议目录', () => {
+  it.each([
+    ['openai-compatible', '/chat/completions'],
+    ['openai-responses', '/responses'],
+    ['anthropic', '/messages'],
+  ])('协议 %s 自动填入可见端点，无需手写即可创建', async (protocol, probePath) => {
+    const create = vi.spyOn(api, 'createSite');
+    const { wrapper, modal } = await mountModal();
+    wrapper.getComponent(Select).vm.$emit('update:value', protocol);
+    await flushPromises();
+    expect(modal.get<HTMLInputElement>('input#modelsPath').element.value).toBe('/models');
+    expect(modal.get<HTMLInputElement>('input#probePath').element.value).toBe(probePath);
+    expect(modal.get('input#modelsPath').attributes('disabled')).toBeUndefined();
+    expect(modal.get('input#probePath').attributes('disabled')).toBeUndefined();
+    expect(wrapper.getComponent(Checkbox).props('checked')).toBe(false);
+    for (const name of ['modelsPath', 'probePath']) {
+      const input = modal.get(`input#${name}`);
+      await input.trigger('blur');
+      await flushPromises();
+      expect(
+        input.element.closest('.ant-form-item')?.querySelector('.ant-form-item-explain-error'),
+      ).toBeNull();
+    }
+    expect(modal.text()).not.toContain('端点按接口协议填入');
+    expect(modal.text()).not.toContain('请求地址按 Base URL + 端点原文拼接');
+    await fillFields(modal);
+    expect(modal.text()).toContain('https://example.com/models');
+    expect(modal.text()).toContain(`https://example.com${probePath}`);
+    await submit(modal);
+    await vi.waitFor(() => expect(wrapper.emitted('close')).toHaveLength(1));
+    expect(create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        protocol,
+        baseUrl: 'https://example.com',
+        modelsPath: '/models',
+        probePath,
+      }),
+    );
+    const saved = state.sites.find((site) => site.id === useSiteStore().selectedSiteId)!;
+    expect(saved.connection).toMatchObject({ modelsPath: '/models', probePath });
+  });
+
+  it('切换协议同步替换两个端点，不改写 Base URL', async () => {
+    const { wrapper, modal } = await mountModal();
+    await fillFields(modal);
+    await modal.get('input#baseUrl').setValue('https://example.com/usage');
+    await modal.get('input#modelsPath').setValue('/custom/catalog');
+    await modal.get('input#probePath').setValue('/custom/generate');
+    for (const [protocol, probePath] of [
+      ['anthropic', '/messages'],
+      ['openai-responses', '/responses'],
+      ['openai-compatible', '/chat/completions'],
+    ]) {
+      wrapper.getComponent(Select).vm.$emit('update:value', protocol);
+      await flushPromises();
+      expect(modal.get<HTMLInputElement>('input#modelsPath').element.value).toBe('/models');
+      expect(modal.get<HTMLInputElement>('input#probePath').element.value).toBe(probePath);
+      expect(modal.get<HTMLInputElement>('input#baseUrl').element.value).toBe(
+        'https://example.com/usage',
+      );
+    }
+  });
+
+  it('自动填入的端点允许修改，改变 Base URL 或重选同一协议不覆盖修改', async () => {
+    const create = vi.spyOn(api, 'createSite');
+    const { wrapper, modal } = await mountModal();
+    await fillFields(modal);
+    await modal.get('input#modelsPath').setValue('catalog');
+    await modal.get('input#probePath').setValue('generate');
+    await modal.get('input#baseUrl').setValue('https://example.com/usage');
+    wrapper.getComponent(Select).vm.$emit('update:value', 'openai-compatible');
+    await flushPromises();
+    expect(modal.get<HTMLInputElement>('input#modelsPath').element.value).toBe('catalog');
+    expect(modal.get<HTMLInputElement>('input#probePath').element.value).toBe('generate');
+    expect(modal.text()).toContain('https://example.com/usagecatalog');
+    expect(modal.text()).toContain('https://example.com/usagegenerate');
+    await submit(modal);
+    await vi.waitFor(() => expect(wrapper.emitted('close')).toHaveLength(1));
+    expect(create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        baseUrl: 'https://example.com/usage',
+        modelsPath: 'catalog',
+        probePath: 'generate',
+      }),
+    );
+    const saved = state.sites.find((site) => site.id === useSiteStore().selectedSiteId)!;
+    expect(saved.connection).toMatchObject({ modelsPath: 'catalog', probePath: 'generate' });
+  });
+
+  it('自定义 HTTP 不推断固定端点，切回标准协议恢复对应默认值', async () => {
+    const { wrapper, modal } = await mountModal();
+    wrapper.getComponent(Select).vm.$emit('update:value', 'custom-http');
+    await flushPromises();
+    expect(modal.get<HTMLInputElement>('input#modelsPath').element.value).toBe('');
+    expect(modal.get<HTMLInputElement>('input#probePath').element.value).toBe('');
+    wrapper.getComponent(Select).vm.$emit('update:value', 'anthropic');
+    await flushPromises();
+    expect(modal.get<HTMLInputElement>('input#modelsPath').element.value).toBe('/models');
+    expect(modal.get<HTMLInputElement>('input#probePath').element.value).toBe('/messages');
+  });
+
+  it('模型列表端点留空时保存空模型站点，提示手动添加', async () => {
+    const success = vi.fn();
+    const warning = vi.fn();
+    vi.spyOn(feedback, 'useFeedback').mockReturnValue({
+      success,
+      warning,
+      error: vi.fn(),
+      info: vi.fn(),
+    });
+    const { wrapper, modal } = await mountModal();
+    await fillFields(modal);
+    await modal.get('input#modelsPath').setValue('');
+    await submit(modal);
+    await vi.waitFor(() => expect(wrapper.emitted('close')).toHaveLength(1));
+    const saved = state.sites.find((site) => site.id === useSiteStore().selectedSiteId)!;
+    expect(saved.models).toEqual([]);
+    expect(saved.connection.modelsPath).toBe('');
+    expect(success).toHaveBeenCalledExactlyOnceWith('站点已添加，可手动添加模型');
+    expect(warning).not.toHaveBeenCalled();
+  });
+
   it('打开、协议返回、表单校验和关闭不产生 Vue 运行时警告', async () => {
     const warnings = vi.spyOn(console, 'warn');
     const host = document.createElement('div');
     document.body.append(host);
     const open = ref(false);
-    const app = createApp({
-      render: () =>
-        h(
-          ConfigProvider,
-          { locale: zhCN, theme: { cssVar: true, algorithm: theme.darkAlgorithm } },
-          {
-            default: () =>
-              h(App, null, {
-                default: () =>
-                  open.value
-                    ? h(AddSiteModal, {
-                        onClose: () => {
-                          open.value = false;
-                        },
-                      })
-                    : null,
-              }),
-          },
-        ),
-    });
-    app.use(createPinia());
-    app.use(AntdvNext);
-    app.mount(host);
+    const app = mount(
+      {
+        render: () =>
+          h(
+            ConfigProvider,
+            { locale: zhCN, theme: { cssVar: true, algorithm: theme.darkAlgorithm } },
+            {
+              default: () =>
+                h(App, null, {
+                  default: () =>
+                    open.value
+                      ? h(AddSiteModal, {
+                          onClose: () => {
+                            open.value = false;
+                          },
+                        })
+                      : null,
+                }),
+            },
+          ),
+      },
+      {
+        attachTo: host,
+        global: {
+          plugins: [createPinia(), AntdvNext],
+          // 保留真实过渡回调；其他 mount 的全局 Transition 替身不能污染此场景。
+          stubs: { transition: false, 'transition-group': false },
+        },
+      },
+    );
     dispose.push(() => {
       app.unmount();
       host.remove();
@@ -124,7 +252,7 @@ describe('添加站点的表单校验和协议目录', () => {
     expect(modal.get<HTMLInputElement>('input#name').element.value).toBe('新站点');
     expect(modal.get('input#name').attributes('disabled')).toBeDefined();
     expect(wrapper.getComponent(Select).props('value')).toBe(submitted.protocol);
-    expect(wrapper.getComponent(Checkbox).props('checked')).toBe(true);
+    expect(wrapper.getComponent(Checkbox).props('checked')).toBe(false);
     pending.reject(new Error('连接失败'));
     await flushPromises();
     expect(modal.get('input#name').attributes('disabled')).toBeUndefined();
@@ -149,12 +277,12 @@ describe('添加站点的表单校验和协议目录', () => {
     expect(wrapper.emitted('close')).toBeUndefined();
   });
 
-  it('显示四项必填标记，失焦和提交展示中文提示；校验失败不发起添加或列表刷新', async () => {
+  it('显示五项必填标记，失焦和提交展示中文提示；校验失败不发起添加或列表刷新', async () => {
     vi.spyOn(catalog, 'fetchSiteProtocols').mockResolvedValue([]);
     const create = vi.spyOn(api, 'createSite');
     const load = vi.spyOn(useSiteStore(), 'loadSite');
     const { modal, wrapper } = await mountModal();
-    expect(modal.findAll('label.ant-form-item-required')).toHaveLength(4);
+    expect(modal.findAll('label.ant-form-item-required')).toHaveLength(5);
 
     await modal.get('input#name').trigger('blur');
     await flushPromises();
@@ -165,6 +293,7 @@ describe('添加站点的表单校验和协议目录', () => {
       '请选择接口协议',
       '请输入 Base URL',
       '请输入访问凭据',
+      '请输入探测端点',
     ]) {
       expect(modal.text()).toContain(message);
     }
@@ -245,6 +374,8 @@ describe('添加站点的表单校验和协议目录', () => {
     expect(fetch).toHaveBeenCalledOnce();
     expect(wrapper.getComponent(Select).props('options')).toEqual(options);
     expect(modal.text()).toContain(options[0].label);
+    expect(modal.get<HTMLInputElement>('input#modelsPath').element.value).toBe('/models');
+    expect(modal.get<HTMLInputElement>('input#probePath').element.value).toBe('/messages');
     await fillFields(modal);
     window.history.replaceState({}, '', '/?scenario=action-error');
     await submit(modal);
@@ -284,5 +415,47 @@ describe('添加站点的表单校验和协议目录', () => {
     const next = await mountModal();
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(next.modal.text()).toContain('恢复后的协议');
+    expect(next.modal.get<HTMLInputElement>('input#modelsPath').element.value).toBe('/models');
+    expect(next.modal.get<HTMLInputElement>('input#probePath').element.value).toBe('/responses');
   });
+  it.each([true, false])(
+    '获取模型结果为空 %s 时仍关闭弹窗并选中新站点，提示对应的后续操作',
+    async (empty) => {
+      const success = vi.fn();
+      const warning = vi.fn();
+      vi.spyOn(feedback, 'useFeedback').mockReturnValue({
+        success,
+        warning,
+        error: vi.fn(),
+        info: vi.fn(),
+      });
+      const create = api.createSite;
+      vi.spyOn(api, 'createSite').mockImplementationOnce(async (draft) => {
+        const id = await create(draft);
+        if (empty) state.sites.find((site) => site.id === id)!.models = [];
+        return id;
+      });
+      const { wrapper, modal } = await mountModal();
+      await vi.waitFor(() => expect(wrapper.getComponent(Select).props('options')).toHaveLength(4));
+      await fillFields(modal);
+      await submit(modal);
+      await vi.waitFor(() => expect(wrapper.emitted('close')).toHaveLength(1));
+      const store = useSiteStore();
+      const site = state.sites.find((item) => item.id === store.selectedSiteId)!;
+      expect(site.name).toBe('新站点');
+      expect(site.credentialConfigured).toBe(true);
+      expect(wrapper.emitted('close')).toHaveLength(1);
+      if (empty) {
+        expect(site.models).toEqual([]);
+        expect(warning).toHaveBeenCalledExactlyOnceWith(
+          '站点已添加，未获取到模型。请在高级设置中调整模型列表端点后同步模型，也可手动添加模型。',
+        );
+        expect(success).not.toHaveBeenCalled();
+      } else {
+        expect(site.models.length).toBeGreaterThan(0);
+        expect(success).toHaveBeenCalledExactlyOnceWith('站点已添加');
+        expect(warning).not.toHaveBeenCalled();
+      }
+    },
+  );
 });

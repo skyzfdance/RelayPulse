@@ -84,9 +84,11 @@ impl SiteStore {
     }
     pub(super) fn create_committed(&self, input: &CreateSite, models: &[String]) -> Result<Site> {
         let name = validation::name(&input.name)?;
-        let url = validation::base_url(&input.base_url)?.to_string();
+        validation::base_url(&input.base_url)?;
+        let url = &input.base_url;
         validation::credential(&input.secret)?;
-        let connection = Connection::for_protocol(input.protocol);
+        let connection = input.connection();
+        validation::connection(&connection, &input.base_url)?;
         let id = uuid::Uuid::new_v4().to_string();
         self.write(|tx| {
             tx.execute("INSERT INTO sites(id,name,protocol,base_url,enabled,priority,connection,policy) VALUES (?1,?2,?3,?4,?5,(SELECT COALESCE(MAX(priority),0)+1 FROM sites),?6,?7)",
@@ -102,7 +104,8 @@ impl SiteStore {
     }
     pub fn save_basic(&self, id: &str, draft: &SiteDraft) -> Result<Site> {
         let name = validation::name(&draft.name)?;
-        let url = validation::base_url(&draft.base_url)?.to_string();
+        validation::base_url(&draft.base_url)?;
+        let url = &draft.base_url;
         if draft.credential_action == CredentialAction::Replace {
             validation::credential(&draft.secret)?;
         }

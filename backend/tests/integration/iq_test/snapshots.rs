@@ -1,35 +1,49 @@
 use super::*;
 
 #[tokio::test]
-async fn iq_snapshot_precheck_generation_and_saved_metadata_use_the_full_base_path() {
-    let f = Fixture::new();
-    let server = Server::new(vec![success(Protocol::OpenaiResponses); 2]);
-    let site = f.site(
-        &format!("{}/v1", server.url),
+async fn iq_prechecks_generation_and_saved_metadata_use_literal_addresses() {
+    for protocol in [
+        Protocol::OpenaiCompatible,
         Protocol::OpenaiResponses,
-        &["model"],
-        true,
-    );
-    let mut connection = site.connection.clone();
-    connection.probe_path = "/responses".into();
-    f.sites.save_connection(&site.id, &connection).unwrap();
-    let participant = f.available(&site, 0, json!({})).await;
-    let expected = format!("{}/v1/responses", server.url);
-    assert_eq!(participant.endpoint, expected);
-    let run = f.start(&[f.question("preserve base path").await]).await;
-    let run = f.terminal(&run.id).await;
-    assert_eq!(run.entries[0].status, EntryStatus::Completed);
-    assert_eq!(run.participants[0].endpoint, expected);
-    assert_eq!(
-        meta(&f.root(), &run.entries[0], 1)["participant"]["endpoint"],
-        expected
-    );
-    let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests
-        .iter()
-        .all(|request| request.head.starts_with("POST /v1/responses ")));
-    f.app.iq_test.stop().await;
+        Protocol::Anthropic,
+        Protocol::CustomHttp,
+    ] {
+        for (base_path, endpoint, path) in [
+            ("/usage", "v1/res", "/usagev1/res"),
+            ("/usage", "/v1/res", "/usage/v1/res"),
+            ("/usage/", "v1/res", "/usage/v1/res"),
+            ("/usage/", "/v1/res", "/usage//v1/res"),
+        ] {
+            let f = Fixture::new();
+            let server = Server::new(vec![success(protocol); 2]);
+            let site = f.site(
+                &format!("{}{base_path}", server.url),
+                protocol,
+                &["model"],
+                true,
+            );
+            let mut connection = site.connection.clone();
+            connection.probe_path = endpoint.into();
+            f.sites.save_connection(&site.id, &connection).unwrap();
+            let participant = f.available(&site, 0, json!({})).await;
+            let expected = format!("{}{path}", server.url);
+            assert_eq!(participant.endpoint, expected);
+            let run = f.start(&[f.question("literal address").await]).await;
+            let run = f.terminal(&run.id).await;
+            assert_eq!(run.entries[0].status, EntryStatus::Completed);
+            assert_eq!(run.participants[0].endpoint, expected);
+            assert_eq!(
+                meta(&f.root(), &run.entries[0], 1)["participant"]["endpoint"],
+                expected
+            );
+            let requests = server.requests();
+            assert_eq!(requests.len(), 2);
+            assert!(requests
+                .iter()
+                .all(|request| request.head.starts_with(&format!("POST {path} "))));
+            f.app.iq_test.stop().await;
+        }
+    }
 }
 use crate::{
     application::sites::Operation,

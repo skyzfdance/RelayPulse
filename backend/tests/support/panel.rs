@@ -37,6 +37,8 @@ impl Fixture {
                     name: "同名站点".into(),
                     protocol: Protocol::CustomHttp,
                     base_url: url.into(),
+                    models_path: "/models".into(),
+                    probe_path: "/probe".into(),
                     secret: "local-panel-test-secret".into(),
                     enabled,
                 },

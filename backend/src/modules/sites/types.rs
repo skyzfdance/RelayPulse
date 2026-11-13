@@ -35,12 +35,17 @@ pub struct Connection {
 impl Connection {
     pub fn for_protocol(protocol: Protocol) -> Self {
         Self {
-            models_path: "/v1/models".into(),
+            models_path: if protocol == Protocol::CustomHttp {
+                ""
+            } else {
+                "/models"
+            }
+            .into(),
             probe_path: match protocol {
-                Protocol::OpenaiCompatible => "/v1/chat/completions",
-                Protocol::OpenaiResponses => "/v1/responses",
-                Protocol::Anthropic => "/v1/messages",
-                Protocol::CustomHttp => "/probe",
+                Protocol::OpenaiCompatible => "/chat/completions",
+                Protocol::OpenaiResponses => "/responses",
+                Protocol::Anthropic => "/messages",
+                Protocol::CustomHttp => "",
             }
             .into(),
             interval_seconds: 300,
@@ -80,8 +85,19 @@ pub struct CreateSite {
     pub name: String,
     pub protocol: Protocol,
     pub base_url: String,
+    pub models_path: String,
+    pub probe_path: String,
     pub secret: String,
     pub enabled: bool,
+}
+impl CreateSite {
+    pub(super) fn connection(&self) -> Connection {
+        Connection {
+            models_path: self.models_path.clone(),
+            probe_path: self.probe_path.clone(),
+            ..Connection::for_protocol(self.protocol)
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]

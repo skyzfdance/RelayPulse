@@ -69,13 +69,13 @@ function registerSiteOperation(command: string, handler: MockHandler) {
 
 function defaultConnection(protocol: SiteProtocol): Connection {
   const paths: Record<SiteProtocol, string> = {
-    'openai-compatible': '/v1/chat/completions',
-    'openai-responses': '/v1/responses',
-    anthropic: '/v1/messages',
-    'custom-http': '/probe',
+    'openai-compatible': '/chat/completions',
+    'openai-responses': '/responses',
+    anthropic: '/messages',
+    'custom-http': '',
   };
   return {
-    modelsPath: '/v1/models',
+    modelsPath: protocol === 'custom-http' ? '' : '/models',
     probePath: paths[protocol],
     intervalSeconds: 300,
     slowFirstTokenSeconds: 5,
@@ -163,6 +163,8 @@ registerSiteOperation('create_site', (args) => {
   assertAvailable(true);
   const { input } = args as { input: CreateSiteInput };
   const connection = defaultConnection(input.protocol);
+  connection.modelsPath = input.modelsPath;
+  connection.probePath = input.probePath;
   const error = validateSite({
     name: input.name,
     protocol: input.protocol,
@@ -171,17 +173,19 @@ registerSiteOperation('create_site', (args) => {
     secret: input.secret,
   });
   if (error) throw businessError(error);
+  const connectionError = validateConnection(connection, input.baseUrl);
+  if (connectionError) throw businessError(connectionError);
   const site: ManagedSite = {
     id: id(),
     name: input.name.trim(),
     protocol: input.protocol,
-    baseUrl: input.baseUrl.trim().replace(/\/$/u, ''),
+    baseUrl: input.baseUrl,
     enabled: input.enabled,
     credentialConfigured: true,
     connection,
     policy: defaultProbePolicy(input.protocol),
     // 仅模拟连接与模型发现，不发送网络请求，也不保存输入凭据。
-    models: remoteModelNames(input.protocol).map(newModel),
+    models: input.modelsPath ? remoteModelNames(input.protocol).map(newModel) : [],
   };
   state.sites.push(site);
   return site.id;
@@ -194,7 +198,7 @@ registerSiteOperation('save_site', (args) => {
   const site = requireSite(siteId);
   site.name = draft.name.trim();
   site.protocol = draft.protocol;
-  site.baseUrl = draft.baseUrl.trim().replace(/\/$/u, '');
+  site.baseUrl = draft.baseUrl;
   if (draft.credentialAction !== 'keep')
     site.credentialConfigured = draft.credentialAction === 'replace';
   // Mock 只保存是否已配置，绝不保存、记录或回显输入的 secret。
@@ -300,6 +304,8 @@ registerSiteOperation('sync_site_models', (args): ModelSyncChanges => {
   const site = requireSite(siteId);
   assertCurrentModels(site, models);
   if (!site.credentialConfigured) throw businessError('请先配置访问凭据');
+  if (!site.connection.modelsPath)
+    throw businessError('未配置模型列表端点，请在高级设置中填写，或手动添加模型。');
   const remote = new Set(remoteModelNames(site.protocol));
   return {
     added: [...remote].filter((name) => !models.includes(name)),

@@ -31,6 +31,8 @@ fn site(store: &SiteStore) -> String {
                 name: "original".into(),
                 protocol: Protocol::CustomHttp,
                 base_url: "https://example.test".into(),
+                models_path: "/models".into(),
+                probe_path: "/probe".into(),
                 secret: "private-key".into(),
                 enabled: false,
             },

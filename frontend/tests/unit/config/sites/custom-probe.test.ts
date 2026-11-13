@@ -97,7 +97,7 @@ describe('模型自定义探针参数与预览', () => {
         version: 2,
         endpoint: 'https://other.example/probe',
       }),
-    ).rejects.toThrow('同源');
+    ).rejects.toThrow();
     await expect(
       api.testCustomProbe(site.id, site.models[0].id, {
         ...request,
@@ -112,13 +112,13 @@ describe('模型自定义探针参数与预览', () => {
     );
   });
 
-  it('路径端点保留基址前缀，完整的同源地址保持原样', async () => {
+  it('端点原文追加到基址，保留双斜杠且不把完整地址当作覆盖值', async () => {
     state.sites[0].baseUrl = 'https://api.openai.com/v1/';
     const site = state.sites[0];
     for (const [endpoint, resolved] of [
       ['images/generations', 'https://api.openai.com/v1/images/generations'],
-      ['/images/generations', 'https://api.openai.com/v1/images/generations'],
-      ['https://api.openai.com/custom', 'https://api.openai.com/custom'],
+      ['/images/generations', 'https://api.openai.com/v1//images/generations'],
+      ['https://api.openai.com/custom', 'https://api.openai.com/v1/https://api.openai.com/custom'],
     ]) {
       expect(
         buildCustomProbePreview(site.baseUrl, site.models[0].name, {
@@ -135,6 +135,7 @@ describe('模型自定义探针参数与预览', () => {
     ['https://api.openai.com/v1', '/responses'],
     ['https://api.openai.com/v1/', 'responses'],
     ['https://api.openai.com/v1/', '/responses'],
+    ['https://aitogether.site/usage', 'v1/res'],
   ])('基址 %s 与端点 %s 拼接为完整请求地址', (baseUrl, endpoint) => {
     expect(
       buildCustomProbePreview(baseUrl, 'model', {
@@ -142,10 +143,10 @@ describe('模型自定义探针参数与预览', () => {
         endpoint,
         parameters: [],
       }).endpoint,
-    ).toBe('https://api.openai.com/v1/responses');
+    ).toBe(baseUrl + endpoint);
   });
 
-  it('空端点、首尾空格、跨域和无效协议同时阻止预览与保存', async () => {
+  it('空端点、无效地址和需要改写的路径同时阻止预览与保存', async () => {
     const site = await api.fetchSite('site-1');
     for (const endpoint of [
       '',
@@ -153,7 +154,6 @@ describe('模型自定义探针参数与预览', () => {
       ' /custom',
       '/custom ',
       'https://other.example/custom',
-      '//other.example/custom',
       'http://api.openai.com/custom',
       'javascript:alert(1)',
       'https://[',
@@ -161,6 +161,10 @@ describe('模型自定义探针参数与预览', () => {
       '/cus\ntom',
       '/cus\rtom',
       '/cus\ttom',
+      '/../custom',
+      '/./custom',
+      '/%2e%2e/custom',
+      '/cus\\tom',
     ]) {
       const draft = { ...request, endpoint };
       expect(() => buildCustomProbePreview(site.baseUrl, site.models[0].name, draft)).toThrow();

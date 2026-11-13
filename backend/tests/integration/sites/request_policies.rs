@@ -74,7 +74,7 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
         ),
         (
             Protocol::Anthropic,
-            json!({"model":"remote","messages":[{"role":"user","content":"只回复 OK"}],"stream":true,"max_tokens":8}),
+            json!({"model":"remote","messages":[{"role":"user","content":"只回复 OK"}],"stream":true,"max_tokens":4096,"thinking":{"type":"adaptive"},"output_config":{"effort":"low"}}),
         ),
         (Protocol::CustomHttp, json!({"model":"remote"})),
     ] {
@@ -86,6 +86,14 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
                     name: "contract".into(),
                     protocol,
                     base_url: server.url.clone(),
+                    models_path: "/models".into(),
+                    probe_path: match protocol {
+                        Protocol::OpenaiCompatible => "/v1/chat/completions",
+                        Protocol::OpenaiResponses => "/v1/responses",
+                        Protocol::Anthropic => "/v1/messages",
+                        Protocol::CustomHttp => "/probe",
+                    }
+                    .into(),
                     secret: "fixture".into(),
                     enabled: false,
                 },
@@ -121,6 +129,8 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
                 name: "override".into(),
                 protocol: Protocol::OpenaiResponses,
                 base_url: format!("{}/base", server.url),
+                models_path: "/models".into(),
+                probe_path: "/v1/responses".into(),
                 secret: "fixture".into(),
                 enabled: true,
             },
@@ -188,7 +198,7 @@ async fn resolved_inputs_preserve_default_model_override_and_custom_request_sema
         .unwrap();
     assert!(result.success);
     assert_eq!(result.first_token_ms, None);
-    assert!(server.requests()[1].head.starts_with("POST /base/custom"));
+    assert!(server.requests()[1].head.starts_with("POST /basecustom "));
     assert_eq!(
         serde_json::from_slice::<Value>(&server.requests()[1].body).unwrap(),
         json!({})
@@ -208,6 +218,8 @@ async fn saved_parameter_table_controls_real_requests_inheritance_and_model_repl
                 name: "table".into(),
                 protocol: Protocol::OpenaiResponses,
                 base_url: server.url.clone(),
+                models_path: "/models".into(),
+                probe_path: "/v1/responses".into(),
                 secret: "fixture".into(),
                 enabled: false,
             },

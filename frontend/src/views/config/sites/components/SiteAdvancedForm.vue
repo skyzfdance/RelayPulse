@@ -63,11 +63,15 @@ defineExpose({ validate });
         :rules="[
           {
             validator: (_rule: unknown, value: unknown) =>
-              validateResult(endpointError(value, '模型列表端点', props.baseUrl)),
+              validateResult(endpointError(value, '模型列表端点', props.baseUrl, true)),
           },
         ]"
       >
-        <a-input :value="connection.modelsPath" @update:value="update('modelsPath', $event)" />
+        <a-input
+          :value="connection.modelsPath"
+          placeholder="留空则手动添加模型"
+          @update:value="update('modelsPath', $event)"
+        />
       </a-form-item>
       <a-form-item
         label="探测端点"

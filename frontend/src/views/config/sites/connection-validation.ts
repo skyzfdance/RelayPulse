@@ -1,5 +1,7 @@
 import type { Connection, RequestHeader } from '@/types/domain/sites';
 
+import { requestUrl } from '@/utils/request-url';
+
 export const connectionNumberFields = {
   intervalSeconds: {
     label: '探测频率',
@@ -41,16 +43,20 @@ function textError(value: unknown, label: string, optional = false): string | nu
   return null;
 }
 
-export function endpointError(value: unknown, label: string, baseUrl: string): string | null {
+export function endpointError(
+  value: unknown,
+  label: string,
+  baseUrl: string,
+  optional = false,
+): string | null {
+  if (optional && value === '') return null;
   const error = textError(value, label);
   if (error) return error;
   if (/[\r\n]/u.test(value as string)) return `请输入有效的${label}`;
   try {
-    const url = new URL(value as string, baseUrl);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
-      return '请输入不含凭据的 HTTP 或 HTTPS 端点';
-  } catch {
-    return `请输入有效的${label}`;
+    requestUrl(baseUrl, value as string);
+  } catch (cause) {
+    return cause instanceof TypeError ? `请输入有效的${label}` : (cause as Error).message;
   }
   return null;
 }
@@ -107,7 +113,7 @@ export function validateConnection(connection: Connection, baseUrl: string): str
     ['modelsPath', '模型列表端点'],
     ['probePath', '探测端点'],
   ] as const) {
-    const error = endpointError(connection[name], label, baseUrl);
+    const error = endpointError(connection[name], label, baseUrl, name === 'modelsPath');
     if (error) return error;
   }
   for (const name of Object.keys(connectionNumberFields) as ConnectionNumberField[]) {

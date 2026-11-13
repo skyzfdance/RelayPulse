@@ -17,10 +17,63 @@ fn input() -> CreateSite {
         name: "  本地站点  ".into(),
         base_url: "https://example.test".into(),
         protocol: Protocol::OpenaiCompatible,
+        models_path: "/models".into(),
+        probe_path: "/chat/completions".into(),
         secret: "original-secret".into(),
         enabled: false,
     }
 }
+
+#[test]
+fn protocol_endpoint_templates_do_not_add_version_paths() {
+    for (protocol, probe) in [
+        (Protocol::OpenaiCompatible, "/chat/completions"),
+        (Protocol::OpenaiResponses, "/responses"),
+        (Protocol::Anthropic, "/messages"),
+    ] {
+        let connection = Connection::for_protocol(protocol);
+        assert_eq!(connection.models_path, "/models");
+        assert_eq!(connection.probe_path, probe);
+    }
+    let custom = Connection::for_protocol(Protocol::CustomHttp);
+    assert!(custom.models_path.is_empty());
+    assert!(custom.probe_path.is_empty());
+}
+
+#[test]
+fn anthropic_saved_policies_are_not_completed_with_new_reasoning_defaults() {
+    let legacy = json!({"prompt":"saved prompt","maxTokens":8,"parameters":[]});
+    let expanded = policy::decode_policy(&legacy.to_string(), Protocol::Anthropic).unwrap();
+    assert_eq!(
+        expanded
+            .parameters
+            .iter()
+            .map(|parameter| parameter.key.as_str())
+            .collect::<Vec<_>>(),
+        ["model", "messages", "stream", "max_tokens"]
+    );
+    let mut configured = ProbePolicy::for_protocol(Protocol::Anthropic);
+    configured.parameters.retain(|parameter| {
+        parameter.key != "output_config" && !parameter.key.starts_with("output_config.")
+    });
+    for parameter in &mut configured.parameters {
+        if parameter.key == "thinking" {
+            parameter.enabled = false;
+        }
+        if parameter.key == "max_tokens" {
+            parameter.value = "8".into();
+        }
+    }
+    assert_eq!(
+        policy::decode_policy(
+            &serde_json::to_string(&configured).unwrap(),
+            Protocol::Anthropic
+        )
+        .unwrap(),
+        configured
+    );
+}
+
 #[test]
 fn isolated_saves_credentials_persistence_and_unique_models() {
     let tmp = tempfile::tempdir().unwrap();
@@ -135,7 +188,9 @@ fn parameter_types_paths_and_frontend_validation_boundaries() {
     connection.failure_threshold = 10;
     connection.recovery_threshold = 10;
     assert!(validation::connection(&connection, "https://example.test").is_ok());
-    for endpoint in ["", " /x", "/x ", "/x\ny", "https://u:p@example.test/x"] {
+    connection.models_path.clear();
+    assert!(validation::connection(&connection, "https://example.test").is_ok());
+    for endpoint in [" /x", "/x ", "/x\ny", "/x\ty", "/../x"] {
         connection.models_path = endpoint.into();
         assert!(validation::connection(&connection, "https://example.test").is_err());
     }
@@ -175,7 +230,7 @@ fn parameter_types_paths_and_frontend_validation_boundaries() {
         validation::endpoint("https://example.test/v1", "images", true)
             .unwrap()
             .as_str(),
-        "https://example.test/v1/images"
+        "https://example.test/v1images"
     );
     assert_eq!(
         validation::endpoint("https://example.test/v1", "/images", true)
@@ -183,9 +238,47 @@ fn parameter_types_paths_and_frontend_validation_boundaries() {
             .as_str(),
         "https://example.test/v1/images"
     );
-    for endpoint in ["//evil.test/x", "http://example.test/x", "/x\ty"] {
+    for endpoint in ["/../x", "/x\ty"] {
         assert!(validation::endpoint("https://example.test/v1", endpoint, true).is_err());
     }
+}
+
+#[test]
+fn base_urls_are_saved_verbatim_on_create_edit_and_reopen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (store, db) = fixture(tmp.path());
+    let mut draft = input();
+    for url in [
+        "https://example.test",
+        "https://example.test/",
+        "https://example.test/usage",
+        "https://example.test/usage/",
+    ] {
+        draft.base_url = url.into();
+        let id = store.create(&draft, &[]).unwrap();
+        assert_eq!(store.get(&id).unwrap().base_url, url);
+        let mut saved = SiteDraft {
+            name: draft.name.clone(),
+            protocol: draft.protocol,
+            base_url: url.into(),
+            credential_action: CredentialAction::Keep,
+            secret: String::new(),
+        };
+        assert_eq!(store.save_basic(&id, &saved).unwrap().base_url, url);
+        saved.base_url = "https://example.test".into();
+        assert_eq!(
+            store.save_basic(&id, &saved).unwrap().base_url,
+            "https://example.test"
+        );
+    }
+    drop(store);
+    drop(db);
+    let (store, _) = fixture(tmp.path());
+    assert!(store
+        .list()
+        .unwrap()
+        .iter()
+        .all(|site| site.base_url == "https://example.test"));
 }
 
 #[test]

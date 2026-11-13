@@ -108,7 +108,7 @@ fn all_nine_commands_use_real_registered_ipc_http_files_and_history_without_chan
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
-    let id=invoke(&window,"create_site",json!({"input":{"name":"original","protocol":"openai-responses","baseUrl":server.url,"secret":"ipc-record-secret","enabled":false}})).unwrap();
+    let id=invoke(&window,"create_site",json!({"input":{"name":"original","protocol":"openai-responses","baseUrl":server.url,"modelsPath":"/models","probePath":"/v1/responses","secret":"ipc-record-secret","enabled":false}})).unwrap();
     let site = invoke(&window, "get_site", json!({"siteId":id})).unwrap();
     let mut connection = site["connection"].clone();
     connection["headers"] = json!([

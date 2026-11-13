@@ -21,7 +21,9 @@ pub fn credential(value: &str) -> Result<()> {
 }
 
 pub fn connection(value: &Connection, base: &str) -> Result<()> {
-    endpoint(base, &value.models_path, false)?;
+    if !value.models_path.is_empty() {
+        endpoint(base, &value.models_path, false)?;
+    }
     endpoint(base, &value.probe_path, false)?;
     for (number, max, field) in [
         (value.interval_seconds, 86400, "intervalSeconds"),

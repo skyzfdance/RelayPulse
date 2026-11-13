@@ -77,6 +77,8 @@ impl Fixture {
                     name: "local".into(),
                     protocol: Protocol::CustomHttp,
                     base_url: url.into(),
+                    models_path: "/models".into(),
+                    probe_path: "/probe".into(),
                     secret: "secret-only-in-vault".into(),
                     enabled: false,
                 },

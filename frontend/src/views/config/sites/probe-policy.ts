@@ -1,6 +1,7 @@
 import type { CustomProbeRequest, ProbePolicy, RequestParameter } from '@/types/domain/sites';
 
 import { requestParameterValidation } from '@/utils/request-parameters';
+import { requestUrl } from '@/utils/request-url';
 
 export function parametersError(parameters: RequestParameter[]): string | null {
   return (
@@ -18,17 +19,7 @@ export function resolveCustomProbeEndpoint(baseUrl: string, endpoint: string): s
   if (!endpoint.trim()) throw new Error('请输入自定义探测端点');
   if (endpoint !== endpoint.trim()) throw new Error('探测端点首尾不能有空格');
   if (/[\r\n\t]/u.test(endpoint)) throw new Error('请输入有效的探测端点');
-  const base = new URL(baseUrl);
-  const prefix = new URL(base);
-  prefix.pathname = `${base.pathname.replace(/\/+$/u, '')}/`;
-  const resolved = new URL(
-    endpoint.startsWith('//') ? endpoint : endpoint.replace(/^\/+/u, ''),
-    prefix,
-  );
-  if (!['http:', 'https:'].includes(resolved.protocol) || resolved.origin !== base.origin)
-    throw new Error('端点必须与站点 Base URL 同源');
-  if (resolved.username || resolved.password) throw new Error('探测端点不能包含访问凭据');
-  return resolved.toString();
+  return requestUrl(baseUrl, endpoint, true);
 }
 
 export function customEndpointError(baseUrl: string, endpoint: string): string | null {

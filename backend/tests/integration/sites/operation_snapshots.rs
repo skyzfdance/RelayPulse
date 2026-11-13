@@ -12,6 +12,8 @@ async fn user_mutations_preserve_names_and_redacted_configuration_after_delete()
     f.execute(Operation::Connection(
         id.clone(),
         sites::Connection {
+            models_path: "/models".into(),
+            probe_path: "/probe".into(),
             headers: vec![crate::shared::model_client::RequestHeader {
                 key: "X-Trace".into(),
                 value: "Bearer super-private".into(),
@@ -110,6 +112,8 @@ async fn creation_contains_saved_defaults_and_deletion_contains_only_removed_mod
             name: "new site".into(),
             protocol: Protocol::CustomHttp,
             base_url: server.url.clone(),
+            models_path: "/models".into(),
+            probe_path: "/probe".into(),
             secret: "creation-only-in-vault".into(),
             enabled: false,
         }))
@@ -208,6 +212,8 @@ async fn blocked_attempt_keeps_target_identity_and_redacted_requested_configurat
         .execute(Operation::Connection(
             id.clone(),
             sites::Connection {
+                models_path: "/models".into(),
+                probe_path: "/probe".into(),
                 interval_seconds: 420,
                 headers: vec![crate::shared::model_client::RequestHeader {
                     key: "X-Trace".into(),

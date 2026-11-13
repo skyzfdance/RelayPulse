@@ -207,32 +207,35 @@ describe('站点详情与页面共享数据', () => {
     const modal = document.querySelector('.ant-modal')!;
     await new DOMWrapper(modal.querySelector('input#name')!).setValue('新站点');
     await new DOMWrapper(modal.querySelector('input#baseUrl')!).setValue('https://new.example.com');
+    await new DOMWrapper(modal.querySelector('input#modelsPath')!).setValue('/models');
+    await new DOMWrapper(modal.querySelector('input#probePath')!).setValue('/chat/completions');
     const checkbox = new DOMWrapper(
       modal.querySelector<HTMLInputElement>('input[type="checkbox"]')!,
     );
-    expect(checkbox.element.checked).toBe(true);
+    expect(checkbox.element.checked).toBe(false);
     expect(modal.textContent).not.toContain('尚未配置凭据');
-    await overlayButton(modal, '连接并获取模型').trigger('click');
+    await overlayButton(modal, '添加站点').trigger('click');
     await flushPromises();
     expect(modal.textContent).toContain('请输入访问凭据');
     expect(store.sites).toHaveLength(3);
     await new DOMWrapper(modal.querySelector('input[type="password"]')!).setValue(
       'test-only-secret',
     );
-    if (!enabled) await checkbox.setValue(false);
+    if (enabled) await checkbox.setValue(true);
     window.history.replaceState({}, '', '/?scenario=action-error');
-    await overlayButton(modal, '连接并获取模型').trigger('click');
+    await overlayButton(modal, '添加站点').trigger('click');
     await flushPromises();
     expect(wrapper.findComponent(AddSiteModal).exists()).toBe(true);
     expect(store.sites).toHaveLength(3);
     expect(checkbox.element.checked).toBe(enabled);
     window.history.replaceState({}, '', '/');
-    await overlayButton(modal, '连接并获取模型').trigger('click');
+    await overlayButton(modal, '添加站点').trigger('click');
     await flushPromises();
     expect(store.sites).toHaveLength(4);
     expect(wrapper.findComponent(AddSiteModal).exists()).toBe(false);
     expect(details.selectedSiteDetail).toMatchObject({
       name: '新站点',
+      baseUrl: 'https://new.example.com',
       enabled,
       credentialConfigured: true,
     });
@@ -241,6 +244,29 @@ describe('站点详情与页面共享数据', () => {
     expect(wrapper.getComponent(SiteList).text()).toContain('新站点');
     expect(wrapper.getComponent(SiteDetail).find('h2').text()).toBe('新站点');
   });
+  it('没有模型时仍能修改高级端点并同步模型', async () => {
+    state.sites[0].models = [];
+    const { wrapper, details } = await mountPage();
+    await button(wrapper, '高级设置').trigger('click');
+    await flushPromises();
+    const drawer = new DOMWrapper(document.querySelector('.ant-drawer')!);
+    await drawer.get('input#modelsPath').setValue('/models');
+    await drawer.get('input#probePath').setValue('/chat/completions');
+    await overlayButton(drawer.element, '保存').trigger('click');
+    await vi.waitFor(() =>
+      expect(wrapper.findComponent(AdvancedSettingsDrawer).exists()).toBe(false),
+    );
+    expect(details.selectedSiteDetail?.connection).toMatchObject({
+      modelsPath: '/models',
+      probePath: '/chat/completions',
+    });
+    await button(wrapper, '同步模型').trigger('click');
+    await flushPromises();
+    await overlayButton(document.querySelector('.ant-modal')!, '确认同步').trigger('click');
+    await flushPromises();
+    expect(details.selectedSiteDetail?.models).toHaveLength(2);
+  });
+
   it('详情展示接口返回的连接和探针配置，编辑请求头不直接修改已保存数据', async () => {
     state.sites[0].connection.intervalSeconds = 17;
     state.sites[0].connection.headers = [{ key: 'X-Route', value: 'server-route' }];

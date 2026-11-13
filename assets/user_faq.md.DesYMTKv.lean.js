@@ -1,1 +1,0 @@
-import{_ as e,o,c as r,a3 as t}from"./chunks/framework.BTt0kA_k.js";const u=JSON.parse('{"title":"常见问题","description":"","frontmatter":{},"headers":[],"relativePath":"user/faq.md","filePath":"user/faq.md"}'),l={name:"user/faq.md"};function i(h,a,n,s,d,p){return o(),r("div",null,[...a[0]||(a[0]=[t("",37)])])}const b=e(l,[["render",i]]);export{u as __pageData,b as default};

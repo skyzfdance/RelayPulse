@@ -11,7 +11,7 @@ workspace = true
 relaypulse-runtime = { version = "0.1",path="../runtime"}
 futures-util = "0.3"
 os_info = { version = "3.15", default-features = false }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"

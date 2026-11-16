@@ -1,6 +1,6 @@
 [package]
 name = "relaypulse"
-version = "3.0.2"
+version = "3.0.3"
 default-run = "relaypulse"
 description = "RelayPulse desktop application"
 edition = "2021"
@@ -32,7 +32,7 @@ relaypulse-notifications = { version = "0.1", path = "crates/notifications" }
 futures-util = "0.3"
 os_info = { version = "3.15", default-features = false }
 flate2 = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "system-proxy"] }
 rusqlite = { version = "0.39.0", features = ["bundled", "backup"] }
 rusqlite_migration = "=2.5.0"
 serde = { version = "1", features = ["derive"] }
